@@ -1,0 +1,19 @@
+{
+  "name": "pip-phone",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Standalone Pip for Android — OPP, kit, crew voice",
+  "scripts": {
+    "sync": "cap sync android",
+    "open": "cap open android",
+    "preview": "python -m http.server 7422 --directory www",
+    "install-phone": "Install.bat"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/browser": "^8.0.4",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0"
+  }
+}

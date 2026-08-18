@@ -1,0 +1,13 @@
+node_modules/
+.gradle/
+build/
+*.apk
+*.aab
+local.properties
+.env
+.env.*
+*.jks
+*.keystore
+.DS_Store
+Thumbs.db
+.idea/
