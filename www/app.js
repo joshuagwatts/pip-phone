@@ -1,6 +1,6 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, ensurePip, pipStatus } from "./brain.js";
-import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl } from "./opp.js";
+import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { hasNativeHttp, openUrl } from "./net.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
@@ -292,7 +292,7 @@ function renderData() {
   const s = db.settings;
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">This is the phone. Memory lives here. Qwen is Pip — same crew as the desk. First launch downloads the brain once, then COMM is local. Desktop sync comes later.</p>
+    <p class="muted">This is the phone. Memory lives here. KIT is the profile. HUNT logs calls and reads questions. DRAFT THIS writes from KIT. Qwen is Pip. Desktop sync comes later.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -346,8 +346,8 @@ async function readPage() {
     if (found.url) sel.url = found.url;
     if (found.questions.length) {
       sel.questions = found.questions;
+      sel.answers = suggestAnswers(found.questions, db.kit, sel.title);
       sel.note = `Read ${found.questions.length} questions.`;
-      if (!sel.answers.length) sel.answers = found.questions.map((q) => ({ q: q.prompt, a: "", a5: "" }));
     } else {
       sel.note = "No questions on that page. Paste them.";
     }
@@ -363,10 +363,19 @@ async function draftThis() {
   const sel = selected();
   if (!sel) return;
   if (!(sel.questions || []).length) { setStatus("READ PAGE OR PASTE QUESTIONS"); return; }
-  setStatus(pipStatus());
+  const seeded = suggestAnswers(sel.questions, db.kit, sel.title);
+  Object.assign(sel, mergeDraft(sel, seeded));
+  persist();
+  render();
+  setStatus("KIT ON THE PAGE · DRAFTING THE REST");
   try {
     const drafted = await draftAnswers(db.settings, { title: sel.title, kit: db.kit, questions: sel.questions }, (msg) => setStatus(msg));
-    Object.assign(sel, mergeDraft(sel, drafted));
+    const merged = drafted.map((row, i) => ({
+      ...row,
+      a: row.a || (seeded[i] && seeded[i].a) || "",
+      a5: row.a5 || (seeded[i] && seeded[i].a5) || "",
+    }));
+    Object.assign(sel, mergeDraft(sel, merged));
     persist();
     render();
     setStatus("DRAFT READY · COPY");
@@ -379,15 +388,41 @@ async function runHunt() {
   setStatus("HUNTING…");
   try {
     const found = await hunt();
+    const fresh = [];
     let n = 0;
     for (const hit of found) {
       if (db.opps.some((o) => o.url === hit.url)) continue;
-      db.opps.unshift(newOpp(hit));
+      const row = newOpp(hit);
+      if ((row.questions || []).length) {
+        row.answers = suggestAnswers(row.questions, db.kit, row.title);
+      }
+      db.opps.unshift(row);
+      fresh.push(row);
       n += 1;
     }
     persist();
     render();
     setStatus(n ? `LOGGED ${n}` : found.length ? "ALREADY HAD THOSE" : "NOTHING PUBLIC — ADD A URL");
+    for (const row of fresh.slice(0, 8)) {
+      if (!row.url) continue;
+      setStatus(`READING ${String(row.title || "").slice(0, 22).toUpperCase()}`);
+      try {
+        const page = await scrapeUrl(row.url, { strict: !(row.questions || []).length });
+        if (page.title && (!row.title || row.title === row.url)) row.title = page.title;
+        if (page.url) row.url = page.url;
+        if ((page.questions || []).length) {
+          row.questions = page.questions;
+          row.answers = suggestAnswers(page.questions, db.kit, row.title);
+          row.note = row.note || `Read ${page.questions.length} questions.`;
+        }
+        persist();
+      } catch {
+        /* keep the listing even if the page is a wall */
+      }
+    }
+    render();
+    const withQ = db.opps.filter((o) => o.status !== "done" && (o.questions || []).length).length;
+    if (n) setStatus(`LOGGED ${n} · ${withQ} WITH QUESTIONS`);
   } catch (e) {
     setStatus("HUNT BLOCKED · ADD A URL");
   }
@@ -411,7 +446,7 @@ async function sendChat() {
   persist();
   setStatus(pipStatus());
   try {
-    const reply = await chat(db.settings, db.chat, text, (msg) => setStatus(msg));
+    const reply = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit);
     db.chat.push({ role: "pip", content: reply });
     persist();
     addLog("pip", reply);

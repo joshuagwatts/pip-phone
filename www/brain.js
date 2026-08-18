@@ -1,4 +1,4 @@
-import { FALLBACK, isBlank, talkSystem } from "./crew.js";
+import { FALLBACK, isBlank, talkSystem, SHOTS } from "./crew.js";
 
 const QWEN_MLC = [
   "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
@@ -172,26 +172,33 @@ async function complete(messages, temperature = 0.7, maxTokens = 400) {
   return (await eng.complete(messages, temperature, maxTokens)).trim();
 }
 
-export async function chat(settings, history, text, onProgress) {
+export async function chat(settings, history, text, onProgress, kit) {
   track(onProgress);
-  const operator = settings.operator || "Operator";
+  const operator = settings.operator || "Joshua";
   const messages = [
-    { role: "system", content: talkSystem(operator, settings.humor, settings.honesty) },
-    ...history.slice(-10).map((m) => ({
+    { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
+    ...SHOTS,
+    ...history.slice(-8).map((m) => ({
       role: m.role === "user" ? "user" : "assistant",
       content: m.content,
     })),
     { role: "user", content: text },
   ];
-  let out = await complete(messages, 0.75, 280);
-  if (isBlank(out)) {
+  let out = await complete(messages, 0.7, 180);
+  if (isBlank(out) || !out) {
     out = await complete(
-      [...messages, { role: "user", content: "Stay Pip. Answer the actual thing. No helpdesk." }],
-      0.5,
-      220,
+      [
+        { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
+        ...SHOTS,
+        { role: "user", content: text },
+        { role: "user", content: "Stay Pip. Two short sentences. No helpdesk." },
+      ],
+      0.35,
+      140,
     );
   }
-  return isBlank(out) || !out ? FALLBACK : out;
+  if (isBlank(out) || !out) return FALLBACK;
+  return out;
 }
 
 export async function draftAnswers(settings, { title, kit, questions }, onProgress) {

@@ -21,20 +21,48 @@ const SKIP_HOST = /(?:^|\.)(?:facebook|instagram|tiktok|pinterest|youtube|twitte
 const GENERIC_TITLE = /^(apply for call|view call details|read more|learn more|home|click here)$/i;
 const CALL_HINT = /open call|call for|application|apply|artist|installation|festival|residency|grant|exhibition|rfp|projection|vj|visual|immersive|mural|public art|viewform|fellowship|deadline/i;
 const HUNT_QUERIES = [
+  "Wakaan festival 2026 art installation application",
   "festival visual artist VJ installation open call 2026 apply",
   "call for artists installation immersive 2026 application",
   "projection mapping public art open call 2026",
 ];
+const WAKAAN_URL =
+  "https://docs.google.com/forms/d/e/1FAIpQLSfxRawLshOJjbJuowOCzWFymRE1DEpkViQxh4kN3roNfpysPQ/viewform";
+const WAKAAN_QUESTIONS = [
+  { prompt: "Legal First Name", q: "Legal First Name", type: "short", hint: "", required: true, section: "Contact Information", options: [] },
+  { prompt: "Legal Last Name", q: "Legal Last Name", type: "short", hint: "", required: true, section: "Contact Information", options: [] },
+  { prompt: "Artist Name / Moniker / Business Name", q: "Artist Name / Moniker / Business Name", type: "short", hint: "", required: true, section: "Contact Information", options: [] },
+  { prompt: "Phone #", q: "Phone #", type: "short", hint: "", required: true, section: "Contact Information", options: [] },
+  { prompt: "Email", q: "Email", type: "short", hint: "", required: true, section: "Contact Information", options: [] },
+  { prompt: "Artist Bio & Experience", q: "Artist Bio & Experience", type: "paragraph", hint: "", required: false, section: "Installation Information", options: [] },
+  { prompt: "Description of Installation (general overview, specifics will be answered below)", q: "Description of Installation (general overview, specifics will be answered below)", type: "paragraph", hint: "", required: false, section: "Installation Information", options: [] },
+  { prompt: "Description of Installation", q: "Description of Installation", type: "file", hint: "", required: false, section: "Installation Information", options: [] },
+  { prompt: "Budget Request", q: "Budget Request", type: "paragraph", hint: "", required: false, section: "Installation Information", options: [] },
+  { prompt: "Team Size", q: "Team Size", type: "paragraph", hint: "", required: false, section: "Installation Information", options: [] },
+  { prompt: "What is the footprint of your installation? (Approx. how much space you will need.)", q: "What is the footprint of your installation? (Approx. how much space you will need.)", type: "paragraph", hint: "", required: false, section: "Installation Information", options: [] },
+  { prompt: "How much power does your installation pull?", q: "How much power does your installation pull?", type: "paragraph", hint: "", required: false, section: "Installation Information", options: [] },
+  { prompt: "Is there anything else about your Installation that needs to be acknowledged?", q: "Is there anything else about your Installation that needs to be acknowledged?", type: "paragraph", hint: "", required: false, section: "Installation Information", options: [] },
+  { prompt: "Is there anything else you require that would like the Wakaan team to know?", q: "Is there anything else you require that would like the Wakaan team to know?", type: "paragraph", hint: "", required: false, section: "Other Information", options: [] },
+];
+const PINNED = [
+  {
+    title: "Wakaan Music Festival 2026 application",
+    url: WAKAAN_URL,
+    note: "Festival visual / art application. Oct 1-3 2026, Mulberry Mountain, Ozark AR.",
+    questions: WAKAAN_QUESTIONS,
+  },
+];
 
-export function newOpp({ title, url, note }) {
+export function newOpp({ title, url, note, questions }) {
+  const qs = Array.isArray(questions) ? questions : [];
   return {
     id: uid(),
     title: (title || "Untitled call").trim().slice(0, 160),
     url: (url || "").trim(),
     note: (note || "").trim(),
     status: "open",
-    questions: [],
-    answers: [],
+    questions: qs,
+    answers: qs.map((q) => ({ q: q.prompt || q.q || "", a: "", a5: "" })),
     created_at: Date.now(),
   };
 }
@@ -118,22 +146,76 @@ function stripHtml(html) {
     .replace(/\n{2,}/g, "\n");
 }
 
-export async function scrapeUrl(url) {
-  const page = await httpGet(url);
-  let questions = parseGoogleForm(page.body);
-  let finalUrl = page.url || url;
-  if (!questions.length) {
-    const links = page.body.match(GFORM) || [];
-    if (links[0]) {
-      const form = await httpGet(links[0]);
-      questions = parseGoogleForm(form.body);
-      if (questions.length) finalUrl = form.url || links[0];
+export async function scrapeUrl(url, { strict } = {}) {
+  const known = knownForm(url);
+  try {
+    const page = await httpGet(url);
+    let questions = parseGoogleForm(page.body);
+    let finalUrl = page.url || url;
+    if (!questions.length) {
+      const links = page.body.match(GFORM) || [];
+      if (links[0]) {
+        const form = await httpGet(links[0]);
+        questions = parseGoogleForm(form.body);
+        if (questions.length) finalUrl = form.url || links[0];
+      }
     }
+    if (!questions.length && !strict) questions = questionsFromPaste(stripHtml(page.body));
+    if (!questions.length && known) questions = known.questions;
+    const titleM = page.body.match(/<title[^>]*>(.*?)<\/title>/i);
+    const title = titleM ? titleM[1].replace(/\s+/g, " ").trim().slice(0, 120) : (known && known.title) || "";
+    return { url: finalUrl, title, questions, source: questions.length ? "page" : "empty" };
+  } catch (e) {
+    if (known) {
+      return { url: known.url, title: known.title, questions: known.questions, source: "known" };
+    }
+    throw e;
   }
-  if (!questions.length) questions = questionsFromPaste(stripHtml(page.body));
-  const titleM = page.body.match(/<title[^>]*>(.*?)<\/title>/i);
-  const title = titleM ? titleM[1].replace(/\s+/g, " ").trim().slice(0, 120) : "";
-  return { url: finalUrl, title, questions, source: questions.length ? "page" : "empty" };
+}
+
+function knownForm(url) {
+  const id = /\/forms\/d\/e\/([^/]+)/.exec(url || "");
+  if (id && id[1] === "1FAIpQLSfxRawLshOJjbJuowOCzWFymRE1DEpkViQxh4kN3roNfpysPQ") return PINNED[0];
+  if (/wakaan/i.test(url || "")) return PINNED[0];
+  return null;
+}
+
+export function answerFromKit(question, kit, title, qtype) {
+  const q = String(question || "").toLowerCase();
+  const k = kit || {};
+  if (qtype === "file") return "FILE UPLOAD — attach in the live form. Pip cannot put files in this field.";
+  const name = String(k.full_name || "").trim();
+  const parts = name.split(/\s+/).filter(Boolean);
+  const first = parts[0] || "";
+  const last = parts.slice(1).join(" ");
+  if (/legal first|first name/.test(q)) return first;
+  if (/legal last|last name/.test(q)) return last;
+  if (/e-?mail/.test(q)) return k.email || "";
+  if (/\bphone\b|#/.test(q) && /phone|#/.test(q)) return k.phone || "";
+  if (/artist name|moniker|business name|stage name|project name/.test(q)) return k.artist_name || name;
+  if (/full name|legal name/.test(q) && !/artist/.test(q)) return name || k.artist_name || "";
+  if (/\bname\b/.test(q) && q.length < 24) return name || k.artist_name || "";
+  if (/city|based|location|hometown|where do you live/.test(q)) return k.city || "";
+  if (/instagram|website|portfolio|\blink\b|url|social/.test(q)) return k.links || "";
+  if (/artist bio|bio & experience|artist statement|about yourself/.test(q)) return (k.bio_long || k.bio_short || "").trim();
+  if (/began|beginning|started|origin|how did you/.test(q)) return k.origin || k.bio_short || "";
+  if (/description of installation|what do you make|medium|materials|practice|describe your work/.test(q)) {
+    return k.materials || k.bio_short || "";
+  }
+  if (/why this|why are you applying|why do you want|why apply/.test(q)) {
+    const why = (k.why_festivals || k.bio_short || "").trim();
+    return why ? `${why}\n\n${title || "This call"} is a room for that work.` : "";
+  }
+  if (/one-liner|tagline|one liner/.test(q)) return k.one_liner || "";
+  return "";
+}
+
+export function suggestAnswers(questions, kit, title) {
+  return (questions || []).map((q) => {
+    const prompt = q.prompt || q.q || "";
+    const a = q.a || answerFromKit(prompt, kit, title, q.type || "");
+    return { ...q, q: prompt, prompt, a, a5: q.a5 || "" };
+  });
 }
 
 function decodeEntities(s) {
@@ -245,9 +327,9 @@ async function huntColossal(found) {
 }
 
 export async function hunt(focus) {
-  const found = [];
+  const found = PINNED.map((p) => ({ title: p.title, url: p.url, note: p.note, questions: p.questions }));
   const extra = (focus || "").trim();
-  const queries = extra ? [extra, ...HUNT_QUERIES.slice(0, 2)] : HUNT_QUERIES;
+  const queries = extra ? [extra, ...HUNT_QUERIES.slice(0, 3)] : HUNT_QUERIES;
   await huntArtcall(found);
   await huntColossal(found);
   await Promise.all(
@@ -255,7 +337,7 @@ export async function hunt(focus) {
       huntPage(`https://search.brave.com/search?q=${encodeURIComponent(q)}`, found, { needHint: true }),
     ),
   );
-  if (found.length < 4) {
+  if (found.length < 5) {
     await Promise.all(
       queries.slice(0, 2).map((q) =>
         huntPage(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, found, { needHint: true }),

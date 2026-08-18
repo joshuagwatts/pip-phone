@@ -24,7 +24,7 @@ function blank() {
     chat: [],
     dirty: { answers: [] },
     settings: {
-      operator: "",
+      operator: "Joshua",
       humor: 89,
       honesty: 90,
       groq: "",
@@ -40,11 +40,13 @@ export function load() {
     const raw = JSON.parse(localStorage.getItem(KEY) || "null");
     if (!raw || typeof raw !== "object") return blank();
     const base = blank();
+    const settings = { ...base.settings, ...(raw.settings || {}) };
+    if (!String(settings.operator || "").trim()) settings.operator = "Joshua";
     return {
       ...base,
       ...raw,
       kit: { ...base.kit, ...(raw.kit || {}) },
-      settings: { ...base.settings, ...(raw.settings || {}) },
+      settings,
       opps: Array.isArray(raw.opps) ? raw.opps : [],
       chat: Array.isArray(raw.chat) ? raw.chat : [],
     };
