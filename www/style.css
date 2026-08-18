@@ -8,6 +8,9 @@
   --muted: #6d8a60;
   --warn: #e07050;
   --black: #050805;
+  --safe-top: max(env(safe-area-inset-top, 0px), 28px);
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), 56px);
+  --tab-h: 3rem;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
@@ -23,8 +26,9 @@ header.stat {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.7rem 0.8rem 0.5rem;
+  padding: calc(0.45rem + var(--safe-top)) 0.8rem 0.5rem;
   border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
 }
 .mark { color: var(--phos); letter-spacing: 0.28em; font-size: 1.1rem; }
 .chip {
@@ -45,7 +49,7 @@ button {
 }
 button.primary { background: var(--phos); color: var(--black); border-color: var(--phos); }
 button.on { border-color: var(--phos); color: var(--phos); }
-#view { flex: 1; overflow: auto; padding: 0.9rem 0.9rem 5.5rem; min-height: 0; }
+#view { flex: 1; overflow: auto; padding: 0.9rem 0.9rem calc(var(--tab-h) + var(--safe-bottom) + 3.6rem); min-height: 0; }
 body.vibe-tab #view { padding: 0; overflow: hidden; }
 body.vibe-tab .dock { display: none; }
 body.vibe-tab #status { display: none; }
@@ -75,11 +79,13 @@ textarea { min-height: 5.5rem; resize: vertical; }
 .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.4rem 0; }
 .dock {
   position: fixed;
-  left: 0; right: 0; bottom: 2.4rem;
+  left: 0; right: 0;
+  bottom: calc(var(--tab-h) + var(--safe-bottom));
   display: flex;
   gap: 0.4rem;
   padding: 0.5rem 0.7rem;
   background: linear-gradient(transparent, var(--bg) 30%);
+  z-index: 4;
 }
 .dock button { flex: 1; }
 nav.tabs {
@@ -88,21 +94,23 @@ nav.tabs {
   display: flex;
   border-top: 1px solid var(--line);
   background: var(--black);
+  padding-bottom: var(--safe-bottom);
+  z-index: 5;
 }
-nav.tabs button { flex: 1; border: 0; border-right: 1px solid var(--line); padding: 0.75rem 0; }
+nav.tabs button { flex: 1; border: 0; border-right: 1px solid var(--line); padding: 0.85rem 0; min-height: var(--tab-h); }
 nav.tabs button:last-child { border-right: 0; }
 footer.status {
   display: none;
 }
 #status {
   position: fixed;
-  left: 0; right: 0; bottom: 2.45rem;
+  left: 0; right: 0;
+  bottom: calc(var(--tab-h) + var(--safe-bottom) + 2.7rem);
   pointer-events: none;
   text-align: center;
   font-size: 10px;
   letter-spacing: 0.2em;
   color: var(--muted);
-  transform: translateY(-2.6rem);
 }
 #comm {
   position: fixed;
@@ -115,7 +123,12 @@ footer.status {
 body.comm #comm { display: flex; }
 #log { flex: 1; overflow: auto; padding: 0.8rem; }
 .bubble .who { color: var(--phos); font-size: 10px; letter-spacing: 0.2em; margin-bottom: 0.25rem; }
-.composer { display: flex; gap: 0.4rem; padding: 0.6rem; border-top: 1px solid var(--line); }
+.composer {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.6rem 0.6rem calc(0.6rem + var(--safe-bottom));
+  border-top: 1px solid var(--line);
+}
 .composer textarea { min-height: 2.6rem; flex: 1; }
 .warn { color: var(--warn); }
 .due-note.tight { color: var(--warn); }
@@ -176,7 +189,7 @@ body.comm #comm { display: flex; }
   pointer-events: none;
 }
 .vibe-foot {
-  padding: 0.35rem 0.5rem 0.55rem;
+  padding: 0.35rem 0.5rem calc(0.45rem + var(--tab-h) + var(--safe-bottom));
   border-top: 1px solid var(--line);
   background: var(--inset);
   font-size: 10px;

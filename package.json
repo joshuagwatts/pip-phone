@@ -1,7 +1,7 @@
 {
   "name": "pip-phone",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standalone Pip for Android — OPP, kit, crew voice",
   "scripts": {
     "sync": "cap sync android",

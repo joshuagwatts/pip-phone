@@ -3,11 +3,13 @@
   "appName": "Pip",
   "webDir": "www",
   "android": {
-    "allowMixedContent": false
+    "allowMixedContent": false,
+    "adjustMarginsForEdgeToEdge": "disable",
+    "backgroundColor": "#0a0f0a"
   },
   "plugins": {
     "CapacitorHttp": {
-      "enabled": true
+      "enabled": false
     }
   }
 }

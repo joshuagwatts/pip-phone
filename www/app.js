@@ -1,5 +1,5 @@
 import { load, save, KIT_LABELS } from "./store.js";
-import { chat, draftAnswers, brainReady } from "./brain.js";
+import { chat, draftAnswers, ensurePip, pipStatus } from "./brain.js";
 import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl } from "./opp.js";
 import { hasNativeHttp, openUrl } from "./net.js";
 import { SHADER_ORDER } from "./shaders.js";
@@ -292,7 +292,7 @@ function renderData() {
   const s = db.settings;
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">This is the phone. Memory lives here. Desktop sync comes later. Groq is enough for COMM and DRAFT THIS.</p>
+    <p class="muted">This is the phone. Memory lives here. Qwen is Pip — same crew as the desk. First launch downloads the brain once, then COMM is local. Desktop sync comes later.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -300,9 +300,9 @@ function renderData() {
     <div class="field"><span>HONESTY ${esc(s.honesty)}</span>
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
-    <h3>BRAIN KEY</h3>
-    <p class="muted">Stays on this phone. Used for COMM and OPP drafts. Not sent to the laptop.</p>
-    <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="gsk_…" /></div>
+    <h3>OPTIONAL TURBO</h3>
+    <p class="muted">Not required. COMM already runs on-device. Leave blank.</p>
+    <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="optional" /></div>
     <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="optional" /></div>
     <p class="muted">${hasNativeHttp() ? "Native app: can read public apply pages." : "Browser preview: paste questions if a page blocks the read."}</p>
     <div class="dock"><button type="button" class="primary" id="data-save">SAVE</button></div>`;
@@ -362,11 +362,10 @@ async function readPage() {
 async function draftThis() {
   const sel = selected();
   if (!sel) return;
-  if (!brainReady(db.settings)) { setStatus("NEED A BRAIN KEY IN DATA"); return; }
   if (!(sel.questions || []).length) { setStatus("READ PAGE OR PASTE QUESTIONS"); return; }
-  setStatus("DRAFTING…");
+  setStatus(pipStatus());
   try {
-    const drafted = await draftAnswers(db.settings, { title: sel.title, kit: db.kit, questions: sel.questions });
+    const drafted = await draftAnswers(db.settings, { title: sel.title, kit: db.kit, questions: sel.questions }, (msg) => setStatus(msg));
     Object.assign(sel, mergeDraft(sel, drafted));
     persist();
     render();
@@ -410,12 +409,9 @@ async function sendChat() {
   db.chat.push({ role: "user", content: text });
   addLog("user", text);
   persist();
-  if (!brainReady(db.settings)) {
-    addLog("pip", "Paste a Groq key in DATA and I'm fully here. Until then I'm just the desk.");
-    return;
-  }
+  setStatus(pipStatus());
   try {
-    const reply = await chat(db.settings, db.chat, text);
+    const reply = await chat(db.settings, db.chat, text, (msg) => setStatus(msg));
     db.chat.push({ role: "pip", content: reply });
     persist();
     addLog("pip", reply);
@@ -442,7 +438,12 @@ function boot() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
   render();
-  setStatus(brainReady(db.settings) ? "READY" : "DATA · PASTE A KEY");
+  const chip = $("#mode-chip");
+  if (chip) chip.textContent = "QWEN";
+  setStatus("PIP // WAKING QWEN");
+  ensurePip((msg) => setStatus(msg))
+    .then(() => setStatus("READY"))
+    .catch((e) => setStatus(String(e.message || e).toUpperCase()));
 }
 
 boot();

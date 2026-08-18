@@ -1,81 +1,201 @@
 import { FALLBACK, isBlank, talkSystem } from "./crew.js";
-import { httpPostJson } from "./net.js";
 
-const PROVIDERS = [
-  {
-    id: "groq",
-    key: "groq",
-    base: "https://api.groq.com/openai/v1/chat/completions",
-    model: "llama-3.3-70b-versatile",
-    headers: () => ({}),
-  },
-  {
-    id: "openrouter",
-    key: "openrouter",
-    base: "https://openrouter.ai/api/v1/chat/completions",
-    model: "meta-llama/llama-3.3-70b-instruct:free",
-    headers: () => ({ "HTTP-Referer": "https://pip.phone", "X-Title": "Pip Phone" }),
-  },
-  {
-    id: "cerebras",
-    key: "cerebras",
-    base: "https://api.cerebras.ai/v1/chat/completions",
-    model: "llama-3.3-70b",
-    headers: () => ({}),
-  },
-  {
-    id: "mistral",
-    key: "mistral",
-    base: "https://api.mistral.ai/v1/chat/completions",
-    model: "mistral-small-latest",
-    headers: () => ({}),
-  },
+const QWEN_MLC = [
+  "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
+  "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
 ];
+const QWEN_TF = "onnx-community/Qwen2.5-0.5B-Instruct";
 
-export function brainReady(settings) {
-  return PROVIDERS.some((p) => (settings[p.key] || "").trim());
+let backend = null;
+let loading = null;
+let lastProgress = "";
+const listeners = new Set();
+
+export function brainReady() {
+  return true;
 }
 
-function pick(settings) {
-  return PROVIDERS.filter((p) => (settings[p.key] || "").trim());
+export function pipStatus() {
+  if (backend) return "PIP // QWEN";
+  if (loading) return lastProgress || "PIP // WAKING QWEN";
+  return "PIP // QWEN";
 }
 
-async function complete(settings, messages, temperature = 0.6) {
-  const hosts = pick(settings);
-  if (!hosts.length) throw new Error("Paste a Groq or OpenRouter key in DATA.");
+function emit(msg) {
+  lastProgress = String(msg || "").slice(0, 56);
+  for (const fn of listeners) {
+    try { fn(lastProgress); } catch { /* ignore */ }
+  }
+}
+
+function track(onProgress) {
+  if (typeof onProgress === "function") listeners.add(onProgress);
+}
+
+async function loadMod(urls) {
   let last = "";
-  for (const p of hosts) {
+  for (const url of urls) {
     try {
-      const data = await httpPostJson(
-        p.base,
-        { Authorization: `Bearer ${settings[p.key].trim()}`, ...p.headers() },
-        { model: p.model, messages, temperature, max_tokens: 1200 },
-      );
-      const text = (((data.choices || [])[0] || {}).message || {}).content || "";
-      if (text.trim()) return text.trim();
+      return await import(url);
     } catch (e) {
       last = String(e.message || e);
     }
   }
-  throw new Error(last || "brain quiet");
+  throw new Error(last || "could not load Qwen runtime");
 }
 
-export async function chat(settings, history, text) {
+async function makeWebLlm() {
+  const webllm = await loadMod([
+    "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.79/+esm",
+    "https://esm.run/@mlc-ai/web-llm",
+  ]);
+  const create = webllm.CreateMLCEngine;
+  let err = "";
+  for (const model of QWEN_MLC) {
+    try {
+      emit(`QWEN ${model.includes("1.5B") ? "1.5B" : "0.5B"}`);
+      const engine = await create(model, {
+        initProgressCallback: (p) => {
+          const pct = Math.round((p.progress || 0) * 100);
+          emit(p.text ? String(p.text).slice(0, 48) : `QWEN ${pct}%`);
+        },
+      });
+      return {
+        kind: "webllm",
+        complete: async (messages, temperature, maxTokens) => {
+          const out = await engine.chat.completions.create({
+            messages,
+            temperature,
+            max_tokens: maxTokens,
+          });
+          return ((((out.choices || [])[0] || {}).message || {}).content || "").trim();
+        },
+      };
+    } catch (e) {
+      err = String(e.message || e);
+    }
+  }
+  throw new Error(err || "WebGPU Qwen would not wake");
+}
+
+function tfProgress(info) {
+  if (!info || typeof info !== "object") return;
+  if (info.status === "progress" && info.total) {
+    emit(`QWEN ${Math.round((100 * (info.loaded || 0)) / info.total)}%`);
+  } else if (info.status === "download") {
+    emit("QWEN FETCH");
+  } else if (info.status === "ready" || info.status === "done") {
+    emit("PIP // QWEN");
+  }
+}
+
+function tfText(out) {
+  const row = Array.isArray(out) ? out[0] : out;
+  const gen = row && row.generated_text;
+  if (typeof gen === "string") return gen.trim();
+  if (Array.isArray(gen)) {
+    for (let i = gen.length - 1; i >= 0; i -= 1) {
+      const turn = gen[i];
+      if (turn && turn.role === "assistant" && turn.content) return String(turn.content).trim();
+    }
+    const last = gen[gen.length - 1];
+    if (last && last.content) return String(last.content).trim();
+  }
+  return String((row && (row.text || row.content)) || "").trim();
+}
+
+async function makeTransformers() {
+  emit("QWEN WASM");
+  const tf = await loadMod([
+    "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1/+esm",
+    "https://esm.sh/@huggingface/transformers@3.5.1",
+  ]);
+  if (tf.env) {
+    tf.env.allowLocalModels = false;
+    tf.env.useBrowserCache = true;
+  }
+  const generator = await tf.pipeline("text-generation", QWEN_TF, {
+    dtype: "q4",
+    progress_callback: tfProgress,
+  });
+  return {
+    kind: "tf",
+    complete: async (messages, temperature, maxTokens) => {
+      const out = await generator(messages, {
+        max_new_tokens: maxTokens,
+        temperature,
+        do_sample: temperature > 0.15,
+      });
+      return tfText(out);
+    },
+  };
+}
+
+export async function ensurePip(onProgress) {
+  track(onProgress);
+  if (backend) {
+    emit("PIP // QWEN");
+    return backend;
+  }
+  if (loading) return loading;
+  loading = (async () => {
+    emit("PIP // WAKING QWEN");
+    const errors = [];
+    if (navigator.gpu) {
+      try {
+        backend = await makeWebLlm();
+        emit("PIP // QWEN");
+        return backend;
+      } catch (e) {
+        errors.push(String(e.message || e));
+      }
+    }
+    try {
+      backend = await makeTransformers();
+      emit("PIP // QWEN");
+      return backend;
+    } catch (e) {
+      errors.push(String(e.message || e));
+    }
+    throw new Error(errors.filter(Boolean).join(" · ") || "Qwen would not wake");
+  })();
+  try {
+    return await loading;
+  } catch (e) {
+    loading = null;
+    throw e;
+  }
+}
+
+async function complete(messages, temperature = 0.7, maxTokens = 400) {
+  const eng = await ensurePip();
+  return (await eng.complete(messages, temperature, maxTokens)).trim();
+}
+
+export async function chat(settings, history, text, onProgress) {
+  track(onProgress);
   const operator = settings.operator || "Operator";
   const messages = [
     { role: "system", content: talkSystem(operator, settings.humor, settings.honesty) },
-    ...history.slice(-12).map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content })),
+    ...history.slice(-10).map((m) => ({
+      role: m.role === "user" ? "user" : "assistant",
+      content: m.content,
+    })),
     { role: "user", content: text },
   ];
-  let out = await complete(settings, messages, 0.7);
+  let out = await complete(messages, 0.75, 280);
   if (isBlank(out)) {
-    out = await complete(settings, [...messages, { role: "user", content: "Stay Pip. Answer the actual thing." }], 0.5);
+    out = await complete(
+      [...messages, { role: "user", content: "Stay Pip. Answer the actual thing. No helpdesk." }],
+      0.5,
+      220,
+    );
   }
-  if (isBlank(out) || !out) return FALLBACK;
-  return out;
+  return isBlank(out) || !out ? FALLBACK : out;
 }
 
-export async function draftAnswers(settings, { title, kit, questions }) {
+export async function draftAnswers(settings, { title, kit, questions }, onProgress) {
+  track(onProgress);
   const kitBits = { ...kit };
   delete kitBits.email;
   delete kitBits.phone;
@@ -93,16 +213,15 @@ export async function draftAnswers(settings, { title, kit, questions }) {
         "Ground every sentence in KIT. Do not invent employers, awards, clients, or numbers. " +
         "If a number is required and missing, write ESTIMATE and say they must confirm. " +
         "No corporate sludge. No emoji. No email or phone. " +
-        "Also write a5: same facts, 5th-grade reading level, no extra facts. " +
-        'Return ONLY JSON {"answers":[{"q":"...","a":"...","a5":"..."}]} one object per question, same q text. ' +
-        "A generic bio that could belong to anyone is a failure.",
+        "Also write a5: the same facts at a 5th-grade reading level. " +
+        'Return ONLY JSON {"answers":[{"q":"...","a":"...","a5":"..."}]} one object per question, same q text.',
     },
     {
       role: "user",
       content: `CALL: ${title}\nKIT:\n${JSON.stringify(kitBits)}\nQUESTIONS:\n${JSON.stringify(asks)}`,
     },
   ];
-  const raw = await complete(settings, messages, 0.35);
+  const raw = await complete(messages, 0.35, 1200);
   const parsed = parseJson(raw);
   const map = new Map();
   for (const item of parsed.answers || []) {
@@ -115,12 +234,7 @@ export async function draftAnswers(settings, { title, kit, questions }) {
   return questions.map((q) => {
     const prompt = q.prompt || q.q || "";
     const hit = map.get(prompt.trim().toLowerCase()) || {};
-    return {
-      ...q,
-      q: prompt,
-      a: hit.a || q.a || "",
-      a5: hit.a5 || q.a5 || "",
-    };
+    return { ...q, q: prompt, a: hit.a || q.a || "", a5: hit.a5 || q.a5 || "" };
   });
 }
 

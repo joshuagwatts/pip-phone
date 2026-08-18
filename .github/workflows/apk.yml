@@ -36,7 +36,7 @@ jobs:
           if-no-files-found: error
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.0
+          tag_name: v0.1.1
           name: Pip
           body: Download Pip.apk. Open it on the phone. Allow install.
           files: Pip.apk
