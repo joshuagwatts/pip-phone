@@ -16,7 +16,15 @@ const TYPE_NAME = {
   13: "file",
 };
 const GFORM = /https:\/\/docs\.google\.com\/forms\/d\/e\/[A-Za-z0-9_-]+[^"'<\s]*|https:\/\/forms\.gle\/[A-Za-z0-9_-]+/gi;
-const NOISE = /food truck|food vendor|vendor booth|sponsor us|job board|indeed\.com|linkedin\.com\/jobs/i;
+const NOISE = /food truck|food vendor|vendor booth|sponsor us|job board|indeed\.com|linkedin\.com\/jobs|call to cooks|cook-off|visual studio/i;
+const SKIP_HOST = /(?:^|\.)(?:facebook|instagram|tiktok|pinterest|youtube|twitter|x|linkedin|indeed|wikipedia|merriam-webster|visualstudio|bing|duckduckgo|reddit|thisiscolossal|memberful|nectarads|bsky|mastodon)\./i;
+const GENERIC_TITLE = /^(apply for call|view call details|read more|learn more|home|click here)$/i;
+const CALL_HINT = /open call|call for|application|apply|artist|installation|festival|residency|grant|exhibition|rfp|projection|vj|visual|immersive|mural|public art|viewform|fellowship|deadline/i;
+const HUNT_QUERIES = [
+  "festival visual artist VJ installation open call 2026 apply",
+  "call for artists installation immersive 2026 application",
+  "projection mapping public art open call 2026",
+];
 
 export function newOpp({ title, url, note }) {
   return {
@@ -128,25 +136,133 @@ export async function scrapeUrl(url) {
   return { url: finalUrl, title, questions, source: questions.length ? "page" : "empty" };
 }
 
-export async function hunt(focus) {
-  const q = encodeURIComponent(
-    (focus || "festival visual artist VJ installation open call 2026").trim(),
-  );
-  const page = await httpGet(`https://lite.duckduckgo.com/lite/?q=${q}`);
-  const found = [];
-  const re = /<a[^>]+href="([^"]*?uddg=[^"]+)"[^>]*>(.*?)<\/a>/gs;
-  let m;
-  while ((m = re.exec(page.body))) {
-    const uddg = /uddg=([^&"]+)/.exec(m[1]);
-    const title = stripHtml(m[2]).trim();
-    if (!uddg || !title) continue;
-    const url = decodeURIComponent(uddg[1]);
-    if (NOISE.test(`${title} ${url}`)) continue;
-    if (found.some((x) => x.url === url)) continue;
-    found.push({ title: title.slice(0, 160), url });
-    if (found.length >= 8) break;
+function decodeEntities(s) {
+  return String(s || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&#039;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+}
+
+function cleanTitle(raw) {
+  return decodeEntities(stripHtml(raw)).replace(/\s+/g, " ").trim();
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
   }
-  return found;
+}
+
+function keepHit(title, url, { needHint = false } = {}) {
+  const blob = `${title} ${url}`;
+  if (!url || !/^https?:\/\//i.test(url)) return false;
+  if (NOISE.test(blob)) return false;
+  const host = hostOf(url);
+  if (!host || SKIP_HOST.test(host) || host.includes("search.brave")) return false;
+  if (/\.(css|js|png|jpe?g|gif|svg|woff2?|ico)(\?|$)/i.test(url)) return false;
+  if (needHint && !CALL_HINT.test(blob)) return false;
+  return Boolean(title);
+}
+
+function pushHit(found, title, url, opts) {
+  const name = (title || "").slice(0, 160);
+  const href = String(url || "").trim();
+  if (!keepHit(name, href, opts)) return;
+  if (found.some((x) => x.url === href)) return;
+  found.push({ title: name, url: href, note: "hunted" });
+}
+
+function parseAnchors(html, found, opts = {}) {
+  const re = /<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html || ""))) {
+    let href = decodeEntities(m[1]).replace(/&amp;/g, "&");
+    if (href.startsWith("//")) href = "https:" + href;
+    if (href.includes("uddg=")) {
+      const uddg = /uddg=([^&"]+)/.exec(href);
+      if (uddg) {
+        try { href = decodeURIComponent(uddg[1]); } catch { /* keep */ }
+      }
+    }
+    const title = cleanTitle(m[2]);
+    if (GENERIC_TITLE.test(title)) continue;
+    pushHit(found, title, href, opts);
+    if (found.length >= 16) break;
+  }
+}
+
+function isBotWall(html) {
+  const body = String(html || "");
+  return /anomaly\.js|cc=botnet|Just a moment/i.test(body) && !/uddg=/.test(body);
+}
+
+async function huntPage(url, found, opts) {
+  try {
+    const page = await httpGet(url, 16000);
+    if (page.status === 202 || isBotWall(page.body)) return;
+    parseAnchors(page.body, found, opts);
+  } catch {
+    /* next source */
+  }
+}
+
+async function huntArtcall(found) {
+  try {
+    const page = await httpGet("https://artcall.org/calls", 16000);
+    const byUrl = new Map();
+    const re = /<a[^>]+href="(https:\/\/(?!www\.)[a-z0-9-]+\.artcall\.org\/?)"[^>]*>([\s\S]*?)<\/a>/gi;
+    let m;
+    while ((m = re.exec(page.body || ""))) {
+      const url = m[1].replace(/\/$/, "");
+      const title = cleanTitle(m[2]);
+      if (!title || GENERIC_TITLE.test(title)) continue;
+      if (/cooks|culinary|food truck/i.test(title)) continue;
+      const prev = byUrl.get(url) || "";
+      if (title.length > prev.length) byUrl.set(url, title);
+    }
+    for (const [url, title] of byUrl) pushHit(found, title, url, { needHint: false });
+  } catch {
+    /* brave still runs */
+  }
+}
+
+async function huntColossal(found) {
+  try {
+    const cat = await httpGet("https://www.thisiscolossal.com/category/opportunities/", 16000);
+    const m = /href="(https:\/\/www\.thisiscolossal\.com\/\d{4}\/\d{2}\/[^"]+)"/i.exec(cat.body || "");
+    const article = m
+      ? m[1]
+      : "https://www.thisiscolossal.com/2026/07/august-2026-open-calls-grants-residencies/";
+    await huntPage(article, found, { needHint: true });
+  } catch {
+    /* artcall still runs */
+  }
+}
+
+export async function hunt(focus) {
+  const found = [];
+  const extra = (focus || "").trim();
+  const queries = extra ? [extra, ...HUNT_QUERIES.slice(0, 2)] : HUNT_QUERIES;
+  await huntArtcall(found);
+  await huntColossal(found);
+  await Promise.all(
+    queries.map((q) =>
+      huntPage(`https://search.brave.com/search?q=${encodeURIComponent(q)}`, found, { needHint: true }),
+    ),
+  );
+  if (found.length < 4) {
+    await Promise.all(
+      queries.slice(0, 2).map((q) =>
+        huntPage(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, found, { needHint: true }),
+      ),
+    );
+  }
+  return found.slice(0, 12);
 }
 
 export function mergeDraft(opp, drafted) {
