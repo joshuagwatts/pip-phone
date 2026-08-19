@@ -10,6 +10,12 @@ export function hasNativeHttp() {
   return Boolean(nativeHttp());
 }
 
+function parseCookie(setCookie) {
+  const raw = String(setCookie || "");
+  const hit = raw.match(/pip_gate=([^;]+)/);
+  return hit ? hit[1] : "";
+}
+
 function assertPublic(url) {
   let u;
   try {
@@ -26,6 +32,81 @@ function assertPublic(url) {
     throw new Error("public web only");
   }
   return u.toString();
+}
+
+function assertLan(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new Error("bad url");
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("need http(s)");
+  const host = (u.hostname || "").toLowerCase();
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+    throw new Error("use your PC LAN IP, not localhost");
+  }
+  return u.toString();
+}
+
+async function request(method, url, headers, body, timeoutMs, assertFn) {
+  const target = assertFn(url);
+  const http = nativeHttp();
+  if (http) {
+    const req = {
+      url: target,
+      headers: { "User-Agent": UA, Accept: "application/json,text/html,*/*", ...headers },
+      connectTimeout: timeoutMs,
+      readTimeout: timeoutMs,
+      disableRedirects: false,
+    };
+    if (body !== undefined) {
+      req.data = body;
+      req.headers["Content-Type"] = "application/json";
+    }
+    const res = method === "POST" ? await http.post(req) : await http.get(req);
+    const status = res.status || 0;
+    const data =
+      typeof res.data === "string"
+        ? (() => {
+            try {
+              return JSON.parse(res.data || "{}");
+            } catch {
+              return { raw: res.data };
+            }
+          })()
+        : res.data || {};
+    const cookie = parseCookie(res.headers && (res.headers["Set-Cookie"] || res.headers["set-cookie"]));
+    if (cookie) data._cookie = cookie;
+    if (status >= 400) {
+      const err = new Error((data && (data.detail || data.error)) || `http ${status}`);
+      err.status = status;
+      throw err;
+    }
+    return data;
+  }
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const init = {
+      method,
+      signal: ctrl.signal,
+      redirect: "follow",
+      headers: { "User-Agent": UA, Accept: "application/json,text/html,*/*", ...headers },
+    };
+    if (body !== undefined) {
+      init.headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+    const res = await fetch(target, init);
+    const data = await res.json().catch(() => ({}));
+    const cookie = parseCookie(res.headers.get("set-cookie"));
+    if (cookie) data._cookie = cookie;
+    if (!res.ok) throw new Error((data.detail || data.error) || `http ${res.status}`);
+    return data;
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
@@ -55,40 +136,17 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
   }
 }
 
+export async function httpLanGet(url, timeoutMs = 10000, extraHeaders = {}) {
+  const data = await request("GET", url, extraHeaders, undefined, timeoutMs, assertLan);
+  return data;
+}
+
 export async function httpPostJson(url, headers, payload, timeoutMs = 60000) {
-  const http = nativeHttp();
-  if (http) {
-    const res = await http.post({
-      url,
-      headers: { "Content-Type": "application/json", ...headers },
-      data: payload,
-      connectTimeout: timeoutMs,
-      readTimeout: timeoutMs,
-    });
-    const status = res.status || 0;
-    const data = typeof res.data === "string" ? JSON.parse(res.data || "{}") : res.data || {};
-    if (status >= 400) {
-      const err = new Error((data && (data.error && data.error.message)) || `http ${status}`);
-      err.status = status;
-      throw err;
-    }
-    return data;
-  }
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify(payload),
-      signal: ctrl.signal,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error((data.error && data.error.message) || `http ${res.status}`);
-    return data;
-  } finally {
-    clearTimeout(t);
-  }
+  return request("POST", url, headers, payload, timeoutMs, assertPublic);
+}
+
+export async function httpLanPostJson(url, headers, payload, timeoutMs = 60000) {
+  return request("POST", url, headers, payload, timeoutMs, assertLan);
 }
 
 export async function openUrl(url, opts = {}) {

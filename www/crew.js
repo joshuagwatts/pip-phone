@@ -48,4 +48,20 @@ export function isBlank(text) {
   return BLANK.test(text || "");
 }
 
+const WEIRD = /^\s*(\{[\s\S]*"name"\s*:|```|<\|im_start\|>|function\s+\w+\(|import\s+|const\s+\w+\s*=|def\s+\w+\()/;
+
+export function sanitizeReply(text) {
+  let t = String(text || "").trim();
+  if (!t) return "";
+  if (WEIRD.test(t) && !/[.!?]$/.test(t.slice(-1))) return "";
+  t = t.replace(/^pip\s*[:—-]\s*/i, "");
+  t = t.replace(/<\|im_start\|>assistant\s*/gi, "");
+  t = t.replace(/<\|im_end\|>/g, "");
+  t = t.replace(/```[\s\S]*?```/g, (block) => {
+    if (/json/i.test(block.slice(0, 20))) return "";
+    return block.replace(/```/g, "").trim();
+  });
+  return t.trim();
+}
+
 export const FALLBACK = "I slipped. Ask that again — I'll stay on the actual fire.";

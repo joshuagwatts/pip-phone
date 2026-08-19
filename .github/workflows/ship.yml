@@ -98,13 +98,22 @@ jobs:
           mv Pip-mac/Pip-Mac.dmg Pip-Mac.dmg
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.1
-          name: Pip
+          tag_name: v0.1.6
+          name: Pip v0.1.6
           body: |
-            - **Android** — Pip.apk. Same signing key going forward. If this one refuses to overlay, uninstall once, install this APK, then later updates sit on top.
-            - **Windows** — Pip-Windows.exe. Replace the old one. Run it.
-            - **Mac** — Pip-Mac.dmg. Right-click Open the first time (unsigned).
-            - **iPhone** — needs a Mac + Xcode. `npx cap sync ios` then Run on the device.
+            **Phone Pip v0.1.6** — cloud brains + desktop GPU pairing.
+
+            - **Grok / xAI** — DATA → LEAKY → pin GROK → paste XAI key → PROBE GROK
+            - **Cloud router** — Groq, OpenRouter, Cerebras, Mistral, Gemini wired (keys actually used now)
+            - **Desktop GPU** — pair to desktop Pip on same Wi‑Fi; COMM uses PC Ollama
+            - **Output cleanup** — less weird code/json spam from on-device Qwen
+            - **Biometric lock** — optional gate before keys/pairing (when sensor available)
+
+            **Install**
+            - **Android** — Pip.apk. Install over the previous build. KIT stays.
+            - **Windows** — Pip-Windows.exe
+            - **Mac** — Pip-Mac.dmg
+            - **Desktop Pip** — enable Phone LAN in DATA, set password, restart, pair from phone DATA tab
           files: |
             Pip.apk
             Pip-Windows.exe
