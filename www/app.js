@@ -1,5 +1,5 @@
 import { load, save, KIT_LABELS } from "./store.js";
-import { chat, draftAnswers, ensurePip, pipStatus, activeBrain, cloudStatus } from "./brain.js";
+import { chat, draftAnswers, ensurePip, pipStatus, activeBrain, cloudStatus, takePendingTheme } from "./brain.js";
 import { probeProvider, PROVIDERS } from "./cloud.js";
 import { desktopConfigured, desktopLogin, desktopStatus, findAndPair } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
@@ -7,21 +7,28 @@ import { biometricAvailable, guardSecrets } from "./biometric.js";
 import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
-import { hasNativeHttp, openUrl } from "./net.js";
+import { hasNativeHttp, openUrl, httpLanGet, httpLanPostJson } from "./net.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
 import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
+import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThemeRequest } from "./theme.js";
+import { captureMoment, topMoments } from "./memory.js";
+import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
+import { listEntries, applyAllOverlays } from "./codefs.js";
+import { loadFile, saveFile, getCodeChat, resetCodeChat, resetOverlays, streamCodeApply, consumeCodeStream } from "./code.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
 let tab = "opp";
 let pane = "list";
 let oppId = "";
+let calState = { calMonth: ym(), calDay: ymd() };
 let vibeMode = "motivation";
 let vibeStem = "sendoff";
 let lastShot = "";
 let radioClock = 0;
 let radioBusy = false;
+let codeState = { openFile: "style.css", body: "", dirty: false, chat: [], busy: false, model: "" };
 
 function setStatus(msg) {
   $("#status").textContent = String(msg || "").toUpperCase();
@@ -50,6 +57,8 @@ function render() {
   if (tab === "kit") renderKit();
   else if (tab === "data") renderData();
   else if (tab === "vibe") renderVibe();
+  else if (tab === "today") renderToday();
+  else if (tab === "code") renderCode();
   else renderOpp();
 }
 
@@ -387,6 +396,199 @@ function updateBrainChip() {
   renderPrivacy();
 }
 
+function renderToday() {
+  const root = $("#view");
+  root.innerHTML = `<div class="today-wrap"><div id="cal-root"></div><div class="story-strip" id="story-strip"></div></div>`;
+  const moments = topMoments(db, 5);
+  const strip = root.querySelector("#story-strip");
+  if (moments.length) {
+    strip.innerHTML = `<h3>YOUR STORY</h3>${moments.map((m) => `<p class="story-line">${esc(m.content)}</p>`).join("")}`;
+  } else {
+    strip.innerHTML = `<p class="muted">Substantive COMM lines stick here — goals, origin, why you make things. Not "bug again."</p>`;
+  }
+  renderCalendar(root.querySelector("#cal-root"), db, calState, {
+    esc,
+    persist,
+    onChange: () => renderToday(),
+  });
+}
+
+async function openCodeFile(name) {
+  const f = await loadFile(name);
+  codeState.openFile = f.path;
+  codeState.body = f.body;
+  codeState.dirty = false;
+}
+
+function paintCodeChat(scroll) {
+  const log = $("#code-log");
+  if (!log) return;
+  log.innerHTML = codeState.chat
+    .map(
+      (m) => `<div class="code-msg ${m.role}">
+      <div class="who">${m.role === "user" ? "YOU" : "PIP"}</div>
+      <div>${esc(m.text)}</div>
+      ${(m.tools || []).length ? `<div class="muted tools">${esc(m.tools.join(" · "))}</div>` : ""}
+    </div>`,
+    )
+    .join("");
+  if (scroll) log.scrollTop = log.scrollHeight;
+}
+
+async function sendCodePrompt(phoneUpgrade) {
+  if (codeState.busy) return;
+  const input = $("#code-input");
+  const prompt = (input?.value || "").trim();
+  if (!prompt) {
+    setStatus("SAY WHAT TO CHANGE");
+    return;
+  }
+  if (codeState.dirty) {
+    try {
+      await saveFile(codeState.openFile, $("#code-body").value);
+      codeState.dirty = false;
+    } catch (e) {
+      setStatus(String(e.message || e));
+      return;
+    }
+  }
+  input.value = "";
+  codeState.busy = true;
+  codeState.chat.push({ role: "user", text: prompt, tools: [] });
+  const pipMsg = { role: "pip", text: "", tools: [] };
+  codeState.chat.push(pipMsg);
+  paintCodeChat(true);
+  setStatus(phoneUpgrade ? "PC PHONE WWW…" : "CODE…");
+  try {
+    await consumeCodeStream(
+      streamCodeApply(db.settings, { prompt, openPath: codeState.openFile, phoneUpgrade }),
+      {
+        onStatus: (ev) => {
+          if (ev.model) codeState.model = ev.model;
+        },
+        onDelta: (t) => {
+          pipMsg.text += t;
+          paintCodeChat(true);
+        },
+        onTool: (ev) => {
+          pipMsg.tools.push(`${ev.name}${ev.args?.path ? " " + String(ev.args.path).split(/[\\/]/).pop() : ""}`);
+          paintCodeChat(true);
+        },
+        onWritten: async (path) => {
+          if (path === codeState.openFile || String(path).endsWith(codeState.openFile)) {
+            await openCodeFile(codeState.openFile);
+            const ta = $("#code-body");
+            if (ta) ta.value = codeState.body;
+          }
+        },
+        onError: (t) => {
+          pipMsg.text = pipMsg.text || t;
+          paintCodeChat(true);
+        },
+        onDone: async (ev) => {
+          if (ev.model) codeState.model = ev.model;
+          await openCodeFile(codeState.openFile);
+          const ta = $("#code-body");
+          if (ta) ta.value = codeState.body;
+          setStatus((ev.written || []).length ? `WROTE ${ev.written.length}` : "CODE DONE");
+          if (ev.reload) setStatus("RELOAD APP TO APPLY JS/HTML");
+        },
+      },
+    );
+  } catch (e) {
+    pipMsg.text = pipMsg.text || String(e.message || e);
+    paintCodeChat(true);
+    setStatus("CODE ERROR");
+  }
+  codeState.busy = false;
+}
+
+async function renderCode() {
+  document.body.classList.remove("comm");
+  if (!codeState.body) {
+    try {
+      await openCodeFile(codeState.openFile || "style.css");
+    } catch {
+      codeState.body = "";
+    }
+  }
+  codeState.chat = getCodeChat();
+  const entries = listEntries();
+  const paired = desktopConfigured(db.settings);
+  const leaky = !privacyOn(db.settings);
+  $("#view").innerHTML = `
+    <div class="code-wrap">
+      <h3>CODE</h3>
+      <p class="muted">${leaky ? "LEAKY — cloud coder edits phone www overlay." : "SECURE — flip LEAKY for on-device CODE, or pair desktop for UPGRADE PC."} CSS live · JS/HTML need RELOAD.</p>
+      <div class="code-bar">
+        <select id="code-file">${entries.map((e) => `<option value="${esc(e.name)}" ${e.name === codeState.openFile ? "selected" : ""}>${esc(e.name)}${e.overlay ? " *" : ""}</option>`).join("")}</select>
+        <button type="button" id="code-save">SAVE</button>
+        <button type="button" id="code-reload">RELOAD</button>
+      </div>
+      <textarea id="code-body" spellcheck="false">${esc(codeState.body)}</textarea>
+      <div class="code-chat">
+        <div id="code-log"></div>
+        <textarea id="code-input" rows="2" placeholder="Change the UI, fix a bug, add a tab…"></textarea>
+        <div class="code-actions">
+          <button type="button" id="code-send" class="primary">SEND</button>
+          ${paired ? `<button type="button" id="code-pc">UPGRADE PC</button>` : ""}
+          <button type="button" id="code-reset">RESET OVERLAY</button>
+          <button type="button" id="code-clear">CLEAR CHAT</button>
+        </div>
+        <p class="muted" id="code-model">${esc(codeState.model || "")}</p>
+      </div>
+    </div>`;
+  paintCodeChat(false);
+  $("#code-file").onchange = async (e) => {
+    if (codeState.dirty && !confirm("Discard unsaved edits?")) {
+      e.target.value = codeState.openFile;
+      return;
+    }
+    await openCodeFile(e.target.value);
+    $("#code-body").value = codeState.body;
+    codeState.dirty = false;
+  };
+  $("#code-body").oninput = () => {
+    codeState.dirty = true;
+  };
+  $("#code-save").onclick = async () => {
+    try {
+      await saveFile(codeState.openFile, $("#code-body").value);
+      codeState.body = $("#code-body").value;
+      codeState.dirty = false;
+      setStatus("SAVED · RELOAD IF JS");
+      renderCode();
+    } catch (e) {
+      setStatus(String(e.message || e));
+    }
+  };
+  $("#code-reload").onclick = () => location.reload();
+  $("#code-send").onclick = () => sendCodePrompt(false);
+  const pc = $("#code-pc");
+  if (pc) pc.onclick = () => sendCodePrompt(true);
+  $("#code-reset").onclick = () => {
+    if (!confirm("Clear all local code overlays and restore bundled files?")) return;
+    resetOverlays();
+    resetCodeChat();
+    codeState.chat = [];
+    codeState.dirty = false;
+    setStatus("OVERLAY CLEARED · RELOAD");
+    location.reload();
+  };
+  $("#code-clear").onclick = () => {
+    resetCodeChat();
+    codeState.chat = [];
+    paintCodeChat(false);
+    setStatus("CODE CHAT CLEARED");
+  };
+  $("#code-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendCodePrompt(false);
+    }
+  });
+}
+
 function renderData() {
   const s = db.settings;
   const cloud = cloudStatus(s);
@@ -438,6 +640,11 @@ function renderData() {
     <h3>LOCK</h3>
     <p class="muted">Require biometric unlock before opening keys or pairing. ${biometricAvailable() ? "Sensor available on this device." : "No sensor — lock is a soft gate."}</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
+    <h3>UI THEME</h3>
+    <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. COMM: "phthalo green" or "reset ui theme". Phone does not edit code files — only CSS variables.</p>
+    <div class="actions">
+      <button type="button" id="theme-reset" class="primary">RESET THEME</button>
+    </div>
     <h3>VPN (NEXT)</h3>
     <p class="muted">Tailscale / WireGuard pairing is on the roadmap so Phone Pip can reach your desktop GPU off Wi‑Fi. For now: same home network + Phone LAN.</p>
     <div class="field"><span>VPN NOTE</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="Tailscale hostname, WireGuard profile name…" /></div>
@@ -472,6 +679,17 @@ function renderData() {
       render();
     }).catch((e) => setStatus(String(e.message || e)));
   };
+
+  const themeResetBtn = $("#theme-reset");
+  if (themeResetBtn) {
+    themeResetBtn.onclick = () => {
+      resetTheme(db.settings);
+      persist();
+      render();
+      renderPrivacy();
+      setStatus("THEME RESET · PHOSPHOR GREEN");
+    };
+  }
 
   $("#desk-pair").onclick = () => {
     guardSecrets(db.settings, async () => {
@@ -732,10 +950,43 @@ async function sendChat() {
   box.value = "";
   db.chat.push({ role: "user", content: text });
   addLog("user", text);
+  captureMoment(db, text);
   persist();
   setStatus(pipStatus());
+
+  const themeHit = tryThemeCommand(text, db.settings);
+  if (themeHit) {
+    persist();
+    addLog("pip", themeHit.reply);
+    setStatus(themeHit.ok ? "THEME APPLIED" : "THEME");
+    render();
+    renderPrivacy();
+    if (desktopConfigured(db.settings) && themeHit.ok) {
+      try {
+        const tok = String(db.settings.desktop_token || "").trim();
+        const base = db.settings.desktop_url.replace(/\/+$/, "");
+        await httpLanPostJson(`${base}/api/theme`, tok ? { Cookie: `pip_gate=${tok}` } : {}, { accent: themeHit.name }, 8000);
+      } catch {
+        /* local theme still applied */
+      }
+    }
+    return;
+  }
+
+  if (looksLikeThemeRequest(text)) {
+    addLog("pip", "Name the color clearly — e.g. phthalo green. Or say reset ui theme.");
+    setStatus("THEME · NEED COLOR NAME");
+    return;
+  }
+
   try {
-    const reply = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit);
+    const reply = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit, db);
+    const pending = takePendingTheme();
+    if (pending && applyThemePayload(db.settings, pending)) {
+      persist();
+      render();
+      renderPrivacy();
+    }
     db.chat.push({ role: "pip", content: reply });
     persist();
     addLog("pip", reply);
@@ -746,6 +997,8 @@ async function sendChat() {
 }
 
 function boot() {
+  bootTheme(db.settings);
+  applyAllOverlays();
   db.chat.slice(-20).forEach((m) => addLog(m.role === "user" ? "user" : "pip", m.content));
   if (!db.chat.length) addLog("pip", "Phone Pip. OPP is the job. Kit stays honest. I draft. You paste. I do not submit.");
   $("#tabs").onclick = (e) => {
@@ -776,7 +1029,11 @@ function boot() {
   renderPrivacy();
   setStatus("PIP // WAKING");
   ensurePip((msg) => setStatus(msg))
-    .then(() => {
+    .then(async () => {
+      if (desktopConfigured(db.settings)) {
+        await syncEventsFromDesktop(db.settings, db).catch(() => {});
+        persist();
+      }
       setStatus("PIP ON DECK");
       updateBrainChip();
     })

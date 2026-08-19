@@ -24,6 +24,8 @@ function blank() {
     kit: { ...emptyKit(), resume: "", digest: { sources: [], links_key: "" } },
     opps: [],
     chat: [],
+    moments: [],
+    events: [],
     dirty: { answers: [] },
     settings: {
       operator: "Joshua",
@@ -42,6 +44,8 @@ function blank() {
       desktop_paired: false,
       biometric_lock: false,
       vpn_note: "",
+      ui_theme: null,
+      ui_theme_name: "",
     },
   };
 }
@@ -60,6 +64,8 @@ export function load() {
       settings,
       opps: Array.isArray(raw.opps) ? raw.opps : [],
       chat: Array.isArray(raw.chat) ? raw.chat : [],
+      moments: Array.isArray(raw.moments) ? raw.moments : [],
+      events: Array.isArray(raw.events) ? raw.events : [],
     };
   } catch {
     return blank();

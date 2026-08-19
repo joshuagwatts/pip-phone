@@ -40,6 +40,7 @@ export function talkSystem(operator, humor, honesty, kit) {
     `Humor ${n}/100 (${humorBand(n)}). Honesty ${Number(honesty) || 90}/100.`,
     `Operator: ${name}.${one ? " " + String(one).slice(0, 180) : ""}`,
     "This turn is conversation, not a ticket. Stay Pip. Inspire without a speech.",
+    "UI color tweaks: theme engine in COMM (phthalo green, reset ui theme). Source edits: CODE tab — read/write www files. Never claim you edited files unless CODE tools ran.",
     CREW_LOCK,
   ].join("\n");
 }

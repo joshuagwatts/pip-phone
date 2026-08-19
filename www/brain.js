@@ -14,7 +14,14 @@ let backend = null;
 let loading = null;
 let lastProgress = "";
 let lastBrain = { label: "QWEN", provider: "local" };
+let pendingTheme = null;
 const listeners = new Set();
+
+export function takePendingTheme() {
+  const hit = pendingTheme;
+  pendingTheme = null;
+  return hit;
+}
 
 export function brainReady() {
   return true;
@@ -228,6 +235,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   track(onProgress);
   const errors = [];
   const cloud = cloudStatus(settings);
+  pendingTheme = null;
 
   if (cloud.leaky && cloud.pin === "xai" && cloud.grok) {
     try {
@@ -252,6 +260,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       const cleaned = sanitizeReply(out.text);
       if (cleaned && !isBlank(cleaned)) {
         setBrain("desktop", out.model);
+        if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
         return cleaned;
       }
       errors.push("desktop: blank reply");
@@ -316,11 +325,22 @@ async function complete(messages, temperature = 0.7, maxTokens = 400, settings =
   return localComplete(messages, temperature, maxTokens);
 }
 
-export async function chat(settings, history, text, onProgress, kit) {
+export async function chat(settings, history, text, onProgress, kit, db) {
   track(onProgress);
   const operator = settings.operator || "Joshua";
+  let momentLine = "";
+  if (db) {
+    try {
+      const { storyBrief } = await import("./memory.js");
+      momentLine = storyBrief(db, 10, 14);
+    } catch {
+      /* optional */
+    }
+  }
+  const sysBase = talkSystem(operator, settings.humor, settings.honesty, kit);
+  const system = momentLine ? `${sysBase}\n${momentLine}` : sysBase;
   const messages = [
-    { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
+    { role: "system", content: system },
     ...SHOTS,
     ...history.slice(-8).map((m) => ({
       role: m.role === "user" ? "user" : "assistant",

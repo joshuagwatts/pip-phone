@@ -120,18 +120,20 @@ export async function desktopChat(settings, text) {
   const url = baseUrl(settings);
   const tok = token(settings);
   if (!url || !tok) throw new Error("desktop not paired");
-  const data = await httpLanPostJson(
+  const raw = await httpLanPostJson(
     `${url}/api/chat`,
     { Cookie: `pip_gate=${tok}` },
     { text },
     120000,
   );
-  const reply = String(data.reply || data.content || "").trim();
+  const reply = String(raw.reply || raw.content || "").trim();
   if (!reply) throw new Error("desktop empty reply");
   return {
     text: reply,
     provider: "desktop",
-    model: String((data.router && data.router.model) || (data.ollama && data.ollama.using) || "ollama"),
+    model: String((raw.router && raw.router.model) || (raw.ollama && raw.ollama.using) || "ollama"),
+    theme: raw.theme || null,
+    theme_name: raw.theme_name || "",
   };
 }
 
