@@ -72,7 +72,7 @@ export function classify(title, url, questions) {
     for (const s of spec.anti) if (blob.includes(s)) n -= 4;
     scores[id] = n;
   }
-  if (blob.includes("festival") && blob.includes("install")) scores.festival_install += 3;
+  if (/wakaan/i.test(blob)) scores.festival_install += 8;
   if (blob.includes("mural")) scores.festival_artist += 3;
   if (blob.includes("public art") || blob.includes(" rfp")) scores.city_art += 3;
   if (blob.includes("musician") || blob.includes("dj application")) scores.music += 3;

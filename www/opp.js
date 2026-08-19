@@ -410,11 +410,11 @@ export function answerFromKit(question, kit, title, qtype, kind) {
     return (k.resume || stitch([k.one_liner, k.bio_long || k.bio_short, k.materials])).trim();
   }
   if (/artist bio|bio & experience|artist statement|about yourself|tell us about/.test(q)) {
+    const bio = stitch([k.bio_long || k.bio_short, k.origin, k.materials, k.one_liner]);
     if (kind === "job") return stitch([k.one_liner, k.bio_long || k.bio_short, k.materials]);
     if (kind === "music") {
       return stitch([
-        k.bio_short || k.bio_long,
-        k.materials,
+        bio,
         "Visual / live-visuals first. Music is in the toolkit — not a touring-DJ packet.",
       ]);
     }
@@ -423,16 +423,20 @@ export function answerFromKit(question, kit, title, qtype, kind) {
       return stitch([k.bio_long || k.bio_short, mural]);
     }
     if (kind === "city_art") return stitch([k.bio_long || k.bio_short, k.materials, "Civic work: site, public, durable."]);
-    return stitch([k.bio_long || k.bio_short]);
+    if (kind === "festival_install" || /wakaan/i.test(title || "")) {
+      return stitch([bio, k.resume ? String(k.resume).slice(0, 900) : ""]);
+    }
+    return bio;
   }
   if (/began|beginning|started|origin|how did you/.test(q)) return k.origin || k.bio_short || "";
   if (/description of installation|what do you make|medium|materials|practice|describe your work|the work/.test(q)) {
-    if (kind === "festival_artist") return k.materials || k.bio_short || "";
+    const piece = stitch([k.materials, k.one_liner, k.bio_short]);
+    if (kind === "festival_artist") return piece || k.bio_short || "";
     if (kind === "music") return stitch([k.materials, "Sound/Ableton if it's in KIT. Otherwise the live-visuals rig is the honest answer."]);
-    return k.materials || k.bio_short || "";
+    return piece;
   }
   if (/why this|why are you applying|why do you want|why apply|why our/.test(q)) {
-    const why = (k.why_festivals || k.bio_short || "").trim();
+    const why = (k.why_festivals || k.bio_short || k.one_liner || "").trim();
     if (!why) return "";
     if (kind === "job") return stitch([why, `This role at ${title || "this studio"} is the work I already do.`]);
     if (kind === "city_art") return stitch([why, `${title || "This site"} is a public room for that work.`]);
@@ -440,8 +444,27 @@ export function answerFromKit(question, kit, title, qtype, kind) {
     return `${why}\n\n${title || "This call"} is a room for that work.`;
   }
   if (/one-liner|tagline|one liner/.test(q)) return k.one_liner || "";
-  if (/footprint|how much space|dimensions/.test(q) && kind === "job") return "";
-  if (/budget|team size|power/.test(q) && (kind === "job" || kind === "music")) return "";
+  if (/footprint|how much space|dimensions/.test(q)) {
+    if (kind === "job") return "";
+    const hit = String(k.materials || k.origin || "").match(/.{0,40}(footprint|ft|feet|meter|space|x\d).{0,40}/i);
+    return hit ? hit[0].trim() : "";
+  }
+  if (/budget/.test(q)) {
+    if (kind === "job" || kind === "music") return "";
+    const hit = String(k.materials || k.origin || k.bio_long || "").match(/\$[\d,]+|\bbudget\b.{0,40}/i);
+    return hit ? hit[0].trim() : "";
+  }
+  if (/team size|crew/.test(q) && kind !== "job") {
+    const hit = String(k.materials || k.origin || "").match(/\b(\d+|solo|two|three|small crew)\b.{0,30}(people|crew|team|person)?/i);
+    return hit ? hit[0].trim() : "";
+  }
+  if (/power/.test(q) && kind !== "job" && kind !== "music") {
+    const hit = String(k.materials || k.origin || "").match(/.{0,20}(\d+\s?amp|\d+\s?watt|power|circuit).{0,30}/i);
+    return hit ? hit[0].trim() : "";
+  }
+  if (/anything else|acknowledged|team to know|wakaan team/.test(q)) {
+    return stitch([k.one_liner, [k.city, k.state, k.country].filter(Boolean).join(", "), k.links]);
+  }
   return "";
 }
 

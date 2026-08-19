@@ -23,6 +23,7 @@ function create() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  win.webContents.setUserAgent(`${win.webContents.getUserAgent()} PipDesktop/${app.getVersion()}`);
   win.loadFile(path.join(__dirname, "..", "www", "index.html"));
 }
 

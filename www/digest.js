@@ -268,11 +268,14 @@ async function digestInstagram(url) {
 
 function stripHtml(html) {
   return String(html || "")
+    .replace(/<(nav|footer|header|form)[\s\S]*?<\/\1>/gi, " ")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, "\n")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
     .replace(/\s+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -294,24 +297,165 @@ function extractSocials(html) {
   return found;
 }
 
+function metaContent(html, keys) {
+  const blob = String(html || "");
+  for (const key of keys) {
+    const re = new RegExp(
+      `<meta[^>]+(?:name|property)=["']${key}["'][^>]+content=["']([^"']+)["']`,
+      "i",
+    );
+    const alt = new RegExp(
+      `<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']${key}["']`,
+      "i",
+    );
+    const m = blob.match(re) || blob.match(alt);
+    if (m && m[1].trim()) return m[1].replace(/\s+/g, " ").trim();
+  }
+  return "";
+}
+
+function jsonLdPeople(html) {
+  const out = [];
+  const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(String(html || "")))) {
+    try {
+      const data = JSON.parse(m[1].replace(/&quot;/g, '"'));
+      const nodes = [];
+      const walk = (node) => {
+        if (!node) return;
+        if (Array.isArray(node)) {
+          node.forEach(walk);
+          return;
+        }
+        if (typeof node !== "object") return;
+        nodes.push(node);
+        if (node["@graph"]) walk(node["@graph"]);
+      };
+      walk(data);
+      for (const n of nodes) {
+        const t = String(n["@type"] || "");
+        if (/Person|Artist|Organization/i.test(t)) out.push(n);
+      }
+    } catch {
+      /* ignore bad json-ld */
+    }
+  }
+  return out;
+}
+
+function aboutLinks(html, base) {
+  const found = [];
+  const seen = new Set();
+  let origin;
+  try {
+    origin = new URL(base).origin;
+  } catch {
+    return found;
+  }
+  const re = /href=["']([^"'#]+)["']/gi;
+  let m;
+  while ((m = re.exec(String(html || "")))) {
+    try {
+      const u = new URL(m[1], base);
+      if (u.origin !== origin) continue;
+      const path = u.pathname.toLowerCase();
+      if (!/\/(about|about-me|aboutme|bio|biography|artist|cv|resume|statement|who)(\/|$)/i.test(path)) continue;
+      const url = u.toString().split("#")[0];
+      const key = url.replace(/\/+$/, "").toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push(url);
+    } catch {
+      continue;
+    }
+    if (found.length >= 3) break;
+  }
+  return found;
+}
+
+function mailtoOf(html) {
+  const m = String(html || "").match(/mailto:([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+  return m ? m[1] : "";
+}
+
+function telOf(html) {
+  const m = String(html || "").match(/tel:(\+?[0-9().\-\s]{7,})/i);
+  return m ? m[1].trim() : "";
+}
+
+const BIO_JUNK =
+  /cookie|subscribe|newsletter|add to cart|sign in|log in|privacy policy|all rights reserved|skip to|menu|home\s+about\s+contact/i;
+
+function paragraphBio(text) {
+  const paras = String(text || "")
+    .split(/\n{2,}/)
+    .map((p) => p.replace(/\s+/g, " ").trim())
+    .filter((p) => p.length >= 80 && p.length <= 1200 && !BIO_JUNK.test(p) && /[a-z]/i.test(p));
+  return paras[0] || "";
+}
+
+function headingBio(text) {
+  const m = String(text || "").match(
+    /(?:^|\n)\s*(about(?:\s+me|\s+the\s+artist)?|bio(?:graphy)?|artist statement|statement|who i am)\s*\n+([\s\S]{80,1600})/i,
+  );
+  if (!m) return "";
+  const chunk = m[2]
+    .split(/\n{2,}/)[0]
+    .replace(/\s+/g, " ")
+    .trim();
+  return chunk.length >= 60 && !BIO_JUNK.test(chunk) ? chunk.slice(0, 1200) : "";
+}
+
+function pickBio({ jsonLd, meta, heading, ig, body }) {
+  const ld = (jsonLd && (jsonLd.description || jsonLd.jobTitle)) || "";
+  const ranked = [heading, ld, ig, meta, paragraphBio(body)].map((s) => String(s || "").trim()).filter(Boolean);
+  return ranked[0] || "";
+}
+
+function materialsFrom(blob, crafts) {
+  if (crafts.length) return crafts.join(", ");
+  const m = String(blob || "").match(
+    /(?:i (?:make|create|build|work (?:with|in)|specialize in)|we (?:make|build) )\s*([^.!?\n]{12,180})/i,
+  );
+  return m ? m[0].trim().slice(0, 220) : "";
+}
+
+function takeField(cur, next, autoPrev) {
+  const now = String(cur || "").trim();
+  const add = String(next || "").trim();
+  if (!add) return now;
+  if (!now) return add;
+  if (autoPrev && now === autoPrev) return add;
+  return now;
+}
+
 async function digestSite(url) {
   const page = await httpGet(url, 16000);
   const html = page.body || "";
   const titleM = html.match(/<title[^>]*>(.*?)<\/title>/i);
-  const descM = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)/i)
-    || html.match(/property=["']og:description["'][^>]+content=["']([^"']+)/i);
-  const title = titleM ? titleM[1].replace(/\s+/g, " ").trim().slice(0, 120) : url;
-  const desc = descM ? descM[1].trim() : "";
-  const text = stripHtml(html).slice(0, 6000);
-  const body = [desc, text].filter(Boolean).join("\n\n").slice(0, 6000);
+  const people = jsonLdPeople(html);
+  const person = people[0] || {};
+  const title = (titleM ? titleM[1].replace(/\s+/g, " ").trim() : "") || person.name || url;
+  const desc = metaContent(html, ["description", "og:description", "twitter:description"]);
+  const text = stripHtml(html).slice(0, 12000);
+  const heading = headingBio(text);
+  const body = [desc, heading, text].filter(Boolean).join("\n\n").slice(0, 8000);
+  const email = mailtoOf(html) || (typeof person.email === "string" ? person.email.replace(/^mailto:/i, "") : "");
+  const phone = telOf(html);
+  const name = typeof person.name === "string" ? person.name : "";
   return {
     url: page.url || url,
     kind: kindOf(page.url || url),
-    title,
+    title: String(title).slice(0, 160),
     body,
     status: /sign in|log in|login to continue/i.test(html.slice(0, 2000)) ? "wall" : "ok",
     socials: extractSocials(html),
-    bio: desc,
+    about: aboutLinks(html, page.url || url),
+    bio: pickBio({ jsonLd: person, meta: desc, heading, body: text }),
+    email,
+    phone,
+    name,
   };
 }
 
@@ -362,15 +506,9 @@ export function assembleResume(kit, sources) {
   return lines.join("\n").trim() + "\n";
 }
 
-function fillEmpty(cur, next) {
-  const now = String(cur || "").trim();
-  const add = String(next || "").trim();
-  if (now) return now;
-  return add;
-}
-
 export async function ingestLinks(kit, onProgress) {
   const base = kit || {};
+  const prevAuto = (base.digest && base.digest.auto) || {};
   const urls = parseUrls(base.links || "");
   const sources = [];
   const seen = new Set();
@@ -388,24 +526,42 @@ export async function ingestLinks(kit, onProgress) {
       page = { url, kind: kindOf(url), title: url, body: "", status: "error", socials: [], note: String(err.message || err) };
     }
     sources.push(page);
+    const follow = [];
     if (page.kind === "site" || (page.kind === "instagram" && page.status === "ok")) {
-      for (const extra of (page.socials || []).slice(0, 6)) {
-        const n = extra.replace(/\/+$/, "").toLowerCase();
-        if (!seen.has(n)) queue.push(extra);
-      }
+      follow.push(...(page.socials || []).slice(0, 6));
+    }
+    if (page.kind === "site") follow.push(...(page.about || []).slice(0, 2));
+    for (const extra of follow) {
+      const n = extra.replace(/\/+$/, "").toLowerCase();
+      if (!seen.has(n)) queue.push(extra);
     }
     if (sources.length >= 16) break;
   }
   const ig = sources.find((s) => s.kind === "instagram" && s.status === "ok") || {};
   const site = sources.find((s) => s.kind === "site" && s.status === "ok") || {};
   const blob = sources.map((s) => s.body || "").join("\n");
-  const crafts = craftsFrom(blob);
+  const crafts = craftsFrom(blob + " " + (base.materials || ""));
+  const bio = pickBio({
+    jsonLd: { description: site.bio, name: site.name },
+    meta: site.bio,
+    heading: headingBio(site.body || blob),
+    ig: ig.bio,
+    body: blob,
+  });
+  const extracted = {
+    full_name: site.name || ig.name || "",
+    artist_name: (ig.title || "").replace(/^@/, "") || site.name || "",
+    email: site.email || "",
+    phone: site.phone || "",
+    one_liner: (bio || "").split(/(?<=[.!?])\s+/)[0].slice(0, 180),
+    bio_short: bio.slice(0, 700),
+    bio_long: (bio || site.body || ig.bio || "").slice(0, 1800),
+    materials: materialsFrom(blob, crafts),
+  };
   const next = { ...base };
-  next.artist_name = fillEmpty(next.artist_name, (ig.title || "").replace(/^@/, ""));
-  next.one_liner = fillEmpty(next.one_liner, (ig.bio || site.bio || "").split("\n")[0].slice(0, 180));
-  next.bio_short = fillEmpty(next.bio_short, (ig.bio || site.bio || "").slice(0, 700));
-  next.bio_long = fillEmpty(next.bio_long, (ig.bio || site.body || "").slice(0, 1800));
-  next.materials = fillEmpty(next.materials, crafts.join(", "));
+  for (const key of Object.keys(extracted)) {
+    next[key] = takeField(next[key], extracted[key], prevAuto[key]);
+  }
   const allUrls = [];
   for (const src of sources) {
     if (src.url && !allUrls.includes(src.url)) allUrls.push(src.url);
@@ -422,6 +578,7 @@ export async function ingestLinks(kit, onProgress) {
       chars: (s.body || "").length,
     })),
     links_key: next.links,
+    auto: extracted,
   };
   return next;
 }
@@ -429,6 +586,7 @@ export async function ingestLinks(kit, onProgress) {
 export function needsIngest(kit) {
   const links = String((kit && kit.links) || "").trim();
   if (!links) return false;
+  if (!(kit && kit.resume)) return true;
   const key = (kit.digest && kit.digest.links_key) || "";
   return key !== links;
 }

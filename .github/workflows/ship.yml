@@ -19,6 +19,21 @@ jobs:
           cache: npm
       - run: npm ci --omit=dev
       - run: npx cap sync android
+      - name: Stamp Android version
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, os, re
+          pkg = json.loads(Path("package.json").read_text())
+          name = str(pkg.get("version") or "0.1.4")
+          code = max(21, int(os.environ.get("GITHUB_RUN_NUMBER") or "21"))
+          p = Path("android/app/build.gradle")
+          t = p.read_text()
+          t = re.sub(r"versionCode \d+", f"versionCode {code}", t)
+          t = re.sub(r'versionName "[^"]+"', f'versionName "{name}"', t)
+          p.write_text(t)
+          print(f"Android {name} ({code})")
+          PY
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -86,8 +101,8 @@ jobs:
           tag_name: v0.1.1
           name: Pip
           body: |
-            - **Android** — Pip.apk. Open it on the phone. Allow install.
-            - **Windows** — Pip-Windows.exe. Run it.
+            - **Android** — Pip.apk. Open it on the phone. It updates over the app already there. Do not uninstall.
+            - **Windows** — Pip-Windows.exe. Replace the old one. Run it.
             - **Mac** — Pip-Mac.dmg. Right-click Open the first time (unsigned).
             - **iPhone** — needs a Mac + Xcode. `npx cap sync ios` then Run on the device.
           files: |

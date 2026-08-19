@@ -19,6 +19,31 @@ let lastShot = "";
 let radioClock = 0;
 let radioBusy = false;
 
+const RELEASE = "https://github.com/joshuagwatts/pip-phone/releases/latest/download";
+
+function pipPlatform() {
+  const cap = window.Capacitor;
+  if (cap && typeof cap.getPlatform === "function") {
+    const p = cap.getPlatform();
+    if (p && p !== "web") return p;
+  }
+  const ua = navigator.userAgent || "";
+  if (/PipDesktop/i.test(ua) && /Mac OS X/i.test(ua)) return "electron-mac";
+  if (/PipDesktop/i.test(ua)) return "electron-win";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "ios";
+  if (/Android/i.test(ua)) return "android";
+  return "web";
+}
+
+function updateTarget() {
+  const p = pipPlatform();
+  if (p === "android") return { href: `${RELEASE}/Pip.apk`, label: "UPDATE PIP" };
+  if (p === "electron-win") return { href: `${RELEASE}/Pip-Windows.exe`, label: "UPDATE PIP" };
+  if (p === "electron-mac") return { href: `${RELEASE}/Pip-Mac.dmg`, label: "UPDATE PIP" };
+  if (p === "ios") return { href: "https://github.com/joshuagwatts/pip-phone/releases/latest", label: "OPEN RELEASE" };
+  return { href: "https://github.com/joshuagwatts/pip-phone/releases/latest", label: "UPDATE PIP" };
+}
+
 function setStatus(msg) {
   $("#status").textContent = String(msg || "").toUpperCase();
 }
@@ -295,10 +320,18 @@ function bindPlace() {
 }
 
 function renderKit() {
+  const fields = KIT_LABELS.filter(([k]) => k !== "links");
   $("#view").innerHTML = `
     <h3>APPLICATION KIT</h3>
-    <p class="muted">This is you, every time. Ingest the links. Rebuild the resume. Then go make the thing they can walk into.</p>
-    ${KIT_LABELS.map(([k, label]) => {
+    <p class="muted">Paste the site. Ingest. Ingest again anytime — it rebuilds the resume. Do not uninstall Pip to update it.</p>
+    <div class="field kit-links-box">
+      <span>LINKS</span>
+      <textarea id="kit-links" placeholder="https://yoursite.com">${esc(db.kit.links || "")}</textarea>
+    </div>
+    <div class="actions">
+      <button type="button" class="primary" id="kit-ingest-top">INGEST LINKS</button>
+    </div>
+    ${fields.map(([k, label]) => {
       const short = k === "city" || k === "state" || k === "country";
       return `<div class="field"><span>${esc(label).toUpperCase()}</span>
         <textarea id="kit-${k}"${short ? ' class="short"' : ""}>${esc(db.kit[k] || "")}</textarea>
@@ -315,6 +348,8 @@ function renderKit() {
     setStatus("KIT SAVED");
   };
   $("#kit-ingest").onclick = runIngest;
+  const top = $("#kit-ingest-top");
+  if (top) top.onclick = runIngest;
 }
 
 function grabKitFields() {
@@ -332,6 +367,11 @@ async function runIngest() {
     db.kit = await ingestLinks(db.kit, setStatus);
     persist();
     render();
+    const box = $("#kit-links");
+    if (box) {
+      box.scrollIntoView({ block: "start" });
+      box.focus();
+    }
     const n = (db.kit.digest && db.kit.digest.sources && db.kit.digest.sources.length) || 0;
     setStatus(n ? `READ ${n} · RESUME READY` : "NOTHING PUBLIC ON THOSE LINKS");
   } catch (e) {
@@ -351,6 +391,9 @@ function renderData() {
     <div class="field"><span>HONESTY ${esc(s.honesty)}</span>
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
+    <h3>UPDATE</h3>
+    <p class="muted">Open the new file on this device. It installs over Pip. KIT stays. Do not uninstall first.</p>
+    <div class="actions"><button type="button" id="pip-update">${esc(updateTarget().label)}</button></div>
     <h3>OPTIONAL TURBO</h3>
     <p class="muted">Not required. COMM already runs on-device. Leave blank.</p>
     <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="optional" /></div>
@@ -367,6 +410,14 @@ function renderData() {
     setStatus("SAVED");
     render();
   };
+  const upd = $("#pip-update");
+  if (upd) {
+    upd.onclick = () => {
+      const hit = updateTarget();
+      openUrl(hit.href);
+      setStatus("OPEN THE FILE · INSTALL OVER PIP");
+    };
+  }
 }
 
 async function saveNew() {

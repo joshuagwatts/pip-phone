@@ -4,9 +4,11 @@ Same HUD on Android, iPhone, Mac, and Windows. OPP, kit, crew voice. Memory stay
 
 **[Downloads](https://github.com/joshuagwatts/pip-phone/releases/latest)** — `Pip.apk`, `Pip-Windows.exe`, `Pip-Mac.dmg`
 
+Open the new file on the device that already has Pip. It installs over the old one. KIT stays. Do not uninstall first.
+
 ## Android
 
-Download **Pip.apk**. Open it on the phone. Allow install from this source.
+Download **Pip.apk**. Open it. Allow install. Next time: DATA → UPDATE PIP, or download the APK again. Same app, higher version. KIT is still there.
 
 USB / Android Studio:
 
@@ -30,11 +32,9 @@ npx cap open ios
 
 In Xcode: pick your iPhone, sign with your Apple ID (free, 7-day), Run.
 
-Safari Add to Home Screen works for the HUD chrome. Hunt needs the Xcode app (native GET).
-
 ## Windows (this HUD)
 
-Download **Pip-Windows.exe**. Run it. No Python.
+Download **Pip-Windows.exe**. Replace the old file. Run it.
 
 Full local crew (Ollama, STUDIO, CODE, HANDS) is still this PiP folder: double-click `Pip.bat`.
 
