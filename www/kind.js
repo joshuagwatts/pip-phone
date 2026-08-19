@@ -98,15 +98,22 @@ export function labelOf(kind) {
   return (TYPES[kind] || TYPES.other).label;
 }
 
-export function placeRings(city) {
-  const home = String(city || "Edmond, Oklahoma").trim() || "Edmond, Oklahoma";
-  const rings = [home];
-  if (!/oklahoma city/i.test(home)) rings.push("Oklahoma City");
-  if (!/oklahoma/i.test(home)) rings.push("Oklahoma");
-  if (!/arkansas/i.test(home)) rings.push("Arkansas Ozarks");
-  if (!/texas/i.test(home)) rings.push("North Texas");
-  rings.push("United States");
-  return [...new Set(rings)];
+export function placeRings({ city, state, country } = {}) {
+  let c = String(city || "").trim();
+  let s = String(state || "").trim();
+  let nat = String(country || "").trim();
+  if (!c && !s && !nat) {
+    c = "Edmond";
+    s = "Oklahoma";
+    nat = "United States";
+  }
+  if (!nat) nat = "United States";
+  const rings = [];
+  const home = [c, s].filter(Boolean).join(", ");
+  if (home) rings.push(home);
+  if (s && !rings.some((r) => r.toLowerCase() === s.toLowerCase())) rings.push(s);
+  if (nat && !rings.some((r) => r.toLowerCase() === nat.toLowerCase())) rings.push(nat);
+  return rings;
 }
 
 export const TYPE_QUERIES = [

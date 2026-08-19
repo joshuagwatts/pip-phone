@@ -261,7 +261,9 @@ export function answerFromKit(question, kit, title, qtype, kind) {
   if (/artist name|moniker|business name|stage name|project name/.test(q)) return k.artist_name || name;
   if (/full name|legal name/.test(q) && !/artist/.test(q)) return name || k.artist_name || "";
   if (/\bname\b/.test(q) && q.length < 24) return name || k.artist_name || "";
-  if (/city|based|location|hometown|where do you live/.test(q)) return k.city || "";
+  if (/city|based|location|hometown|where do you live/.test(q)) {
+    return [k.city, k.state, k.country].filter(Boolean).join(", ");
+  }
   if (/instagram|website|portfolio|\blink\b|url|social/.test(q)) return k.links || "";
   if (/resume|cv|cover letter/.test(q)) return stitch([k.one_liner, k.bio_long || k.bio_short, k.materials]);
   if (/artist bio|bio & experience|artist statement|about yourself|tell us about/.test(q)) {
@@ -417,7 +419,7 @@ async function huntColossal(found) {
   }
 }
 
-export async function hunt(focus, { city, onProgress } = {}) {
+export async function hunt(focus, { city, state, country, onProgress } = {}) {
   const found = PINNED.map((p) => ({
     title: p.title,
     url: p.url,
@@ -429,7 +431,7 @@ export async function hunt(focus, { city, onProgress } = {}) {
   if (onProgress) onProgress("HUNT BOARDS");
   await huntArtcall(found);
   await huntColossal(found);
-  const rings = placeRings(city);
+  const rings = placeRings({ city, state, country });
   for (const place of rings) {
     if (found.length >= 40) break;
     if (onProgress) onProgress(`HUNT ${place.toUpperCase()}`);

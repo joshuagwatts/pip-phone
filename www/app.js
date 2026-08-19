@@ -258,6 +258,11 @@ function renderOpp() {
   }
   $("#view").innerHTML = `
     <h3>OPEN CALLS</h3>
+    <div class="place-row">
+      <div class="field"><span>CITY</span><input id="hunt-city" value="${esc(db.kit.city || "")}" placeholder="Edmond" /></div>
+      <div class="field"><span>STATE</span><input id="hunt-state" value="${esc(db.kit.state || "")}" placeholder="Oklahoma" /></div>
+      <div class="field span2"><span>COUNTRY</span><input id="hunt-country" value="${esc(db.kit.country || "")}" placeholder="United States" /></div>
+    </div>
     ${rows.map((o) => `
       <button type="button" class="opp-card" data-id="${esc(o.id)}">
         <b>${esc(o.title)}</b>
@@ -272,16 +277,32 @@ function renderOpp() {
   });
   $("#opp-add").onclick = () => { pane = "add"; render(); };
   $("#opp-hunt").onclick = runHunt;
+  bindPlace();
+}
+
+function bindPlace() {
+  const grab = () => {
+    db.kit.city = ($("#hunt-city")?.value || "").trim();
+    db.kit.state = ($("#hunt-state")?.value || "").trim();
+    db.kit.country = ($("#hunt-country")?.value || "").trim();
+    persist();
+  };
+  ["hunt-city", "hunt-state", "hunt-country"].forEach((id) => {
+    const el = $("#" + id);
+    if (el) el.onchange = grab;
+  });
 }
 
 function renderKit() {
   $("#view").innerHTML = `
     <h3>APPLICATION KIT</h3>
-    <p class="muted">Same answers every time. City is hunt home — Edmond, Oklahoma if empty — then it fans out. Copy. Don't rewrite for sport.</p>
-    ${KIT_LABELS.map(([k, label]) => `
-      <div class="field"><span>${esc(label).toUpperCase()}</span>
-        <textarea id="kit-${k}">${esc(db.kit[k] || "")}</textarea>
-      </div>`).join("")}
+    <p class="muted">Same answers every time. City, state, country is hunt home. Copy. Don't rewrite for sport.</p>
+    ${KIT_LABELS.map(([k, label]) => {
+      const short = k === "city" || k === "state" || k === "country";
+      return `<div class="field"><span>${esc(label).toUpperCase()}</span>
+        <textarea id="kit-${k}"${short ? ' class="short"' : ""}>${esc(db.kit[k] || "")}</textarea>
+      </div>`;
+    }).join("")}
     <div class="dock"><button type="button" class="primary" id="kit-save">SAVE KIT</button></div>`;
   $("#kit-save").onclick = () => {
     for (const [k] of KIT_LABELS) db.kit[k] = ($("#kit-" + k).value || "").trim();
@@ -392,7 +413,16 @@ async function draftThis() {
 async function runHunt() {
   setStatus("HUNTING…");
   try {
-    const found = await hunt("", { city: db.kit.city, onProgress: setStatus });
+    db.kit.city = ($("#hunt-city")?.value || db.kit.city || "").trim();
+    db.kit.state = ($("#hunt-state")?.value || db.kit.state || "").trim();
+    db.kit.country = ($("#hunt-country")?.value || db.kit.country || "").trim();
+    persist();
+    const found = await hunt("", {
+      city: db.kit.city,
+      state: db.kit.state,
+      country: db.kit.country,
+      onProgress: setStatus,
+    });
     const fresh = [];
     let n = 0;
     for (const hit of found) {

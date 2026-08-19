@@ -5,6 +5,8 @@ export const KIT_LABELS = [
   ["email", "Email"],
   ["phone", "Phone"],
   ["city", "City"],
+  ["state", "State"],
+  ["country", "Country"],
   ["artist_name", "Artist / project name"],
   ["one_liner", "One-liner"],
   ["bio_short", "Short bio"],
