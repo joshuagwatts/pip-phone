@@ -39,7 +39,7 @@ On **Phone Pip** (DATA tab):
 3. **TEST** — should say desktop online with your Ollama model
 4. COMM now prefers your PC's GPU
 
-**VPN (roadmap):** Tailscale / WireGuard so pairing works off home Wi‑Fi. For now, same network only.
+**VPN (v0.1.17+):** Desktop DATA → password + Phone LAN + VPN mode (Tailscale / WireGuard). Copy a URL into Phone Pip DATA → **VPN URL** → **PAIR VPN URL**, or use **FIND + PAIR** (tries VPN URLs before Wi‑Fi scan). WireGuard: desktop DATA → COPY PHONE WG → import in WireGuard app on phone.
 
 ## Android
 

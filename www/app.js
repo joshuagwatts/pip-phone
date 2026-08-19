@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, ensurePip, pipStatus, activeBrain, cloudStatus, takePendingTheme } from "./brain.js";
 import { probeProvider, PROVIDERS } from "./cloud.js";
-import { desktopConfigured, desktopLogin, desktopStatus, findAndPair } from "./desktop.js";
+import { desktopConfigured, desktopLogin, desktopStatus, findAndPair, pairAtUrl } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets } from "./biometric.js";
 import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
@@ -656,17 +656,21 @@ function renderData() {
     <div class="field"><span>HONESTY ${esc(s.honesty)}</span>
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
-    <h3>DESKTOP GPU</h3>
-    <p class="muted">Same Wi‑Fi as your PC. Desktop Pip DATA → enable Phone LAN + set a password. Tap FIND — no URL typing.</p>
-    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="Phone LAN password from desktop DATA" autocomplete="off" /></div>
+    <h3>REMOTE DESKTOP</h3>
+    <p class="muted">Pair to your PC for GPU/Ollama. Same Wi‑Fi, or off-network via Tailscale / WireGuard. Desktop Pip DATA → password + Phone LAN + VPN mode → copy a URL here.</p>
+    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="from desktop DATA → PHONE" autocomplete="off" /></div>
+    <div class="field"><span>VPN URL</span><input id="set-vurl" value="${esc(s.vpn_url || "")}" placeholder="http://100.x.x.x:7420 or http://10.8.0.1:7420" /></div>
+    <div class="field"><span>TAILSCALE HOST</span><input id="set-vhost" value="${esc(s.vpn_host || "")}" placeholder="optional · mypc.tail-scale.ts.net" /></div>
     <div class="actions">
       <button type="button" id="desk-find" class="primary">FIND + PAIR</button>
+      <button type="button" id="desk-vpn">PAIR VPN URL</button>
       <button type="button" id="desk-pair">${paired ? "RE-PAIR" : "PAIR"}</button>
       <button type="button" id="desk-test">TEST</button>
       <button type="button" id="desk-clear">FORGET</button>
     </div>
     <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="auto-filled by FIND" /></div>
     <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}` : "Not paired."}</p>
+    <div class="field"><span>VPN NOTES</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="WireGuard profile name, backup URLs…" /></div>
     <h3>BRAIN</h3>
     <p class="muted">${cloud.leaky ? `LEAKY on. Keyed: ${cloud.keyed.join(", ") || "none"}. Pin: ${cloud.pin}.` : "SECURE — cloud keys saved but not used until LEAKY. Tap SECURE/LEAKY in the header."} Grok needs LEAKY + pin xai + XAI key.</p>
     <div class="field"><span>PIN</span>
@@ -697,9 +701,6 @@ function renderData() {
     <div class="actions">
       <button type="button" id="theme-reset" class="primary">RESET THEME</button>
     </div>
-    <h3>VPN (NEXT)</h3>
-    <p class="muted">Tailscale / WireGuard pairing is on the roadmap so Phone Pip can reach your desktop GPU off Wi‑Fi. For now: same home network + Phone LAN.</p>
-    <div class="field"><span>VPN NOTE</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="Tailscale hostname, WireGuard profile name…" /></div>
     <h3>UPDATE</h3>
     <p class="muted" id="pip-ver">Opens GitHub. Download Pip.apk. Install over this app. KIT stays.</p>
     <div class="actions"><button type="button" id="pip-update">UPDATE PIP</button></div>
@@ -718,6 +719,8 @@ function renderData() {
     db.settings.gemini = $("#set-gemini").value.trim();
     db.settings.xai = $("#set-xai").value.trim();
     db.settings.desktop_url = $("#set-durl").value.trim();
+    db.settings.vpn_url = ($("#set-vurl") && $("#set-vurl").value.trim()) || "";
+    db.settings.vpn_host = ($("#set-vhost") && $("#set-vhost").value.trim()) || "";
     db.settings.biometric_lock = Boolean($("#set-bio").checked);
     db.settings.vpn_note = $("#set-vpn").value.trim();
     persist();
@@ -779,9 +782,10 @@ function renderData() {
         db.settings.desktop_url = out.url;
         db.settings.desktop_token = out.token || "loopback";
         db.settings.desktop_paired = true;
+        if (!db.settings.vpn_url && out.via && out.via !== out.url) db.settings.vpn_url = out.via;
         persist();
         $("#set-durl").value = out.url;
-        $("#desk-msg").textContent = `Paired · ${out.url}`;
+        $("#desk-msg").textContent = `Paired · ${out.url}${out.vpn ? " · VPN" : ""}`;
         setStatus("DESKTOP FOUND + PAIRED");
         renderPrivacy();
       } catch (e) {
@@ -789,6 +793,36 @@ function renderData() {
       }
     }).catch((e) => setStatus(String(e.message || e)));
   };
+
+  const deskVpn = $("#desk-vpn");
+  if (deskVpn) {
+    deskVpn.onclick = () => {
+      guardSecrets(db.settings, async () => {
+        grabSettings();
+        const pass = ($("#set-dpass").value || "").trim();
+        const url = ($("#set-vurl").value || "").trim();
+        if (!pass || !url) {
+          setStatus("NEED PASSWORD + VPN URL");
+          return;
+        }
+        setStatus("PAIRING VPN…");
+        try {
+          const out = await pairAtUrl(db.settings, pass, url, (msg) => setStatus(msg));
+          db.settings.desktop_url = out.url;
+          db.settings.desktop_token = out.token || "loopback";
+          db.settings.desktop_paired = true;
+          db.settings.vpn_url = url;
+          persist();
+          $("#set-durl").value = out.url;
+          $("#desk-msg").textContent = `Paired via VPN · ${out.url}`;
+          setStatus("VPN PAIRED");
+          renderPrivacy();
+        } catch (e) {
+          setStatus(String(e.message || e));
+        }
+      }).catch((e) => setStatus(String(e.message || e)));
+    };
+  }
 
   $("#desk-test").onclick = () => {
     grabSettings();
@@ -799,8 +833,9 @@ function renderData() {
         return;
       }
       const model = (st.ollama && st.ollama.using) || "ollama";
-      setStatus(`DESKTOP OK · ${model}`);
-      $("#desk-msg").textContent = `Online · auth ${st.auth ? "yes" : "no"} · ${model}`;
+      const vpn = st.phone_vpn ? ` · VPN ${st.vpn_mode || "on"}` : "";
+      setStatus(`DESKTOP OK · ${model}${vpn}`);
+      $("#desk-msg").textContent = `Online · auth ${st.auth ? "yes" : "no"} · ${model}${vpn}`;
     });
   };
 

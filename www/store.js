@@ -43,6 +43,8 @@ function blank() {
       desktop_token: "",
       desktop_paired: false,
       biometric_lock: false,
+      vpn_url: "",
+      vpn_host: "",
       vpn_note: "",
       ui_theme: null,
       ui_theme_name: "",
