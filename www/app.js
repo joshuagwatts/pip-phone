@@ -1,5 +1,8 @@
 import { load, save, KIT_LABELS } from "./store.js";
-import { chat, draftAnswers, ensurePip, pipStatus } from "./brain.js";
+import { chat, draftAnswers, ensurePip, pipStatus, activeBrain, cloudStatus } from "./brain.js";
+import { probeProvider, PROVIDERS } from "./cloud.js";
+import { desktopConfigured, desktopLogin, desktopStatus } from "./desktop.js";
+import { biometricAvailable, guardSecrets } from "./biometric.js";
 import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
@@ -361,11 +364,21 @@ async function runIngest() {
   }
 }
 
+function updateBrainChip() {
+  const chip = $("#mode-chip");
+  if (!chip) return;
+  if (desktopConfigured(db.settings)) chip.textContent = activeBrain().label || "DESKTOP";
+  else if (!cloudStatus(db.settings).leaky) chip.textContent = activeBrain().label || "QWEN";
+  else chip.textContent = activeBrain().label || "CLOUD";
+}
+
 function renderData() {
   const s = db.settings;
+  const cloud = cloudStatus(s);
+  const paired = desktopConfigured(s);
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">This phone is crew in your pocket. KIT is you. HUNT finds rooms. DRAFT THIS writes from the kit. COMM is Pip. Enjoy the contribution.</p>
+    <p class="muted">Crew in your pocket. KIT is you. OPP is the job. COMM routes: desktop GPU → cloud (LEAKY) → on-device Qwen.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -373,25 +386,136 @@ function renderData() {
     <div class="field"><span>HONESTY ${esc(s.honesty)}</span>
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
+    <h3>DESKTOP GPU</h3>
+    <p class="muted">On desktop Pip: DATA → enable Phone LAN + set a password. Then pair here on the same Wi‑Fi. COMM uses your PC's Ollama/GPU.</p>
+    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.42:7420" /></div>
+    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="Phone LAN password from desktop DATA" /></div>
+    <div class="actions">
+      <button type="button" id="desk-pair" class="primary">${paired ? "RE-PAIR" : "PAIR"}</button>
+      <button type="button" id="desk-test">TEST</button>
+      <button type="button" id="desk-clear">FORGET</button>
+    </div>
+    <p class="muted" id="desk-msg">${paired ? "Paired. COMM prefers desktop GPU." : "Not paired."}</p>
+    <h3>BRAIN</h3>
+    <div class="field"><span>POSTURE</span>
+      <select id="set-privacy">
+        <option value="secure" ${s.privacy_mode !== "leaky" ? "selected" : ""}>SECURE — on-device only</option>
+        <option value="leaky" ${s.privacy_mode === "leaky" ? "selected" : ""}>LEAKY — cloud APIs allowed</option>
+      </select>
+    </div>
+    <div class="field"><span>PIN</span>
+      <select id="set-pin">
+        <option value="auto" ${s.brain_pin === "auto" ? "selected" : ""}>AUTO</option>
+        <option value="local" ${s.brain_pin === "local" ? "selected" : ""}>LOCAL ONLY</option>
+        ${PROVIDERS.map((p) => `<option value="${p.id}" ${s.brain_pin === p.id ? "selected" : ""}>${p.label}${p.fishy ? " (pin-only)" : ""}</option>`).join("")}
+      </select>
+    </div>
+    <p class="muted">${cloud.leaky ? `LEAKY on. Keyed: ${cloud.keyed.join(", ") || "none"}. Pin: ${cloud.pin}.` : "SECURE — cloud keys saved but not used until LEAKY."} Grok needs LEAKY + pin GROK + XAI key.</p>
+    <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="optional" autocomplete="off" /></div>
+    <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="optional" autocomplete="off" /></div>
+    <div class="field"><span>CEREBRAS</span><input id="set-cerebras" type="password" value="${esc(s.cerebras)}" placeholder="optional" autocomplete="off" /></div>
+    <div class="field"><span>MISTRAL</span><input id="set-mistral" type="password" value="${esc(s.mistral)}" placeholder="optional" autocomplete="off" /></div>
+    <div class="field"><span>GEMINI</span><input id="set-gemini" type="password" value="${esc(s.gemini)}" placeholder="pin-only · optional" autocomplete="off" /></div>
+    <div class="field"><span>GROK / XAI</span><input id="set-xai" type="password" value="${esc(s.xai)}" placeholder="pin-only · grok-3-mini" autocomplete="off" /></div>
+    <div class="actions">
+      <button type="button" id="probe-grok">PROBE GROK</button>
+      <button type="button" id="probe-groq">PROBE GROQ</button>
+    </div>
+    <h3>LOCK</h3>
+    <p class="muted">Require biometric unlock before opening keys or pairing. ${biometricAvailable() ? "Sensor available on this device." : "No sensor — lock is a soft gate."}</p>
+    <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
+    <h3>VPN (NEXT)</h3>
+    <p class="muted">Tailscale / WireGuard pairing is on the roadmap so Phone Pip can reach your desktop GPU off Wi‑Fi. For now: same home network + Phone LAN.</p>
+    <div class="field"><span>VPN NOTE</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="Tailscale hostname, WireGuard profile name…" /></div>
     <h3>UPDATE</h3>
-    <p class="muted" id="pip-ver">Opens GitHub. Download Pip.apk. Install over this app. KIT stays. First time on a new signing key may still ask you to uninstall once — after that, updates overlay.</p>
+    <p class="muted" id="pip-ver">Opens GitHub. Download Pip.apk. Install over this app. KIT stays.</p>
     <div class="actions"><button type="button" id="pip-update">UPDATE PIP</button></div>
-    <h3>OPTIONAL TURBO</h3>
-    <p class="muted">Not required. COMM already runs on-device. Leave blank.</p>
-    <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="optional" /></div>
-    <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="optional" /></div>
     <p class="muted">${hasNativeHttp() ? "Native app: can read public apply pages." : "Browser preview: paste questions if a page blocks the read."}</p>
     <div class="dock"><button type="button" class="primary" id="data-save">SAVE</button></div>`;
-  $("#data-save").onclick = () => {
+
+  const grabSettings = () => {
     db.settings.operator = $("#set-op").value.trim();
     db.settings.humor = Number($("#set-humor").value);
     db.settings.honesty = Number($("#set-honesty").value);
+    db.settings.privacy_mode = $("#set-privacy").value;
+    db.settings.brain_pin = $("#set-pin").value;
     db.settings.groq = $("#set-groq").value.trim();
     db.settings.openrouter = $("#set-or").value.trim();
+    db.settings.cerebras = $("#set-cerebras").value.trim();
+    db.settings.mistral = $("#set-mistral").value.trim();
+    db.settings.gemini = $("#set-gemini").value.trim();
+    db.settings.xai = $("#set-xai").value.trim();
+    db.settings.desktop_url = $("#set-durl").value.trim();
+    db.settings.biometric_lock = Boolean($("#set-bio").checked);
+    db.settings.vpn_note = $("#set-vpn").value.trim();
     persist();
-    setStatus("SAVED");
+  };
+
+  $("#data-save").onclick = () => {
+    guardSecrets(db.settings, () => {
+      grabSettings();
+      setStatus("SAVED");
+      updateBrainChip();
+      render();
+    }).catch((e) => setStatus(String(e.message || e)));
+  };
+
+  $("#desk-pair").onclick = () => {
+    guardSecrets(db.settings, async () => {
+      grabSettings();
+      const pass = ($("#set-dpass").value || "").trim();
+      if (!db.settings.desktop_url) {
+        setStatus("SET DESKTOP URL");
+        return;
+      }
+      setStatus("PAIRING…");
+      try {
+        const out = await desktopLogin(db.settings, pass);
+        db.settings.desktop_token = out.token || "loopback";
+        db.settings.desktop_paired = true;
+        persist();
+        $("#desk-msg").textContent = "Paired. COMM prefers desktop GPU.";
+        setStatus("DESKTOP PAIRED");
+        updateBrainChip();
+      } catch (e) {
+        setStatus(String(e.message || e));
+      }
+    }).catch((e) => setStatus(String(e.message || e)));
+  };
+
+  $("#desk-test").onclick = () => {
+    grabSettings();
+    setStatus("TESTING DESKTOP…");
+    desktopStatus(db.settings).then((st) => {
+      if (!st.ok) {
+        setStatus(st.error || "DESKTOP OFFLINE");
+        return;
+      }
+      const model = (st.ollama && st.ollama.using) || "ollama";
+      setStatus(`DESKTOP OK · ${model}`);
+      $("#desk-msg").textContent = `Online · auth ${st.auth ? "yes" : "no"} · ${model}`;
+    });
+  };
+
+  $("#desk-clear").onclick = () => {
+    db.settings.desktop_token = "";
+    db.settings.desktop_paired = false;
+    persist();
+    setStatus("DESKTOP FORGOTTEN");
+    updateBrainChip();
     render();
   };
+
+  const runProbe = (id) => {
+    grabSettings();
+    setStatus(`PROBING ${id.toUpperCase()}…`);
+    probeProvider(db.settings, id).then((r) => {
+      setStatus(r.ok ? `${id.toUpperCase()} OK` : (r.error || "PROBE FAILED"));
+    });
+  };
+  $("#probe-grok").onclick = () => runProbe("xai");
+  $("#probe-groq").onclick = () => runProbe("groq");
+
   const upd = $("#pip-update");
   if (upd) {
     upd.onclick = async () => {
@@ -578,6 +702,7 @@ async function sendChat() {
     db.chat.push({ role: "pip", content: reply });
     persist();
     addLog("pip", reply);
+    updateBrainChip();
   } catch (e) {
     addLog("pip", String(e.message || e));
   }
@@ -601,11 +726,13 @@ function boot() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
   render();
-  const chip = $("#mode-chip");
-  if (chip) chip.textContent = "QWEN";
+  updateBrainChip();
   setStatus("PIP // WAKING");
   ensurePip((msg) => setStatus(msg))
-    .then(() => setStatus("PIP ON DECK"))
+    .then(() => {
+      setStatus("PIP ON DECK");
+      updateBrainChip();
+    })
     .catch((e) => setStatus(String(e.message || e).toUpperCase()));
 }
 

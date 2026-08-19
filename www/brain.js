@@ -1,4 +1,6 @@
-import { FALLBACK, isBlank, talkSystem, SHOTS } from "./crew.js";
+import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS } from "./crew.js";
+import { cloudComplete, cloudStatus } from "./cloud.js";
+import { desktopChat, desktopConfigured } from "./desktop.js";
 import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
 
@@ -11,6 +13,7 @@ const QWEN_TF = "onnx-community/Qwen2.5-0.5B-Instruct";
 let backend = null;
 let loading = null;
 let lastProgress = "";
+let lastBrain = { label: "QWEN", provider: "local" };
 const listeners = new Set();
 
 export function brainReady() {
@@ -23,10 +26,30 @@ export function pipStatus() {
   return "PIP ON DECK";
 }
 
+export function activeBrain() {
+  return { ...lastBrain };
+}
+
+function setBrain(provider, model) {
+  const label =
+    provider === "desktop"
+      ? "DESKTOP"
+      : provider === "xai"
+        ? "GROK"
+        : provider === "local"
+          ? "QWEN"
+          : String(provider || "QWEN").toUpperCase();
+  lastBrain = { label, provider: provider || "local", model: model || "" };
+}
+
 function emit(msg) {
   lastProgress = String(msg || "").slice(0, 56);
   for (const fn of listeners) {
-    try { fn(lastProgress); } catch { /* ignore */ }
+    try {
+      fn(lastProgress);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -44,6 +67,27 @@ async function loadMod(urls) {
     }
   }
   throw new Error(last || "could not load Qwen runtime");
+}
+
+function formatQwenChat(messages) {
+  let out = "";
+  for (const m of messages) {
+    const role = m.role === "assistant" ? "assistant" : m.role === "system" ? "system" : "user";
+    out += `<|im_start|>${role}\n${m.content || ""}\n`;
+  }
+  out += "<|im_start|>assistant\n";
+  return out;
+}
+
+function stripQwenAssistant(raw, prompt) {
+  let text = String(raw || "");
+  if (prompt && text.startsWith(prompt)) text = text.slice(prompt.length);
+  const marker = "<|im_start|>assistant";
+  const idx = text.lastIndexOf(marker);
+  if (idx >= 0) text = text.slice(idx + marker.length);
+  text = text.split("<|im_end|>")[0];
+  text = text.split("<|im_start|>")[0];
+  return sanitizeReply(text.trim());
 }
 
 async function makeWebLlm() {
@@ -91,19 +135,19 @@ function tfProgress(info) {
   }
 }
 
-function tfText(out) {
+function tfText(out, prompt) {
   const row = Array.isArray(out) ? out[0] : out;
   const gen = row && row.generated_text;
-  if (typeof gen === "string") return gen.trim();
+  if (typeof gen === "string") return stripQwenAssistant(gen, prompt);
   if (Array.isArray(gen)) {
     for (let i = gen.length - 1; i >= 0; i -= 1) {
       const turn = gen[i];
-      if (turn && turn.role === "assistant" && turn.content) return String(turn.content).trim();
+      if (turn && turn.role === "assistant" && turn.content) return sanitizeReply(String(turn.content));
     }
     const last = gen[gen.length - 1];
-    if (last && last.content) return String(last.content).trim();
+    if (last && last.content) return sanitizeReply(String(last.content));
   }
-  return String((row && (row.text || row.content)) || "").trim();
+  return sanitizeReply(String((row && (row.text || row.content)) || ""));
 }
 
 async function makeTransformers() {
@@ -123,12 +167,14 @@ async function makeTransformers() {
   return {
     kind: "tf",
     complete: async (messages, temperature, maxTokens) => {
-      const out = await generator(messages, {
+      const prompt = formatQwenChat(messages);
+      const out = await generator(prompt, {
         max_new_tokens: maxTokens,
         temperature,
         do_sample: temperature > 0.15,
+        return_full_text: false,
       });
-      return tfText(out);
+      return tfText(out, prompt);
     },
   };
 }
@@ -169,9 +215,75 @@ export async function ensurePip(onProgress) {
   }
 }
 
-async function complete(messages, temperature = 0.7, maxTokens = 400) {
+async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
   const eng = await ensurePip();
-  return (await eng.complete(messages, temperature, maxTokens)).trim();
+  const raw = await eng.complete(messages, temperature, maxTokens);
+  const cleaned = sanitizeReply(raw);
+  if (!cleaned) throw new Error("local blank reply");
+  setBrain("local", eng.kind || "qwen");
+  return cleaned;
+}
+
+async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress) {
+  track(onProgress);
+  const errors = [];
+  const cloud = cloudStatus(settings);
+
+  if (cloud.leaky && cloud.pin === "xai" && cloud.grok) {
+    try {
+      emit("GROK");
+      const out = await cloudComplete(settings, messages, lane, temperature, maxTokens);
+      const cleaned = sanitizeReply(out.text);
+      if (cleaned && !isBlank(cleaned)) {
+        setBrain(out.provider, out.model);
+        return cleaned;
+      }
+      errors.push(`${out.provider}: blank reply`);
+    } catch (e) {
+      errors.push(String(e.message || e).slice(0, 100));
+    }
+  }
+
+  if (desktopConfigured(settings)) {
+    try {
+      emit("DESKTOP GPU");
+      const user = [...messages].reverse().find((m) => m.role === "user");
+      const out = await desktopChat(settings, String((user && user.content) || ""));
+      const cleaned = sanitizeReply(out.text);
+      if (cleaned && !isBlank(cleaned)) {
+        setBrain("desktop", out.model);
+        return cleaned;
+      }
+      errors.push("desktop: blank reply");
+    } catch (e) {
+      errors.push(`desktop: ${String(e.message || e).slice(0, 80)}`);
+    }
+  }
+
+  const cloud = cloudStatus(settings);
+  if (cloud.leaky && cloud.keyed.length) {
+    try {
+      emit(cloud.pin === "xai" ? "GROK" : "CLOUD");
+      const out = await cloudComplete(settings, messages, lane, temperature, maxTokens);
+      const cleaned = sanitizeReply(out.text);
+      if (cleaned && !isBlank(cleaned)) {
+        setBrain(out.provider, out.model);
+        return cleaned;
+      }
+      errors.push(`${out.provider}: blank reply`);
+    } catch (e) {
+      errors.push(String(e.message || e).slice(0, 100));
+    }
+  }
+
+  try {
+    emit("QWEN");
+    return await localComplete(messages, temperature, maxTokens);
+  } catch (e) {
+    errors.push(String(e.message || e).slice(0, 100));
+  }
+
+  throw new Error(errors.join(" · ") || "no brain answered");
 }
 
 export async function sparkLine(recent = [], stanceLabel = "PIP") {
@@ -198,6 +310,13 @@ export async function sparkLine(recent = [], stanceLabel = "PIP") {
     .trim();
 }
 
+async function complete(messages, temperature = 0.7, maxTokens = 400, settings = null, lane = "life", onProgress = null) {
+  if (settings) {
+    return routedComplete(settings, messages, lane, temperature, maxTokens, onProgress);
+  }
+  return localComplete(messages, temperature, maxTokens);
+}
+
 export async function chat(settings, history, text, onProgress, kit) {
   track(onProgress);
   const operator = settings.operator || "Joshua";
@@ -210,18 +329,30 @@ export async function chat(settings, history, text, onProgress, kit) {
     })),
     { role: "user", content: text },
   ];
-  let out = await complete(messages, 0.7, 180);
+  let out = "";
+  try {
+    out = await routedComplete(settings, messages, "life", 0.7, 220, onProgress);
+  } catch {
+    out = "";
+  }
   if (isBlank(out) || !out) {
-    out = await complete(
-      [
-        { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
-        ...SHOTS,
-        { role: "user", content: text },
-        { role: "user", content: "Stay Pip. Two short sentences. No helpdesk." },
-      ],
-      0.35,
-      140,
-    );
+    try {
+      out = await routedComplete(
+        settings,
+        [
+          { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
+          ...SHOTS,
+          { role: "user", content: text },
+          { role: "user", content: "Stay Pip. Two short sentences. No helpdesk." },
+        ],
+        "life",
+        0.35,
+        160,
+        onProgress,
+      );
+    } catch {
+      out = "";
+    }
   }
   if (isBlank(out) || !out) return FALLBACK;
   return out;
@@ -260,7 +391,7 @@ export async function draftAnswers(settings, { title, kit, questions, kind }, on
       content: `CALL: ${title}\nKIT:\n${JSON.stringify(kitBits)}\nQUESTIONS:\n${JSON.stringify(asks)}`,
     },
   ];
-  const raw = await complete(messages, 0.35, 1200);
+  const raw = await routedComplete(settings, messages, "boost", 0.35, 1200, onProgress);
   const parsed = parseJson(raw);
   const map = new Map();
   for (const item of parsed.answers || []) {
@@ -290,3 +421,5 @@ function parseJson(text) {
     return {};
   }
 }
+
+export { cloudStatus };
