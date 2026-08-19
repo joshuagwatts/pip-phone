@@ -38,6 +38,13 @@ header.stat {
   border: 1px solid var(--line);
   padding: 0.15rem 0.4rem;
 }
+.chip.upd {
+  color: #ffb020;
+  border-color: #7a5510;
+  background: #1a1205;
+}
+.pip-upd.hot { color: #ffb020; }
+.pip-upd.err { color: #ff6b6b; }
 header .spacer { flex: 1; }
 button {
   font: inherit;

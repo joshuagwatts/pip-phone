@@ -10,6 +10,7 @@ import { hasNativeHttp, openUrl } from "./net.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
 import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
+import { checkUpdate, installUpdate, isAndroidNative } from "./update.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -21,6 +22,7 @@ let vibeStem = "sendoff";
 let lastShot = "";
 let radioClock = 0;
 let radioBusy = false;
+let updateInfo = null;
 
 function setStatus(msg) {
   $("#status").textContent = String(msg || "").toUpperCase();
@@ -372,6 +374,86 @@ function updateBrainChip() {
   else chip.textContent = activeBrain().label || "CLOUD";
 }
 
+function paintUpdateChip() {
+  const chip = $("#upd-chip");
+  if (!chip) return;
+  if (updateInfo?.available && updateInfo.latest?.version) {
+    chip.hidden = false;
+    chip.textContent = `↑ v${updateInfo.latest.version}`;
+  } else {
+    chip.hidden = true;
+  }
+}
+
+async function refreshUpdateInfo() {
+  updateInfo = await checkUpdate();
+  paintUpdateChip();
+  return updateInfo;
+}
+
+function updateSectionHtml() {
+  const cur = updateInfo?.current || "";
+  const latest = updateInfo?.latest;
+  if (updateInfo?.error) {
+    return `<p class="muted pip-upd err">GitHub check failed — ${esc(updateInfo.error)}</p>
+    <div class="actions"><button type="button" id="pip-update-check">TRY AGAIN</button></div>`;
+  }
+  if (updateInfo?.available && latest?.version) {
+    return `<p class="muted pip-upd hot">v${esc(latest.version)} ready · you have v${esc(cur || "?")}</p>
+    <div class="actions">
+      <button type="button" class="primary" id="pip-update">${isAndroidNative() ? "UPDATE NOW" : "DOWNLOAD UPDATE"}</button>
+      <button type="button" id="pip-update-check">RECHECK</button>
+    </div>
+    <p class="muted">One tap downloads Pip.apk and opens install. KIT + settings stay.</p>`;
+  }
+  const latestTxt = latest?.version ? ` · latest v${esc(latest.version)}` : "";
+  return `<p class="muted pip-upd">This build v${esc(cur || "?")}${latestTxt}</p>
+    <div class="actions">
+      <button type="button" id="pip-update-check">CHECK FOR UPDATE</button>
+      <button type="button" id="pip-update-page">RELEASES</button>
+    </div>
+    <p class="muted">${isAndroidNative() ? "UPDATE NOW when a build is ready." : "Download Pip.apk and install over this app."}</p>`;
+}
+
+function wireUpdateHandlers() {
+  const runCheck = async () => {
+    setStatus("CHECKING GITHUB…");
+    await refreshUpdateInfo();
+    render();
+    if (updateInfo?.available) setStatus(`UPDATE v${updateInfo.latest.version} READY`);
+    else if (updateInfo?.error) setStatus(updateInfo.error.toUpperCase());
+    else setStatus("PIP IS UP TO DATE");
+  };
+
+  const upd = $("#pip-update");
+  if (upd) {
+    upd.onclick = async () => {
+      try {
+        const latest = updateInfo?.latest || (await refreshUpdateInfo()).latest;
+        if (!latest) throw new Error("no release found");
+        await installUpdate(latest, (msg) => setStatus(msg));
+      } catch (e) {
+        setStatus(String(e.message || e));
+      }
+    };
+  }
+
+  const recheck = $("#pip-update-check");
+  if (recheck) recheck.onclick = () => runCheck();
+
+  const page = $("#pip-update-page");
+  if (page) {
+    page.onclick = async () => {
+      try {
+        await openUrl("https://github.com/joshuagwatts/pip-phone/releases/latest", { system: true });
+        setStatus("GITHUB RELEASES");
+      } catch (e) {
+        setStatus(String(e.message || e));
+      }
+    };
+  }
+}
+
 function renderData() {
   const s = db.settings;
   const cloud = cloudStatus(s);
@@ -430,8 +512,7 @@ function renderData() {
     <p class="muted">Off Wi‑Fi: install Tailscale on PC + phone, enable VPN on desktop DATA, DISCOVER here. WireGuard: copy phone config from desktop DATA → import in WireGuard app → pair at 10.8.0.1:7420.</p>
     <div class="field"><span>VPN NOTE</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="Tailscale hostname, WG profile name…" /></div>
     <h3>UPDATE</h3>
-    <p class="muted" id="pip-ver">Opens GitHub. Download Pip.apk. Install over this app. KIT stays.</p>
-    <div class="actions"><button type="button" id="pip-update">UPDATE PIP</button></div>
+    <div id="pip-upd-block">${updateSectionHtml()}</div>
     <p class="muted">${hasNativeHttp() ? "Native app: can read public apply pages." : "Browser preview: paste questions if a page blocks the read."}</p>
     <div class="dock"><button type="button" class="primary" id="data-save">SAVE</button></div>`;
 
@@ -551,25 +632,13 @@ function renderData() {
   $("#probe-grok").onclick = () => runProbe("xai");
   $("#probe-groq").onclick = () => runProbe("groq");
 
-  const upd = $("#pip-update");
-  if (upd) {
-    upd.onclick = async () => {
-      setStatus("OPENING GITHUB…");
-      try {
-        await openUrl("https://github.com/joshuagwatts/pip-phone/releases/latest", { system: true });
-        setStatus("DOWNLOAD PIP.APK · INSTALL OVER THIS APP");
-      } catch (e) {
-        setStatus(String(e.message || e));
-      }
-    };
-  }
-  const cap = window.Capacitor;
-  if (cap && cap.Plugins && cap.Plugins.App && cap.Plugins.App.getInfo) {
-    cap.Plugins.App.getInfo().then((info) => {
-      const el = $("#pip-ver");
-      if (el && info && info.version) el.textContent = `This build ${info.version}. Opens GitHub. Download Pip.apk. Install over this app.`;
-    }).catch(() => {});
-  }
+  wireUpdateHandlers();
+  if (!updateInfo) refreshUpdateInfo().then(() => {
+    const block = $("#pip-upd-block");
+    if (block) block.innerHTML = updateSectionHtml();
+    wireUpdateHandlers();
+    paintUpdateChip();
+  });
 }
 
 async function saveNew() {
@@ -756,6 +825,8 @@ function boot() {
   };
   $("#comm-tog").onclick = () => document.body.classList.add("comm");
   $("#comm-close").onclick = () => document.body.classList.remove("comm");
+  const updChip = $("#upd-chip");
+  if (updChip) updChip.onclick = () => { tab = "data"; document.body.classList.remove("comm"); render(); };
   $("#send").onclick = sendChat;
   $("#input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
@@ -763,6 +834,9 @@ function boot() {
   render();
   updateBrainChip();
   setStatus("PIP // WAKING");
+  refreshUpdateInfo().then((info) => {
+    if (info?.available) setStatus(`UPDATE v${info.latest.version} · DATA TAB`);
+  });
   ensurePip((msg) => setStatus(msg))
     .then(() => {
       setStatus("PIP ON DECK");

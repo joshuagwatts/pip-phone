@@ -90,24 +90,35 @@ jobs:
     needs: [android, windows, macos]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - name: Release gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(node -p "require('./package.json').version")"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "publish=false" >> $GITHUB_OUTPUT
+            echo "Release $TAG already exists — skipping publish."
+          else
+            echo "publish=true" >> $GITHUB_OUTPUT
+            echo "Publishing release $TAG"
+          fi
       - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.publish == 'true'
       - name: Flatten downloads
+        if: steps.gate.outputs.publish == 'true'
         run: |
           mv Pip-apk/Pip.apk Pip.apk
           mv Pip-windows/Pip-Windows.exe Pip-Windows.exe
           mv Pip-mac/Pip-Mac.dmg Pip-Mac.dmg
       - uses: softprops/action-gh-release@v2
+        if: steps.gate.outputs.publish == 'true'
         with:
-          tag_name: v0.1.7
-          name: Pip v0.1.7
-          body: |
-            **Phone Pip v0.1.7** — VPN pairing + desktop GPU over Tailscale/WireGuard.
-
-            - **DISCOVER** — auto-find desktop pairing URLs (LAN + VPN)
-            - **PIN lock** — biometric or PIN before keys/pairing
-            - Pair over Tailscale (100.x) or WireGuard (10.8.0.x)
-
-            **Desktop Pip** — DATA → VPN mode (Tailscale / WireGuard / All) → restart → pair from phone.
+          tag_name: ${{ steps.gate.outputs.tag }}
+          name: Pip ${{ steps.gate.outputs.tag }}
+          generate_release_notes: true
           files: |
             Pip.apk
             Pip-Windows.exe
