@@ -1,4 +1,5 @@
 import { FALLBACK, isBlank, talkSystem, SHOTS } from "./crew.js";
+import { draftVoice } from "./kind.js";
 
 const QWEN_MLC = [
   "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
@@ -201,7 +202,7 @@ export async function chat(settings, history, text, onProgress, kit) {
   return out;
 }
 
-export async function draftAnswers(settings, { title, kit, questions }, onProgress) {
+export async function draftAnswers(settings, { title, kit, questions, kind }, onProgress) {
   track(onProgress);
   const kitBits = { ...kit };
   delete kitBits.email;
@@ -216,8 +217,9 @@ export async function draftAnswers(settings, { title, kit, questions }, onProgre
     {
       role: "system",
       content:
-        "You draft festival / public-art / VJ application answers for Pip's operator. " +
-        "Ground every sentence in KIT. Do not invent employers, awards, clients, or numbers. " +
+        "You draft application answers for Pip's operator from KIT only. " +
+        draftVoice(kind) +
+        " Ground every sentence in KIT. Do not invent employers, awards, clients, or numbers. " +
         "If a number is required and missing, write ESTIMATE and say they must confirm. " +
         "No corporate sludge. No emoji. No email or phone. " +
         "Also write a5: the same facts at a 5th-grade reading level. " +

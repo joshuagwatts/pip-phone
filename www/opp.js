@@ -1,5 +1,6 @@
 import { httpGet } from "./net.js";
 import { uid } from "./store.js";
+import { classify, placeRings, TYPE_QUERIES } from "./kind.js";
 
 const FB_RE = /FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*<\/script>/s;
 const TYPE_NAME = {
@@ -19,13 +20,7 @@ const GFORM = /https:\/\/docs\.google\.com\/forms\/d\/e\/[A-Za-z0-9_-]+[^"'<\s]*
 const NOISE = /food truck|food vendor|vendor booth|sponsor us|job board|indeed\.com|linkedin\.com\/jobs|call to cooks|cook-off|visual studio/i;
 const SKIP_HOST = /(?:^|\.)(?:facebook|instagram|tiktok|pinterest|youtube|twitter|x|linkedin|indeed|wikipedia|merriam-webster|visualstudio|bing|duckduckgo|reddit|thisiscolossal|memberful|nectarads|bsky|mastodon)\./i;
 const GENERIC_TITLE = /^(apply for call|view call details|read more|learn more|home|click here)$/i;
-const CALL_HINT = /open call|call for|application|apply|artist|installation|festival|residency|grant|exhibition|rfp|projection|vj|visual|immersive|mural|public art|viewform|fellowship|deadline/i;
-const HUNT_QUERIES = [
-  "Wakaan festival 2026 art installation application",
-  "festival visual artist VJ installation open call 2026 apply",
-  "call for artists installation immersive 2026 application",
-  "projection mapping public art open call 2026",
-];
+const CALL_HINT = /open call|call for|application|apply|artist|installation|festival|residency|grant|exhibition|rfp|rfq|projection|vj|visual|immersive|mural|public art|viewform|fellowship|deadline|musician|dj |hiring|career|job/i;
 const WAKAAN_URL =
   "https://docs.google.com/forms/d/e/1FAIpQLSfxRawLshOJjbJuowOCzWFymRE1DEpkViQxh4kN3roNfpysPQ/viewform";
 const WAKAAN_QUESTIONS = [
@@ -53,14 +48,16 @@ const PINNED = [
   },
 ];
 
-export function newOpp({ title, url, note, questions }) {
+export function newOpp({ title, url, note, questions, kind }) {
   const qs = Array.isArray(questions) ? questions : [];
+  const hit = kind || classify(title, url, qs).id;
   return {
     id: uid(),
     title: (title || "Untitled call").trim().slice(0, 160),
     url: (url || "").trim(),
     note: (note || "").trim(),
     status: "open",
+    kind: hit,
     questions: qs,
     answers: qs.map((q) => ({ q: q.prompt || q.q || "", a: "", a5: "" })),
     created_at: Date.now(),
@@ -147,30 +144,95 @@ function stripHtml(html) {
 }
 
 export async function scrapeUrl(url, { strict } = {}) {
+  const seen = new Set();
+  return walkPage(url, 0, seen, strict);
+}
+
+async function walkPage(url, depth, seen, strict) {
   const known = knownForm(url);
+  if (!url || seen.has(url) || depth > 2) {
+    return known
+      ? { url: known.url, title: known.title, questions: known.questions, source: "known" }
+      : { url, title: "", questions: [], source: "skip" };
+  }
+  seen.add(url);
   try {
-    const page = await httpGet(url);
-    let questions = parseGoogleForm(page.body);
-    let finalUrl = page.url || url;
+    const page = await httpGet(url, 16000);
+    const html = page.body || "";
+    const finalUrl = page.url || url;
+    let questions = parseGoogleForm(html);
+    let used = finalUrl;
     if (!questions.length) {
-      const links = page.body.match(GFORM) || [];
-      if (links[0]) {
-        const form = await httpGet(links[0]);
-        questions = parseGoogleForm(form.body);
-        if (questions.length) finalUrl = form.url || links[0];
+      const g = (html.match(GFORM) || [])[0];
+      if (g && !seen.has(g)) {
+        const form = await walkPage(g, depth + 1, seen, true);
+        if (form.questions && form.questions.length) return form;
       }
     }
-    if (!questions.length && !strict) questions = questionsFromPaste(stripHtml(page.body));
-    if (!questions.length && known) questions = known.questions;
-    const titleM = page.body.match(/<title[^>]*>(.*?)<\/title>/i);
-    const title = titleM ? titleM[1].replace(/\s+/g, " ").trim().slice(0, 120) : (known && known.title) || "";
-    return { url: finalUrl, title, questions, source: questions.length ? "page" : "empty" };
-  } catch (e) {
-    if (known) {
-      return { url: known.url, title: known.title, questions: known.questions, source: "known" };
+    if (!questions.length) questions = questionsFromLabels(html);
+    if (!questions.length && !strict) questions = questionsFromPaste(stripHtml(html));
+    const titleM = html.match(/<title[^>]*>(.*?)<\/title>/i);
+    const title = titleM ? titleM[1].replace(/\s+/g, " ").trim().slice(0, 120) : "";
+    let best = { url: used, title, questions, source: questions.length ? "page" : "empty" };
+    if (questions.length >= 3) return best;
+    if (depth < 2) {
+      for (const href of applyLinks(html, finalUrl).slice(0, 5)) {
+        if (seen.has(href)) continue;
+        const child = await walkPage(href, depth + 1, seen, true);
+        if ((child.questions || []).length > (best.questions || []).length) best = child;
+        if ((best.questions || []).length >= 4) return best;
+      }
     }
-    throw e;
+    if (!(best.questions || []).length && known) {
+      return { url: known.url, title: known.title || title, questions: known.questions, source: "known" };
+    }
+    return best;
+  } catch (e) {
+    if (known) return { url: known.url, title: known.title, questions: known.questions, source: "known" };
+    if (depth === 0) throw e;
+    return { url, title: "", questions: [], source: "fail" };
   }
+}
+
+function absUrl(base, href) {
+  try {
+    return new URL(href, base).toString();
+  } catch {
+    return "";
+  }
+}
+
+function applyLinks(html, base) {
+  const out = [];
+  const re = /<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html || ""))) {
+    const href = absUrl(base, decodeEntities(m[1]));
+    const text = `${cleanTitle(m[2])} ${href}`;
+    if (!href || /login|logout|signup|cart|privacy|terms/i.test(href)) continue;
+    if (!/apply|submit|entry|application|viewform|forms\.gle|jotform|typeform|submittable|callforentry|zapplication|form/i.test(text)) continue;
+    if (out.includes(href)) continue;
+    out.push(href);
+  }
+  return out;
+}
+
+function questionsFromLabels(html) {
+  const found = [];
+  const seen = new Set();
+  const re = /<label\b[^>]*>([\s\S]*?)<\/label>/gi;
+  let m;
+  while ((m = re.exec(html || ""))) {
+    const q = cleanTitle(m[1]);
+    if (q.length < 8 || q.length > 220) continue;
+    const key = q.toLowerCase();
+    if (seen.has(key)) continue;
+    if (/search|subscribe|password|cookie|captcha|login/i.test(key)) continue;
+    seen.add(key);
+    found.push({ prompt: q, q, type: "paragraph", hint: "", required: false });
+    if (found.length >= 24) break;
+  }
+  return found;
 }
 
 function knownForm(url) {
@@ -180,7 +242,11 @@ function knownForm(url) {
   return null;
 }
 
-export function answerFromKit(question, kit, title, qtype) {
+function stitch(parts) {
+  return parts.map((p) => String(p || "").trim()).filter(Boolean).join("\n\n");
+}
+
+export function answerFromKit(question, kit, title, qtype, kind) {
   const q = String(question || "").toLowerCase();
   const k = kit || {};
   if (qtype === "file") return "FILE UPLOAD — attach in the live form. Pip cannot put files in this field.";
@@ -191,30 +257,55 @@ export function answerFromKit(question, kit, title, qtype) {
   if (/legal first|first name/.test(q)) return first;
   if (/legal last|last name/.test(q)) return last;
   if (/e-?mail/.test(q)) return k.email || "";
-  if (/\bphone\b|#/.test(q) && /phone|#/.test(q)) return k.phone || "";
+  if (/phone|#/.test(q) && !/email/.test(q)) return k.phone || "";
   if (/artist name|moniker|business name|stage name|project name/.test(q)) return k.artist_name || name;
   if (/full name|legal name/.test(q) && !/artist/.test(q)) return name || k.artist_name || "";
   if (/\bname\b/.test(q) && q.length < 24) return name || k.artist_name || "";
   if (/city|based|location|hometown|where do you live/.test(q)) return k.city || "";
   if (/instagram|website|portfolio|\blink\b|url|social/.test(q)) return k.links || "";
-  if (/artist bio|bio & experience|artist statement|about yourself/.test(q)) return (k.bio_long || k.bio_short || "").trim();
+  if (/resume|cv|cover letter/.test(q)) return stitch([k.one_liner, k.bio_long || k.bio_short, k.materials]);
+  if (/artist bio|bio & experience|artist statement|about yourself|tell us about/.test(q)) {
+    if (kind === "job") return stitch([k.one_liner, k.bio_long || k.bio_short, k.materials]);
+    if (kind === "music") {
+      return stitch([
+        k.bio_short || k.bio_long,
+        k.materials,
+        "Visual / live-visuals first. Music is in the toolkit — not a touring-DJ packet.",
+      ]);
+    }
+    if (kind === "festival_artist") {
+      const mural = /mural|paint|wall/i.test(k.materials || "") ? k.materials : stitch([k.materials, "Live visuals and projection more than brush-mural. I'll say that on the wall."]);
+      return stitch([k.bio_long || k.bio_short, mural]);
+    }
+    if (kind === "city_art") return stitch([k.bio_long || k.bio_short, k.materials, "Civic work: site, public, durable."]);
+    return stitch([k.bio_long || k.bio_short]);
+  }
   if (/began|beginning|started|origin|how did you/.test(q)) return k.origin || k.bio_short || "";
-  if (/description of installation|what do you make|medium|materials|practice|describe your work/.test(q)) {
+  if (/description of installation|what do you make|medium|materials|practice|describe your work|the work/.test(q)) {
+    if (kind === "festival_artist") return k.materials || k.bio_short || "";
+    if (kind === "music") return stitch([k.materials, "Sound/Ableton if it's in KIT. Otherwise the live-visuals rig is the honest answer."]);
     return k.materials || k.bio_short || "";
   }
-  if (/why this|why are you applying|why do you want|why apply/.test(q)) {
+  if (/why this|why are you applying|why do you want|why apply|why our/.test(q)) {
     const why = (k.why_festivals || k.bio_short || "").trim();
-    return why ? `${why}\n\n${title || "This call"} is a room for that work.` : "";
+    if (!why) return "";
+    if (kind === "job") return stitch([why, `This role at ${title || "this studio"} is the work I already do.`]);
+    if (kind === "city_art") return stitch([why, `${title || "This site"} is a public room for that work.`]);
+    if (kind === "music") return stitch([why, `${title || "This stage"} if the music call is real. Visuals come with me.`]);
+    return `${why}\n\n${title || "This call"} is a room for that work.`;
   }
   if (/one-liner|tagline|one liner/.test(q)) return k.one_liner || "";
+  if (/footprint|how much space|dimensions/.test(q) && kind === "job") return "";
+  if (/budget|team size|power/.test(q) && (kind === "job" || kind === "music")) return "";
   return "";
 }
 
-export function suggestAnswers(questions, kit, title) {
+export function suggestAnswers(questions, kit, title, kind) {
+  const hit = kind || classify(title, "", questions).id;
   return (questions || []).map((q) => {
     const prompt = q.prompt || q.q || "";
-    const a = q.a || answerFromKit(prompt, kit, title, q.type || "");
-    return { ...q, q: prompt, prompt, a, a5: q.a5 || "" };
+    const a = q.a || answerFromKit(prompt, kit, title, q.type || "", hit);
+    return { ...q, q: prompt, prompt, a, a5: q.a5 || "", kind: hit };
   });
 }
 
@@ -256,7 +347,7 @@ function pushHit(found, title, url, opts) {
   const href = String(url || "").trim();
   if (!keepHit(name, href, opts)) return;
   if (found.some((x) => x.url === href)) return;
-  found.push({ title: name, url: href, note: "hunted" });
+  found.push({ title: name, url: href, note: "hunted", kind: classify(name, href).id });
 }
 
 function parseAnchors(html, found, opts = {}) {
@@ -274,7 +365,7 @@ function parseAnchors(html, found, opts = {}) {
     const title = cleanTitle(m[2]);
     if (GENERIC_TITLE.test(title)) continue;
     pushHit(found, title, href, opts);
-    if (found.length >= 16) break;
+    if (found.length >= 48) break;
   }
 }
 
@@ -326,25 +417,31 @@ async function huntColossal(found) {
   }
 }
 
-export async function hunt(focus) {
-  const found = PINNED.map((p) => ({ title: p.title, url: p.url, note: p.note, questions: p.questions }));
+export async function hunt(focus, { city, onProgress } = {}) {
+  const found = PINNED.map((p) => ({
+    title: p.title,
+    url: p.url,
+    note: p.note,
+    questions: p.questions,
+    kind: "festival_install",
+  }));
   const extra = (focus || "").trim();
-  const queries = extra ? [extra, ...HUNT_QUERIES.slice(0, 3)] : HUNT_QUERIES;
+  if (onProgress) onProgress("HUNT BOARDS");
   await huntArtcall(found);
   await huntColossal(found);
-  await Promise.all(
-    queries.map((q) =>
-      huntPage(`https://search.brave.com/search?q=${encodeURIComponent(q)}`, found, { needHint: true }),
-    ),
-  );
-  if (found.length < 5) {
+  const rings = placeRings(city);
+  for (const place of rings) {
+    if (found.length >= 40) break;
+    if (onProgress) onProgress(`HUNT ${place.toUpperCase()}`);
+    const queries = TYPE_QUERIES.map(([, q]) => `${place} ${q} 2026`);
+    if (extra) queries.unshift(`${place} ${extra} 2026`);
     await Promise.all(
-      queries.slice(0, 2).map((q) =>
-        huntPage(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`, found, { needHint: true }),
+      queries.map((q) =>
+        huntPage(`https://search.brave.com/search?q=${encodeURIComponent(q)}`, found, { needHint: true }),
       ),
     );
   }
-  return found.slice(0, 12);
+  return found.slice(0, 40);
 }
 
 export function mergeDraft(opp, drafted) {

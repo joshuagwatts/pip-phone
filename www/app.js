@@ -1,6 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, ensurePip, pipStatus } from "./brain.js";
 import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
+import { classify, labelOf } from "./kind.js";
 import { hasNativeHttp, openUrl } from "./net.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
@@ -201,6 +202,7 @@ function renderOpp() {
       <h3>${esc(sel.title)}</h3>
       ${sel.url ? `<p class="muted">${esc(sel.url)}</p>` : ""}
       ${sel.note ? `<p class="muted">${esc(sel.note)}</p>` : ""}
+      <p class="muted">${esc(labelOf(sel.kind || classify(sel.title, sel.url, sel.questions).id))}</p>
       ${answers.map((a, i) => `
         <div class="copy-block">
           <p>${esc(a.q || a.prompt || "")}${a.required ? " *" : ""}</p>
@@ -247,7 +249,7 @@ function renderOpp() {
       const qs = questionsFromPaste($("#paste-qs").value);
       if (!qs.length) return;
       sel.questions = qs;
-      sel.answers = qs.map((q) => ({ q: q.prompt, a: "", a5: "" }));
+      sel.answers = suggestAnswers(qs, db.kit, sel.title, sel.kind);
       persist();
       render();
       setStatus(`${qs.length} QUESTIONS`);
@@ -259,7 +261,7 @@ function renderOpp() {
     ${rows.map((o) => `
       <button type="button" class="opp-card" data-id="${esc(o.id)}">
         <b>${esc(o.title)}</b>
-        <span>${esc(o.url || "")}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : ""}</span>
+        <span>${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : ""}${o.url ? " · " + esc(o.url.slice(0, 42)) : ""}</span>
       </button>`).join("") || `<p class="muted">Empty. HUNT finds public calls, or ADD a URL you already have.</p>`}
     <div class="dock">
       <button type="button" class="primary" id="opp-hunt">HUNT</button>
@@ -275,7 +277,7 @@ function renderOpp() {
 function renderKit() {
   $("#view").innerHTML = `
     <h3>APPLICATION KIT</h3>
-    <p class="muted">Same answers every time. Copy. Don't rewrite for sport.</p>
+    <p class="muted">Same answers every time. City is hunt home — Edmond, Oklahoma if empty — then it fans out. Copy. Don't rewrite for sport.</p>
     ${KIT_LABELS.map(([k, label]) => `
       <div class="field"><span>${esc(label).toUpperCase()}</span>
         <textarea id="kit-${k}">${esc(db.kit[k] || "")}</textarea>
@@ -346,7 +348,8 @@ async function readPage() {
     if (found.url) sel.url = found.url;
     if (found.questions.length) {
       sel.questions = found.questions;
-      sel.answers = suggestAnswers(found.questions, db.kit, sel.title);
+      sel.answers = suggestAnswers(found.questions, db.kit, sel.title, sel.kind);
+      sel.kind = classify(sel.title, sel.url, found.questions).id;
       sel.note = `Read ${found.questions.length} questions.`;
     } else {
       sel.note = "No questions on that page. Paste them.";
@@ -363,13 +366,15 @@ async function draftThis() {
   const sel = selected();
   if (!sel) return;
   if (!(sel.questions || []).length) { setStatus("READ PAGE OR PASTE QUESTIONS"); return; }
-  const seeded = suggestAnswers(sel.questions, db.kit, sel.title);
+  const kind = classify(sel.title, sel.url, sel.questions).id;
+  sel.kind = kind;
+  const seeded = suggestAnswers(sel.questions, db.kit, sel.title, kind);
   Object.assign(sel, mergeDraft(sel, seeded));
   persist();
   render();
   setStatus("KIT ON THE PAGE · DRAFTING THE REST");
   try {
-    const drafted = await draftAnswers(db.settings, { title: sel.title, kit: db.kit, questions: sel.questions }, (msg) => setStatus(msg));
+    const drafted = await draftAnswers(db.settings, { title: sel.title, kit: db.kit, questions: sel.questions, kind }, (msg) => setStatus(msg));
     const merged = drafted.map((row, i) => ({
       ...row,
       a: row.a || (seeded[i] && seeded[i].a) || "",
@@ -387,14 +392,15 @@ async function draftThis() {
 async function runHunt() {
   setStatus("HUNTING…");
   try {
-    const found = await hunt();
+    const found = await hunt("", { city: db.kit.city, onProgress: setStatus });
     const fresh = [];
     let n = 0;
     for (const hit of found) {
       if (db.opps.some((o) => o.url === hit.url)) continue;
       const row = newOpp(hit);
       if ((row.questions || []).length) {
-        row.answers = suggestAnswers(row.questions, db.kit, row.title);
+        row.kind = classify(row.title, row.url, row.questions).id;
+        row.answers = suggestAnswers(row.questions, db.kit, row.title, row.kind);
       }
       db.opps.unshift(row);
       fresh.push(row);
@@ -403,23 +409,32 @@ async function runHunt() {
     persist();
     render();
     setStatus(n ? `LOGGED ${n}` : found.length ? "ALREADY HAD THOSE" : "NOTHING PUBLIC — ADD A URL");
-    for (const row of fresh.slice(0, 8)) {
-      if (!row.url) continue;
-      setStatus(`READING ${String(row.title || "").slice(0, 22).toUpperCase()}`);
-      try {
-        const page = await scrapeUrl(row.url, { strict: !(row.questions || []).length });
-        if (page.title && (!row.title || row.title === row.url)) row.title = page.title;
-        if (page.url) row.url = page.url;
-        if ((page.questions || []).length) {
-          row.questions = page.questions;
-          row.answers = suggestAnswers(page.questions, db.kit, row.title);
-          row.note = row.note || `Read ${page.questions.length} questions.`;
+    const queue = fresh.slice(0, 24);
+    let i = 0;
+    const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+      while (i < queue.length) {
+        const idx = i;
+        i += 1;
+        const row = queue[idx];
+        if (!row.url) continue;
+        setStatus(`READING ${idx + 1}/${queue.length}`);
+        try {
+          const page = await scrapeUrl(row.url, { strict: false });
+          if (page.title && (!row.title || row.title === row.url)) row.title = page.title;
+          if (page.url) row.url = page.url;
+          if ((page.questions || []).length) {
+            row.questions = page.questions;
+            row.kind = classify(row.title, row.url, page.questions).id;
+            row.answers = suggestAnswers(page.questions, db.kit, row.title, row.kind);
+            row.note = `${labelOf(row.kind)} · ${page.questions.length} questions`;
+          }
+          persist();
+        } catch {
+          /* keep the listing */
         }
-        persist();
-      } catch {
-        /* keep the listing even if the page is a wall */
       }
-    }
+    });
+    await Promise.all(workers);
     render();
     const withQ = db.opps.filter((o) => o.status !== "done" && (o.questions || []).length).length;
     if (n) setStatus(`LOGGED ${n} · ${withQ} WITH QUESTIONS`);
