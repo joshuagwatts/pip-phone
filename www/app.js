@@ -1,8 +1,8 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, ensurePip, pipStatus, activeBrain, cloudStatus } from "./brain.js";
 import { probeProvider, PROVIDERS } from "./cloud.js";
-import { desktopConfigured, desktopLogin, desktopStatus, discoverDesktop } from "./desktop.js";
-import { biometricAvailable, guardSecrets, setPin } from "./biometric.js";
+import { desktopConfigured, desktopLogin, desktopStatus } from "./desktop.js";
+import { biometricAvailable, guardSecrets } from "./biometric.js";
 import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
@@ -10,7 +10,6 @@ import { hasNativeHttp, openUrl } from "./net.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
 import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
-import { checkUpdate, installUpdate, isAndroidNative } from "./update.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -22,7 +21,6 @@ let vibeStem = "sendoff";
 let lastShot = "";
 let radioClock = 0;
 let radioBusy = false;
-let updateInfo = null;
 
 function setStatus(msg) {
   $("#status").textContent = String(msg || "").toUpperCase();
@@ -374,80 +372,6 @@ function updateBrainChip() {
   else chip.textContent = activeBrain().label || "CLOUD";
 }
 
-function paintUpdateChip() {
-  const chip = $("#upd-chip");
-  if (!chip) return;
-  if (updateInfo?.available && updateInfo.latest?.version) {
-    chip.hidden = false;
-    chip.textContent = `↑ v${updateInfo.latest.version}`;
-  } else {
-    chip.hidden = true;
-  }
-}
-
-async function refreshUpdateInfo() {
-  updateInfo = await checkUpdate();
-  paintUpdateChip();
-  return updateInfo;
-}
-
-function updateSectionHtml() {
-  const cur = updateInfo?.current || "";
-  const latest = updateInfo?.latest;
-  const latVer = latest?.version || "";
-  const head = updateInfo?.available && latVer
-    ? `<p class="muted pip-upd hot">v${esc(latVer)} ready · you have v${esc(cur || "?")}</p>`
-    : `<p class="muted pip-upd">This build v${esc(cur || "?")}${latVer ? ` · latest v${esc(latVer)}` : ""}</p>`;
-  const err = updateInfo?.error
-    ? `<p class="muted pip-upd err">${esc(updateInfo.error)} — UPDATE NOW still works</p>`
-    : "";
-  const btn = isAndroidNative() ? "UPDATE NOW" : "DOWNLOAD UPDATE";
-  return `${head}${err}
-    <div class="actions">
-      <button type="button" class="primary" id="pip-update">${btn}</button>
-      <button type="button" id="pip-update-check">RECHECK</button>
-      <button type="button" id="pip-update-page">RELEASES</button>
-    </div>
-    <p class="muted">Install over this app. KIT + settings stay.</p>`;
-}
-
-function wireUpdateHandlers() {
-  const runCheck = async () => {
-    setStatus("CHECKING GITHUB…");
-    await refreshUpdateInfo();
-    render();
-    if (updateInfo?.available) setStatus(`UPDATE v${updateInfo.latest.version} READY`);
-    else if (updateInfo?.error) setStatus(updateInfo.error.toUpperCase());
-    else setStatus("PIP IS UP TO DATE");
-  };
-
-  const upd = $("#pip-update");
-  if (upd) {
-    upd.onclick = async () => {
-      try {
-        await installUpdate(updateInfo?.latest || null, (msg) => setStatus(msg));
-      } catch (e) {
-        setStatus(String(e.message || e));
-      }
-    };
-  }
-
-  const recheck = $("#pip-update-check");
-  if (recheck) recheck.onclick = () => runCheck();
-
-  const page = $("#pip-update-page");
-  if (page) {
-    page.onclick = async () => {
-      try {
-        await openUrl("https://github.com/joshuagwatts/pip-phone/releases/latest", { system: true });
-        setStatus("GITHUB RELEASES");
-      } catch (e) {
-        setStatus(String(e.message || e));
-      }
-    };
-  }
-}
-
 function renderData() {
   const s = db.settings;
   const cloud = cloudStatus(s);
@@ -463,16 +387,15 @@ function renderData() {
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
     <h3>DESKTOP GPU</h3>
-    <p class="muted">Desktop Pip DATA → password + LAN and/or VPN (Tailscale / WireGuard). Paste any pairing URL here — Wi‑Fi or VPN.</p>
-    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://100.x.x.x:7420 or http://192.168.x.x:7420" /></div>
-    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="same password as desktop DATA" /></div>
+    <p class="muted">On desktop Pip: DATA → enable Phone LAN + set a password. Then pair here on the same Wi‑Fi. COMM uses your PC's Ollama/GPU.</p>
+    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.42:7420" /></div>
+    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="Phone LAN password from desktop DATA" /></div>
     <div class="actions">
       <button type="button" id="desk-pair" class="primary">${paired ? "RE-PAIR" : "PAIR"}</button>
-      <button type="button" id="desk-discover">DISCOVER</button>
       <button type="button" id="desk-test">TEST</button>
       <button type="button" id="desk-clear">FORGET</button>
     </div>
-    <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}` : "Not paired."}</p>
+    <p class="muted" id="desk-msg">${paired ? "Paired. COMM prefers desktop GPU." : "Not paired."}</p>
     <h3>BRAIN</h3>
     <div class="field"><span>POSTURE</span>
       <select id="set-privacy">
@@ -499,14 +422,14 @@ function renderData() {
       <button type="button" id="probe-groq">PROBE GROQ</button>
     </div>
     <h3>LOCK</h3>
-    <p class="muted">Biometric or PIN before keys/pairing. ${biometricAvailable() ? "Sensor available." : "Set a PIN if no sensor."}</p>
-    <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> LOCK KEYS + PAIRING</label>
-    <div class="field"><span>PIN (4+ digits)</span><input id="set-phone-pin" type="password" inputmode="numeric" placeholder="${s.pin_hash ? "leave blank to keep" : "set a PIN"}" autocomplete="off" /></div>
-    <h3>VPN</h3>
-    <p class="muted">Off Wi‑Fi: install Tailscale on PC + phone, enable VPN on desktop DATA, DISCOVER here. WireGuard: copy phone config from desktop DATA → import in WireGuard app → pair at 10.8.0.1:7420.</p>
-    <div class="field"><span>VPN NOTE</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="Tailscale hostname, WG profile name…" /></div>
+    <p class="muted">Require biometric unlock before opening keys or pairing. ${biometricAvailable() ? "Sensor available on this device." : "No sensor — lock is a soft gate."}</p>
+    <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
+    <h3>VPN (NEXT)</h3>
+    <p class="muted">Tailscale / WireGuard pairing is on the roadmap so Phone Pip can reach your desktop GPU off Wi‑Fi. For now: same home network + Phone LAN.</p>
+    <div class="field"><span>VPN NOTE</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="Tailscale hostname, WireGuard profile name…" /></div>
     <h3>UPDATE</h3>
-    <div id="pip-upd-block">${updateSectionHtml()}</div>
+    <p class="muted" id="pip-ver">Opens GitHub. Download Pip.apk. Install over this app. KIT stays.</p>
+    <div class="actions"><button type="button" id="pip-update">UPDATE PIP</button></div>
     <p class="muted">${hasNativeHttp() ? "Native app: can read public apply pages." : "Browser preview: paste questions if a page blocks the read."}</p>
     <div class="dock"><button type="button" class="primary" id="data-save">SAVE</button></div>`;
 
@@ -528,20 +451,13 @@ function renderData() {
     persist();
   };
 
-  $("#data-save").onclick = async () => {
-    try {
-      await guardSecrets(db.settings, async () => {
-        grabSettings();
-        const pin = ($("#set-phone-pin") && $("#set-phone-pin").value) || "";
-        if (pin) await setPin(db.settings, pin);
-        persist();
-        setStatus("SAVED");
-        updateBrainChip();
-        render();
-      });
-    } catch (e) {
-      setStatus(String(e.message || e));
-    }
+  $("#data-save").onclick = () => {
+    guardSecrets(db.settings, () => {
+      grabSettings();
+      setStatus("SAVED");
+      updateBrainChip();
+      render();
+    }).catch((e) => setStatus(String(e.message || e)));
   };
 
   $("#desk-pair").onclick = () => {
@@ -556,37 +472,11 @@ function renderData() {
       try {
         const out = await desktopLogin(db.settings, pass);
         db.settings.desktop_token = out.token || "loopback";
-        db.settings.desktop_url = out.url || db.settings.desktop_url;
         db.settings.desktop_paired = true;
         persist();
-        const extra = (out.urls || []).length > 1 ? ` · ${out.urls.length} URLs` : "";
-        $("#desk-msg").textContent = `Paired · ${db.settings.desktop_url}${extra}`;
+        $("#desk-msg").textContent = "Paired. COMM prefers desktop GPU.";
         setStatus("DESKTOP PAIRED");
         updateBrainChip();
-      } catch (e) {
-        setStatus(String(e.message || e));
-      }
-    }).catch((e) => setStatus(String(e.message || e)));
-  };
-
-  $("#desk-discover").onclick = () => {
-    guardSecrets(db.settings, async () => {
-      grabSettings();
-      const pass = ($("#set-dpass").value || "").trim();
-      const seed = ($("#set-durl").value || db.settings.desktop_url || "").trim();
-      if (!seed) {
-        setStatus("PASTE A DESKTOP URL FIRST");
-        return;
-      }
-      setStatus("DISCOVERING…");
-      try {
-        const out = await discoverDesktop(seed, pass);
-        db.settings.desktop_url = out.url;
-        db.settings.desktop_token = out.token;
-        db.settings.desktop_paired = true;
-        persist();
-        render();
-        setStatus(`FOUND ${(out.urls || []).length || 1} URL(S)`);
       } catch (e) {
         setStatus(String(e.message || e));
       }
@@ -626,13 +516,25 @@ function renderData() {
   $("#probe-grok").onclick = () => runProbe("xai");
   $("#probe-groq").onclick = () => runProbe("groq");
 
-  wireUpdateHandlers();
-  if (!updateInfo) refreshUpdateInfo().then(() => {
-    const block = $("#pip-upd-block");
-    if (block) block.innerHTML = updateSectionHtml();
-    wireUpdateHandlers();
-    paintUpdateChip();
-  });
+  const upd = $("#pip-update");
+  if (upd) {
+    upd.onclick = async () => {
+      setStatus("OPENING GITHUB…");
+      try {
+        await openUrl("https://github.com/joshuagwatts/pip-phone/releases/latest", { system: true });
+        setStatus("DOWNLOAD PIP.APK · INSTALL OVER THIS APP");
+      } catch (e) {
+        setStatus(String(e.message || e));
+      }
+    };
+  }
+  const cap = window.Capacitor;
+  if (cap && cap.Plugins && cap.Plugins.App && cap.Plugins.App.getInfo) {
+    cap.Plugins.App.getInfo().then((info) => {
+      const el = $("#pip-ver");
+      if (el && info && info.version) el.textContent = `This build ${info.version}. Opens GitHub. Download Pip.apk. Install over this app.`;
+    }).catch(() => {});
+  }
 }
 
 async function saveNew() {
@@ -819,8 +721,6 @@ function boot() {
   };
   $("#comm-tog").onclick = () => document.body.classList.add("comm");
   $("#comm-close").onclick = () => document.body.classList.remove("comm");
-  const updChip = $("#upd-chip");
-  if (updChip) updChip.onclick = () => { tab = "data"; document.body.classList.remove("comm"); render(); };
   $("#send").onclick = sendChat;
   $("#input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
@@ -828,9 +728,6 @@ function boot() {
   render();
   updateBrainChip();
   setStatus("PIP // WAKING");
-  refreshUpdateInfo().then((info) => {
-    if (info?.available) setStatus(`UPDATE v${info.latest.version} · DATA TAB`);
-  });
   ensurePip((msg) => setStatus(msg))
     .then(() => {
       setStatus("PIP ON DECK");

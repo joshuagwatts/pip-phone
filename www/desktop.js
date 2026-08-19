@@ -15,33 +15,13 @@ export function desktopConfigured(settings) {
   return Boolean(baseUrl(settings) && token(settings));
 }
 
-export async function discoverDesktop(url, password = "") {
-  const raw = String(url || "").trim();
-  if (!raw) throw new Error("paste a desktop URL");
-  const target = /^https?:\/\//i.test(raw) ? raw.replace(/\/+$/, "") : `http://${raw.replace(/\/+$/, "")}`;
-  let login = {};
-  try {
-    login = await httpLanPostJson(`${target}/api/auth/login`, {}, { password: password || "" });
-  } catch (e) {
-    throw new Error(`login failed — ${String(e.message || e)}`);
-  }
-  const tok = login._cookie || "";
-  const status = await httpLanGet(`${target}/api/auth/status`, 8000, tok ? { Cookie: `pip_gate=${tok}` } : {});
-  const urls = status.urls || [];
-  const pick = urls[0] || target;
-  return {
-    url: pick.replace(/\/+$/, ""),
-    token: tok || "loopback",
-    urls,
-    tailscale: status.tailscale || {},
-    wireguard: status.wireguard || {},
-    vpn_mode: status.vpn_mode || "off",
-  };
-}
-
 export async function desktopLogin(settings, password) {
-  const out = await discoverDesktop(baseUrl(settings) || settings.desktop_url, password);
-  return { token: out.token, loopback: out.token === "loopback", url: out.url, urls: out.urls };
+  const url = baseUrl(settings);
+  if (!url) throw new Error("set desktop URL first");
+  const res = await httpLanPostJson(`${url}/api/auth/login`, {}, { password: password || "" });
+  const cookie = res._cookie || "";
+  if (!cookie && !res.loopback) throw new Error("login failed — check password and Phone LAN on desktop");
+  return { token: cookie, loopback: Boolean(res.loopback) };
 }
 
 export async function desktopStatus(settings) {
@@ -55,11 +35,7 @@ export async function desktopStatus(settings) {
       ok: true,
       auth: Boolean(data.auth),
       phone_lan: Boolean(data.phone_lan),
-      phone_vpn: Boolean(data.phone_vpn),
-      vpn_mode: data.vpn_mode || "off",
       urls: data.urls || [],
-      tailscale: data.tailscale || {},
-      wireguard: data.wireguard || {},
       ollama: health.ollama || {},
       router: health.router || {},
     };
@@ -88,5 +64,9 @@ export async function desktopChat(settings, text) {
 }
 
 export async function desktopDraft(settings, payload) {
+  const url = baseUrl(settings);
+  const tok = token(settings);
+  if (!url || !tok) throw new Error("desktop not paired");
+  // Phone drafts stay local/cloud first; desktop proxy is a future lane.
   throw new Error("desktop draft proxy not wired yet");
 }

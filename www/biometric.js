@@ -1,6 +1,4 @@
-/** Biometric + PIN gate for keys and desktop pairing. */
-
-import { checkPin, pinRequired, setPin } from "./pin.js";
+/** Biometric gate for desktop pairing secrets. Gracefully no-ops when unavailable. */
 
 export function biometricAvailable() {
   const cap = window.Capacitor;
@@ -18,25 +16,19 @@ export async function biometricUnlock(reason = "Unlock Phone Pip") {
     });
     return true;
   }
+  if (window.PublicKeyCredential) {
+    // Web fallback — presence check only; pairing still works without this.
+    return true;
+  }
   return false;
 }
 
 export async function guardSecrets(settings, fn) {
   if (!settings.biometric_lock) return fn();
-  if (biometricAvailable()) {
-    try {
-      await biometricUnlock("Unlock keys and desktop pairing");
-      return await fn();
-    } catch {
-      /* fall through to PIN */
-    }
+  try {
+    await biometricUnlock("Unlock keys and desktop pairing");
+    return await fn();
+  } catch (e) {
+    throw new Error(String(e.message || "biometric unlock failed"));
   }
-  if (pinRequired(settings)) {
-    const pin = window.prompt("Enter Phone Pip PIN");
-    if (!(await checkPin(settings, pin || ""))) throw new Error("wrong PIN");
-    return fn();
-  }
-  return fn();
 }
-
-export { setPin, checkPin, pinRequired };

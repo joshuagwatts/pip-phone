@@ -19,21 +19,6 @@ jobs:
           cache: npm
       - run: npm ci --omit=dev
       - run: npx cap sync android
-      - name: Register PipUpdate native plugin
-        run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          p = Path("android/app/src/main/assets/capacitor.plugins.json")
-          data = json.loads(p.read_text())
-          hit = {"pkg": "PipUpdate", "classpath": "com.pip.phone.PipUpdatePlugin"}
-          if not any(x.get("classpath") == hit["classpath"] for x in data):
-              data.append(hit)
-              p.write_text(json.dumps(data, indent="\t") + "\n")
-              print("added PipUpdate")
-          else:
-              print("PipUpdate already registered")
-          PY
       - name: Stamp Android version
         run: |
           python3 - <<'PY'
@@ -115,10 +100,8 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "publish=false" >> $GITHUB_OUTPUT
-            echo "Release $TAG already exists — skipping publish."
           else
             echo "publish=true" >> $GITHUB_OUTPUT
-            echo "Publishing release $TAG"
           fi
       - uses: actions/download-artifact@v4
         if: steps.gate.outputs.publish == 'true'
@@ -133,7 +116,10 @@ jobs:
         with:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
-          generate_release_notes: true
+          body: |
+            **Stable rollback** — same Phone Pip as v0.1.6 (Grok, cloud brains, desktop GPU pairing).
+
+            Install Pip.apk over your current build. KIT stays. Do not uninstall first.
           files: |
             Pip.apk
             Pip-Windows.exe
