@@ -19,6 +19,21 @@ jobs:
           cache: npm
       - run: npm ci --omit=dev
       - run: npx cap sync android
+      - name: Register PipUpdate native plugin
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("android/app/src/main/assets/capacitor.plugins.json")
+          data = json.loads(p.read_text())
+          hit = {"pkg": "PipUpdate", "classpath": "com.pip.phone.PipUpdatePlugin"}
+          if not any(x.get("classpath") == hit["classpath"] for x in data):
+              data.append(hit)
+              p.write_text(json.dumps(data, indent="\t") + "\n")
+              print("added PipUpdate")
+          else:
+              print("PipUpdate already registered")
+          PY
       - name: Stamp Android version
         run: |
           python3 - <<'PY'

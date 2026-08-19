@@ -34,6 +34,7 @@ public class PipUpdatePlugin extends Plugin {
                 conn.setReadTimeout(180000);
                 conn.setInstanceFollowRedirects(true);
                 conn.setRequestProperty("User-Agent", "Pip-Phone-Updater");
+                conn.setRequestProperty("Accept", "application/vnd.android.package-archive,*/*");
                 int code = conn.getResponseCode();
                 if (code >= 400) {
                     call.reject("download failed — http " + code);

@@ -394,25 +394,21 @@ async function refreshUpdateInfo() {
 function updateSectionHtml() {
   const cur = updateInfo?.current || "";
   const latest = updateInfo?.latest;
-  if (updateInfo?.error) {
-    return `<p class="muted pip-upd err">GitHub check failed — ${esc(updateInfo.error)}</p>
-    <div class="actions"><button type="button" id="pip-update-check">TRY AGAIN</button></div>`;
-  }
-  if (updateInfo?.available && latest?.version) {
-    return `<p class="muted pip-upd hot">v${esc(latest.version)} ready · you have v${esc(cur || "?")}</p>
+  const latVer = latest?.version || "";
+  const head = updateInfo?.available && latVer
+    ? `<p class="muted pip-upd hot">v${esc(latVer)} ready · you have v${esc(cur || "?")}</p>`
+    : `<p class="muted pip-upd">This build v${esc(cur || "?")}${latVer ? ` · latest v${esc(latVer)}` : ""}</p>`;
+  const err = updateInfo?.error
+    ? `<p class="muted pip-upd err">${esc(updateInfo.error)} — UPDATE NOW still works</p>`
+    : "";
+  const btn = isAndroidNative() ? "UPDATE NOW" : "DOWNLOAD UPDATE";
+  return `${head}${err}
     <div class="actions">
-      <button type="button" class="primary" id="pip-update">${isAndroidNative() ? "UPDATE NOW" : "DOWNLOAD UPDATE"}</button>
+      <button type="button" class="primary" id="pip-update">${btn}</button>
       <button type="button" id="pip-update-check">RECHECK</button>
-    </div>
-    <p class="muted">One tap downloads Pip.apk and opens install. KIT + settings stay.</p>`;
-  }
-  const latestTxt = latest?.version ? ` · latest v${esc(latest.version)}` : "";
-  return `<p class="muted pip-upd">This build v${esc(cur || "?")}${latestTxt}</p>
-    <div class="actions">
-      <button type="button" id="pip-update-check">CHECK FOR UPDATE</button>
       <button type="button" id="pip-update-page">RELEASES</button>
     </div>
-    <p class="muted">${isAndroidNative() ? "UPDATE NOW when a build is ready." : "Download Pip.apk and install over this app."}</p>`;
+    <p class="muted">Install over this app. KIT + settings stay.</p>`;
 }
 
 function wireUpdateHandlers() {
@@ -429,9 +425,7 @@ function wireUpdateHandlers() {
   if (upd) {
     upd.onclick = async () => {
       try {
-        const latest = updateInfo?.latest || (await refreshUpdateInfo()).latest;
-        if (!latest) throw new Error("no release found");
-        await installUpdate(latest, (msg) => setStatus(msg));
+        await installUpdate(updateInfo?.latest || null, (msg) => setStatus(msg));
       } catch (e) {
         setStatus(String(e.message || e));
       }

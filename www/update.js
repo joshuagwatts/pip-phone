@@ -1,7 +1,9 @@
 import { httpGet, openUrl } from "./net.js";
 
 const REPO = "joshuagwatts/pip-phone";
-const API = `https://api.github.com/repos/${REPO}/releases/latest`;
+const APK_LATEST = `https://github.com/${REPO}/releases/latest/download/Pip.apk`;
+const VERSION_RAW = `https://raw.githubusercontent.com/${REPO}/main/package.json`;
+const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`;
 
 function parseVer(v) {
   return String(v || "0")
@@ -41,26 +43,35 @@ export function isAndroidNative() {
   return Boolean(cap?.isNativePlatform?.() && cap.getPlatform?.() === "android");
 }
 
+function pipUpdatePlugin() {
+  const cap = window.Capacitor;
+  if (!cap) return null;
+  if (cap.Plugins?.PipUpdate) return cap.Plugins.PipUpdate;
+  if (typeof cap.registerPlugin === "function") {
+    try {
+      return cap.registerPlugin("PipUpdate");
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
+}
+
 export async function fetchLatestRelease() {
-  const res = await httpGet(API, 14000, {
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-  });
-  const data = JSON.parse(res.body || "{}");
-  const version = String(data.tag_name || "").replace(/^v/i, "");
-  const assets = data.assets || [];
-  const apk =
-    assets.find((a) => /^pip\.apk$/i.test(a.name || "")) ||
-    assets.find((a) => /\.apk$/i.test(a.name || ""));
+  let version = "";
+  try {
+    const res = await httpGet(VERSION_RAW, 14000);
+    const pkg = JSON.parse(res.body || "{}");
+    version = String(pkg.version || "").trim();
+  } catch {
+    /* raw package.json failed — still offer direct APK download */
+  }
   return {
     version,
-    name: data.name || (version ? `Pip v${version}` : "Pip"),
-    notes: String(data.body || "")
-      .trim()
-      .replace(/\r\n/g, "\n")
-      .slice(0, 500),
-    apkUrl: apk?.browser_download_url || "",
-    pageUrl: data.html_url || `https://github.com/${REPO}/releases/latest`,
+    name: version ? `Pip v${version}` : "Pip",
+    notes: "",
+    apkUrl: APK_LATEST,
+    pageUrl: RELEASE_PAGE,
   };
 }
 
@@ -68,13 +79,12 @@ export async function checkUpdate() {
   const current = await currentVersion();
   try {
     const latest = await fetchLatestRelease();
-    if (!latest.version) throw new Error("release has no version tag");
-    const available = current ? compareVer(latest.version, current) > 0 : false;
-    return { current, latest, available, error: "" };
+    const available = latest.version && current ? compareVer(latest.version, current) > 0 : false;
+    return { current, latest, available, error: latest.version ? "" : "could not read remote version" };
   } catch (e) {
     return {
       current,
-      latest: null,
+      latest: { version: "", name: "Pip", notes: "", apkUrl: APK_LATEST, pageUrl: RELEASE_PAGE },
       available: false,
       error: String(e.message || e),
     };
@@ -83,20 +93,25 @@ export async function checkUpdate() {
 
 export async function installUpdate(latest, onProgress) {
   const rel = latest || (await fetchLatestRelease());
-  const url = rel.apkUrl || rel.pageUrl;
-  if (!url) throw new Error("no update download found");
+  const url = rel.apkUrl || APK_LATEST;
+  const native = pipUpdatePlugin();
 
-  const cap = window.Capacitor;
-  const native = cap?.Plugins?.PipUpdate;
-  if (native?.installApk && rel.apkUrl && isAndroidNative()) {
+  if (native?.installApk && isAndroidNative()) {
     if (onProgress) onProgress("DOWNLOADING APK…");
-    await native.installApk({ url: rel.apkUrl });
-    if (onProgress) onProgress("TAP INSTALL · KIT STAYS");
-    return { mode: "install", url: rel.apkUrl };
+    try {
+      await native.installApk({ url });
+      if (onProgress) onProgress("TAP INSTALL · KIT STAYS");
+      return { mode: "install", url };
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (!/settings/i.test(msg)) throw e;
+      if (onProgress) onProgress(msg.toUpperCase());
+      throw e;
+    }
   }
 
-  if (onProgress) onProgress(rel.apkUrl ? "OPENING APK DOWNLOAD…" : "OPENING GITHUB…");
-  await openUrl(rel.apkUrl || rel.pageUrl, { system: true });
+  if (onProgress) onProgress("OPENING APK DOWNLOAD…");
+  await openUrl(url, { system: true });
   if (onProgress) onProgress("DOWNLOAD PIP.APK · INSTALL OVER THIS APP");
   return { mode: "browser", url };
 }
