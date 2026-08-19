@@ -3,7 +3,6 @@ import { uid } from "./store.js";
 import { classify, placeRings, TYPE_QUERIES } from "./kind.js";
 import { pickLink } from "./digest.js";
 
-const FB_RE = /FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*<\/script>/s;
 const TYPE_NAME = {
   0: "short",
   1: "paragraph",
@@ -65,36 +64,83 @@ export function newOpp({ title, url, note, questions, kind }) {
   };
 }
 
+const MATERIAL_ASKS = [
+  [/artist statement|statement of (practice|work|intent)/i, "Artist statement"],
+  [/artist bio|biography/i, "Artist bio"],
+  [/\bcv\b|resume|curriculum vitae/i, "CV / resume"],
+  [/portfolio|work samples|images of (your )?work|support images/i, "Work samples / portfolio"],
+  [/project (description|proposal)|describe (your|the) (work|project|installation|piece)/i, "Project description"],
+  [/letter of (interest|intent)|why (this|you are applying)/i, "Why this call"],
+  [/\bbudget\b/i, "Budget"],
+  [/timeline|production schedule/i, "Timeline"],
+  [/technical (rider|requirements)|power draw|footprint/i, "Technical / site needs"],
+];
+
+function qitem(prompt, type, hint) {
+  const p = String(prompt || "").replace(/\s+/g, " ").trim();
+  return { prompt: p, q: p, type: type || "paragraph", hint: hint || "", required: false, section: "", options: [] };
+}
+
+function mergeQuestions(...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    for (const row of list || []) {
+      const prompt = String(row.prompt || row.q || "").replace(/\s+/g, " ").trim();
+      const key = prompt.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      if (!prompt || key.length < 4 || seen.has(key)) continue;
+      if (/search|subscribe|password|cookie|captcha|login|sign in|newsletter/i.test(prompt)) continue;
+      seen.add(key);
+      out.push({ ...row, prompt, q: prompt });
+      if (out.length >= 40) return out;
+    }
+  }
+  return out;
+}
+
 export function questionsFromPaste(text) {
   const lines = String(text || "")
     .split(/\r?\n/)
-    .map((l) => l.replace(/^\s*\d+[.)]\s*/, "").replace(/^\s*[-*]\s*/, "").trim())
+    .map((l) => l.replace(/^\s*\d+[.)]\s*/, "").replace(/^\s*[-*•]\s*/, "").trim())
     .filter(Boolean);
   const found = [];
   const seen = new Set();
   for (const line of lines) {
     const q = line.replace(/\s+/g, " ").replace(/^[*_]+|[*_]+$/g, "");
-    if (q.length < 8 || q.length > 280) continue;
-    const looks = /[?]/.test(q) || /^(describe|explain|why|how|who|what|tell|list|upload|attach|name|email|bio|statement)/i.test(q);
-    if (!looks && lines.length > 8) continue;
+    if (q.length < 6 || q.length > 280) continue;
+    const looks =
+      /[?]/.test(q) ||
+      /describe|explain|why |how |tell us|upload|attach|artist (bio|statement)|statement|portfolio|work samples|project (description|proposal)|cover letter|resume|\bcv\b|budget|timeline|eligibility/i.test(q);
+    if (!looks) continue;
     const key = q.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    found.push({ prompt: q, q, type: "paragraph", hint: "", required: false });
-    if (found.length >= 24) break;
+    found.push(qitem(q, /upload|attach|image|pdf/i.test(q) ? "file" : "paragraph"));
+    if (found.length >= 32) break;
   }
   return found;
 }
 
-export function parseGoogleForm(html) {
-  const m = String(html || "").match(FB_RE);
-  if (!m) return [];
-  let data;
+function parseFbBlob(raw) {
+  if (!raw) return [];
+  let text = String(raw).trim();
   try {
-    data = JSON.parse(m[1]);
+    return parseGoogleItems(JSON.parse(text));
   } catch {
-    return [];
+    /* trim to last bracket */
   }
+  const end = text.lastIndexOf("]");
+  if (end > 8) {
+    try {
+      return parseGoogleItems(JSON.parse(text.slice(0, end + 1)));
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function parseGoogleItems(data) {
   const items = data && data[1] && data[1][1];
   if (!Array.isArray(items)) return [];
   let section = "";
@@ -132,6 +178,33 @@ export function parseGoogleForm(html) {
   return out;
 }
 
+export function parseGoogleForm(html) {
+  const blob = String(html || "");
+  const patterns = [
+    /FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*<\/script>/s,
+    /FB_PUBLIC_LOAD_DATA_\s*=\s*(\[[\s\S]*?\])\s*<\/script>/,
+    /FB_PUBLIC_LOAD_DATA_\s*=\s*(\[[\s\S]*)/,
+  ];
+  for (const re of patterns) {
+    const m = blob.match(re);
+    if (!m) continue;
+    const parsed = parseFbBlob(m[1]);
+    if (parsed.length) return parsed;
+  }
+  return questionsFromGoogleHtml(blob);
+}
+
+function questionsFromGoogleHtml(html) {
+  const found = [];
+  const re = /class="[^"]*(?:M7eMe|freebirdFormviewerComponentsQuestionBaseTitle|Qr7Oae)[^"]*"[^>]*>([\s\S]*?)<\//gi;
+  let m;
+  while ((m = re.exec(html || ""))) {
+    const q = cleanTitle(m[1]);
+    if (q.length >= 2 && q.length <= 240) found.push(qitem(q, "paragraph"));
+  }
+  return found;
+}
+
 function stripHtml(html) {
   return String(html || "")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -149,43 +222,66 @@ export async function scrapeUrl(url, { strict } = {}) {
   return walkPage(url, 0, seen, strict);
 }
 
+function pageQuestions(html, { strict } = {}) {
+  const gform = parseGoogleForm(html);
+  const fields = questionsFromFields(html);
+  const paste = strict ? [] : questionsFromPaste(stripHtml(html));
+  const guide = strict ? [] : questionsFromGuidelines(html);
+  return mergeQuestions(gform, fields, paste, guide);
+}
+
 async function walkPage(url, depth, seen, strict) {
   const known = knownForm(url);
-  if (!url || seen.has(url) || depth > 2) {
+  if (!url || seen.has(url) || depth > 3) {
     return known
       ? { url: known.url, title: known.title, questions: known.questions, source: "known" }
       : { url, title: "", questions: [], source: "skip" };
   }
   seen.add(url);
   try {
-    const page = await httpGet(url, 16000);
+    const page = await httpGet(url, 18000);
     const html = page.body || "";
     const finalUrl = page.url || url;
-    let questions = parseGoogleForm(html);
-    let used = finalUrl;
+    let questions = pageQuestions(html, { strict });
     if (!questions.length) {
       const g = (html.match(GFORM) || [])[0];
       if (g && !seen.has(g)) {
-        const form = await walkPage(g, depth + 1, seen, true);
+        const form = await walkPage(g, depth + 1, seen, false);
         if (form.questions && form.questions.length) return form;
       }
     }
-    if (!questions.length) questions = questionsFromLabels(html);
-    if (!questions.length && !strict) questions = questionsFromPaste(stripHtml(html));
     const titleM = html.match(/<title[^>]*>(.*?)<\/title>/i);
     const title = titleM ? titleM[1].replace(/\s+/g, " ").trim().slice(0, 120) : "";
-    let best = { url: used, title, questions, source: questions.length ? "page" : "empty" };
-    if (questions.length >= 3) return best;
-    if (depth < 2) {
-      for (const href of applyLinks(html, finalUrl).slice(0, 5)) {
+    let best = {
+      url: finalUrl,
+      title,
+      questions,
+      source: questions.length ? "page" : "empty",
+    };
+    if (questions.length >= 4) return best;
+    if (depth < 3) {
+      const hrefs = [...applyLinks(html, finalUrl), ...guessApply(finalUrl)];
+      for (const href of hrefs.slice(0, 8)) {
         if (seen.has(href)) continue;
-        const child = await walkPage(href, depth + 1, seen, true);
-        if ((child.questions || []).length > (best.questions || []).length) best = child;
-        if ((best.questions || []).length >= 4) return best;
+        const child = await walkPage(href, depth + 1, seen, false);
+        const merged = mergeQuestions(best.questions, child.questions || []);
+        if (merged.length > (best.questions || []).length) {
+          best = {
+            url: (child.questions || []).length >= (best.questions || []).length ? child.url || href : best.url,
+            title: child.title || best.title,
+            questions: merged,
+            source: child.source || best.source,
+          };
+        }
+        if ((best.questions || []).length >= 6) return best;
       }
     }
     if (!(best.questions || []).length && known) {
       return { url: known.url, title: known.title || title, questions: known.questions, source: "known" };
+    }
+    if (!(best.questions || []).length) {
+      const guide = questionsFromGuidelines(html);
+      if (guide.length) best = { ...best, questions: guide, source: "guidelines" };
     }
     return best;
   } catch (e) {
@@ -203,37 +299,80 @@ function absUrl(base, href) {
   }
 }
 
+function guessApply(url) {
+  const extra = [];
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/+$/, "");
+    const host = u.hostname.toLowerCase();
+    if (host.endsWith("artcall.org") && !/\/apply$/i.test(path)) extra.push(`${u.origin}${path}/apply`);
+    if (host.includes("submittable.com") && !/\/submit/i.test(path)) extra.push(`${u.origin}${path}/submit`);
+    if (host.includes("callforentry.org") && !/entry/i.test(path)) extra.push(`${u.origin}${path}/entry`);
+  } catch {
+    /* ignore */
+  }
+  return extra;
+}
+
 function applyLinks(html, base) {
   const out = [];
-  const re = /<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  const push = (href) => {
+    if (!href || out.includes(href)) return;
+    if (/login|logout|signup|cart|privacy|terms|facebook|instagram|twitter/i.test(href)) return;
+    out.push(href);
+  };
+  const re = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let m;
   while ((m = re.exec(html || ""))) {
     const href = absUrl(base, decodeEntities(m[1]));
     const text = `${cleanTitle(m[2])} ${href}`;
-    if (!href || /login|logout|signup|cart|privacy|terms/i.test(href)) continue;
-    if (!/apply|submit|entry|application|viewform|forms\.gle|jotform|typeform|submittable|callforentry|zapplication|form/i.test(text)) continue;
-    if (out.includes(href)) continue;
-    out.push(href);
+    if (!/apply|submit|entry|application|viewform|forms\.gle|jotform|typeform|submittable|callforentry|zapplication|caf[eé]|form|guidelines/i.test(text)) continue;
+    push(href);
+  }
+  const ifr = /<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/gi;
+  while ((m = ifr.exec(html || ""))) {
+    const href = absUrl(base, decodeEntities(m[1]));
+    if (/forms\.google|forms\.gle|jotform|typeform|submittable|viewform/i.test(href)) push(href);
   }
   return out;
 }
 
-function questionsFromLabels(html) {
+function questionsFromFields(html) {
   const found = [];
-  const seen = new Set();
-  const re = /<label\b[^>]*>([\s\S]*?)<\/label>/gi;
-  let m;
-  while ((m = re.exec(html || ""))) {
-    const q = cleanTitle(m[1]);
-    if (q.length < 8 || q.length > 220) continue;
-    const key = q.toLowerCase();
-    if (seen.has(key)) continue;
-    if (/search|subscribe|password|cookie|captcha|login/i.test(key)) continue;
-    seen.add(key);
-    found.push({ prompt: q, q, type: "paragraph", hint: "", required: false });
-    if (found.length >= 24) break;
+  const add = (raw) => {
+    const q = cleanTitle(raw);
+    if (q.length < 3 || q.length > 240) return;
+    found.push(qitem(q, "paragraph"));
+  };
+  const patterns = [
+    /<label\b[^>]*>([\s\S]*?)<\/label>/gi,
+    /<legend\b[^>]*>([\s\S]*?)<\/legend>/gi,
+    /\baria-label=["']([^"']{3,240})["']/gi,
+    /\bplaceholder=["']([^"']{8,240})["']/gi,
+    /class=["'][^"']*(?:form-label|wpforms-field-label|gfield_label|nf-label|elementor-field-label)[^"']*["'][^>]*>([\s\S]*?)<\//gi,
+  ];
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(html || ""))) add(m[1]);
   }
-  return found;
+  return mergeQuestions(found);
+}
+
+function questionsFromGuidelines(html) {
+  const text = stripHtml(html);
+  const found = [];
+  const blob = text.toLowerCase();
+  if (!/apply|application|submit|open call|call for|eligibility|guidelines/i.test(blob)) return [];
+  for (const [rx, prompt] of MATERIAL_ASKS) {
+    if (rx.test(blob)) found.push(qitem(prompt, "paragraph", "From the call guidelines"));
+  }
+  const section = text.match(/(?:how to apply|application materials|what to submit|submission guidelines|to apply)[:\s]+([\s\S]{40,1800})/i);
+  if (section) found.push(...questionsFromPaste(section[1]));
+  return mergeQuestions(found);
+}
+
+function questionsFromLabels(html) {
+  return questionsFromFields(html);
 }
 
 function knownForm(url) {

@@ -267,7 +267,7 @@ function renderOpp() {
     ${rows.map((o) => `
       <button type="button" class="opp-card" data-id="${esc(o.id)}">
         <b>${esc(o.title)}</b>
-        <span>${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : ""}${o.url ? " · " + esc(o.url.slice(0, 42)) : ""}</span>
+        <span>${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · NO FORM"}${o.url ? " · " + esc(o.url.slice(0, 42)) : ""}</span>
       </button>`).join("") || `<p class="muted">Empty. HUNT finds public calls, or ADD a URL you already have.</p>`}
     <div class="dock">
       <button type="button" class="primary" id="opp-hunt">HUNT</button>
@@ -399,13 +399,13 @@ async function readPage() {
       sel.questions = found.questions;
       sel.answers = suggestAnswers(found.questions, db.kit, sel.title, sel.kind);
       sel.kind = classify(sel.title, sel.url, found.questions).id;
-      sel.note = `Read ${found.questions.length} questions.`;
+      sel.note = `Read ${found.questions.length} questions (${found.source || "page"}).`;
     } else {
-      sel.note = "No questions on that page. Paste them.";
+      sel.note = "No form on that page yet. Paste the questions.";
     }
     persist();
     render();
-    setStatus(found.questions.length ? `${found.questions.length} QUESTIONS` : "PASTE THE QUESTIONS");
+    setStatus(found.questions.length ? `${found.questions.length} QUESTIONS` : "NO FORM · PASTE THE QUESTIONS");
   } catch (e) {
     setStatus(String(e.message || e));
   }
@@ -494,6 +494,8 @@ async function runHunt() {
             row.kind = classify(row.title, row.url, page.questions).id;
             row.answers = suggestAnswers(page.questions, db.kit, row.title, row.kind);
             row.note = `${labelOf(row.kind)} · ${page.questions.length} questions`;
+          } else {
+            row.note = "No form on that page yet. Open it and paste the questions.";
           }
           persist();
         } catch {
