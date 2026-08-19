@@ -15,7 +15,7 @@ import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThe
 import { captureMoment, topMoments } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { listEntries, applyAllOverlays } from "./codefs.js";
-import { loadFile, saveFile, getCodeChat, resetCodeChat, resetOverlays, streamCodeApply, consumeCodeStream } from "./code.js";
+import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers } from "./wx.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -29,6 +29,7 @@ let lastShot = "";
 let radioClock = 0;
 let radioBusy = false;
 let codeState = { openFile: "style.css", body: "", dirty: false, chat: [], busy: false, model: "" };
+let wxState = { lat: null, lon: null, address: "", data: null };
 
 function setStatus(msg) {
   $("#status").textContent = String(msg || "").toUpperCase();
@@ -52,6 +53,7 @@ function selected() {
 
 function render() {
   document.body.classList.toggle("vibe-tab", tab === "vibe");
+  document.body.classList.toggle("wx-tab", tab === "wx");
   $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   if (tab !== "vibe") leaveVibe();
   if (tab === "kit") renderKit();
@@ -59,6 +61,7 @@ function render() {
   else if (tab === "vibe") renderVibe();
   else if (tab === "today") renderToday();
   else if (tab === "code") renderCode();
+  else if (tab === "wx") renderWx();
   else renderOpp();
 }
 
@@ -501,6 +504,55 @@ async function sendCodePrompt(phoneUpgrade) {
     setStatus("CODE ERROR");
   }
   codeState.busy = false;
+}
+
+async function renderWx() {
+  document.body.classList.remove("comm");
+  document.body.classList.add("wx-tab");
+  $("#view").innerHTML = `
+    <div class="wx-wrap">
+      <div class="wx-layers" id="wx-layers"></div>
+      <div id="wx-map"></div>
+      <div id="wx-panel" class="wx-panel"><p class="muted">Tap the map on a property. Storm dates, NOAA hail, news, Zillow — works offline from phone or via paired desktop.</p></div>
+    </div>`;
+  try {
+    const cfg = await loadMapConfig(db.settings);
+    $("#wx-layers").innerHTML = layerButtons(cfg, esc);
+    $("#wx-layers").onclick = (e) => {
+      const b = e.target.closest("[data-layer]");
+      if (!b) return;
+      setMapLayer(b.dataset.layer);
+      $("#wx-layers").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+    };
+    mountMap($("#wx-map"), cfg, {
+      onTap: async (lat, lon) => {
+        wxState.lat = lat;
+        wxState.lon = lon;
+        setStatus("PINNED · RESEARCHING…");
+        try {
+          const hit = await quickPin(db.settings, lat, lon);
+          wxState.address = hit.geo?.address || "";
+          const data = await researchPin(db.settings, lat, lon, wxState.address);
+          wxState.data = data;
+          drawHailMarkers(data.hail);
+          renderDossier($("#wx-panel"), data, esc, async () => {
+            setStatus("DEEP RESEARCH…");
+            const deep = await researchPin(db.settings, lat, lon, wxState.address);
+            wxState.data = deep;
+            drawHailMarkers(deep.hail);
+            renderDossier($("#wx-panel"), deep, esc, null);
+            setStatus("DOSSIER UPDATED");
+          });
+          setStatus("WX DOSSIER");
+        } catch (e) {
+          $("#wx-panel").innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
+          setStatus("WX ERROR");
+        }
+      },
+    });
+  } catch (e) {
+    $("#view").innerHTML = `<p class="muted">${esc(String(e.message || e))}</p>`;
+  }
 }
 
 async function renderCode() {

@@ -10,6 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="PIP" />
   <title>PIP</title>
   <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="stylesheet" href="./style.css" />
   <link rel="icon" href="./icon-192.png" />
   <link rel="apple-touch-icon" href="./icon-192.png" />
@@ -27,6 +28,7 @@
   <nav class="tabs" id="tabs">
     <button data-tab="opp" class="on">OPP</button>
     <button data-tab="today">TODAY</button>
+    <button data-tab="wx">WX</button>
     <button data-tab="vibe">VIBE</button>
     <button data-tab="kit">KIT</button>
     <button data-tab="code">CODE</button>
@@ -44,6 +46,7 @@
       <button type="button" id="send" class="primary">SEND</button>
     </div>
   </aside>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script type="module" src="./boot.js"></script>
 </body>
 </html>

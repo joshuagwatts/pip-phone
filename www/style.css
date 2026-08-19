@@ -288,3 +288,24 @@ body.comm #comm { display: flex; }
 .code-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
 .code-actions button { background: var(--panel); border: 1px solid var(--line); color: var(--text); font: inherit; padding: 0.4rem 0.55rem; font-size: 11px; }
 .code-actions .primary { border-color: var(--phos); color: var(--phos); }
+
+body.wx-tab main { padding: 0; overflow: hidden; }
+.wx-wrap { display: flex; flex-direction: column; height: 100%; }
+.wx-layers { display: flex; gap: 0.25rem; padding: 0.35rem 0.5rem; flex-shrink: 0; border-bottom: 1px solid var(--line); }
+.wx-layers button { background: var(--panel); border: 1px solid var(--line); color: var(--muted); font: inherit; font-size: 10px; padding: 0.25rem 0.45rem; }
+.wx-layers button.on { color: var(--phos); border-color: var(--phos); }
+#wx-map { flex: 1; min-height: 40vh; z-index: 1; }
+.wx-panel { max-height: 34vh; overflow: auto; padding: 0.5rem 0.65rem calc(0.5rem + var(--safe-bottom)); border-top: 1px solid var(--line); background: var(--inset); font-size: 12px; }
+.wx-addr { color: var(--phos); letter-spacing: 0.06em; margin-bottom: 0.35rem; }
+.wx-links { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.45rem; flex-wrap: wrap; }
+.wx-links a { color: var(--amber); }
+.wx-contacts div { margin: 0.2rem 0; }
+.wx-dossier h4 { margin: 0.65rem 0 0.25rem; font-size: 10px; letter-spacing: 0.18em; color: var(--muted); }
+.wx-storm { padding: 0.2rem 0; border-bottom: 1px dashed var(--line); font-size: 11px; }
+.wx-storm .date { color: var(--amber); margin-right: 0.35rem; }
+.wx-storm .score { color: var(--phos); margin-right: 0.35rem; }
+.wx-hail-row { padding: 0.2rem 0; border-bottom: 1px dashed var(--line); font-size: 11px; }
+.wx-hail-row .date { color: var(--amber); margin-right: 0.35rem; }
+.wx-hail-row .size { color: var(--phos); font-weight: 600; margin-right: 0.35rem; }
+.wx-hail-row .dist { color: var(--muted); margin-right: 0.35rem; }
+.wx-news a { display: block; padding: 0.25rem 0; color: var(--text); text-decoration: none; border-bottom: 1px dashed var(--line); font-size: 11px; }

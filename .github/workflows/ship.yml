@@ -27,6 +27,7 @@ jobs:
           node --check www/codefs.js
           node --check www/codeagent.js
           node --check www/code.js
+          node --check www/wx.js
           node --input-type=module -e "import './www/brain.js'; console.log('brain ok')"
       - run: npx cap sync android
       - name: Ensure CapacitorHttp native plugin
@@ -142,13 +143,14 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.15** — CODE self-edit, theme engine, calendar, story memory.
+            **Phone Pip v0.1.16** — WX storm map + hail dossier (standalone).
 
-            - **CODE tab** — edit phone www via prompts (overlay + RELOAD). UPGRADE PC when paired.
-            - **COMM themes** — phthalo green, reset ui theme (DATA → RESET THEME).
-            - **TODAY** — calendar + substantive story moments.
+            - **WX tab** — map with radar/sat layers; tap a roof for storm dates, **NOAA SPC hail reports**, news, Zillow. Works on phone without desktop; pairs with desktop for saved dossiers.
+            - **Hail** — size (in), date, distance, location; green markers on map.
+            - **CODE tab** — edit phone www via prompts.
+            - **TODAY** — calendar + story memory.
 
-            Install Pip.apk over your current build. KIT stays. Do not uninstall first.
+            Install Pip.apk over your current build. KIT stays.
           files: |
             Pip.apk
             Pip-Windows.exe
