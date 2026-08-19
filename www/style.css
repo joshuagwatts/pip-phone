@@ -4,6 +4,8 @@
   --inset: #0c120c;
   --line: #2f4a2a;
   --phos: #7dff5a;
+  --amber: #d4a84b;
+  --leak: #ff3a3a;
   --text: #c5e0b4;
   --muted: #6d8a60;
   --warn: #e07050;
@@ -37,6 +39,29 @@ header.stat {
   color: var(--muted);
   border: 1px solid var(--line);
   padding: 0.15rem 0.4rem;
+}
+.chip.ver.secure { color: var(--phos); border-color: var(--phos); }
+.chip.ver.leaky, .chip.ver.leak { color: var(--leak); border-color: var(--leak); }
+.chip.ver.local { color: var(--amber); }
+.privacy-chip {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  padding: 0.2rem 0.45rem;
+  color: var(--leak);
+  border-color: var(--leak);
+  background: transparent;
+  font-weight: 700;
+}
+.privacy-chip.leaky {
+  color: var(--bg);
+  background: var(--leak);
+  border-color: var(--leak);
+}
+.privacy-chip.on {
+  background: var(--phos);
+  color: var(--bg);
+  border-color: var(--phos);
+  font-weight: 700;
 }
 header .spacer { flex: 1; }
 button {

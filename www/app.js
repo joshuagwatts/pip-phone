@@ -1,7 +1,8 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, ensurePip, pipStatus, activeBrain, cloudStatus } from "./brain.js";
 import { probeProvider, PROVIDERS } from "./cloud.js";
-import { desktopConfigured, desktopLogin, desktopStatus } from "./desktop.js";
+import { desktopConfigured, desktopLogin, desktopStatus, findAndPair } from "./desktop.js";
+import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets } from "./biometric.js";
 import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
@@ -364,18 +365,33 @@ async function runIngest() {
   }
 }
 
-function updateBrainChip() {
+function renderPrivacy() {
+  const secure = privacyOn(db.settings);
+  const tog = $("#privacy-tog");
   const chip = $("#mode-chip");
-  if (!chip) return;
-  if (desktopConfigured(db.settings)) chip.textContent = activeBrain().label || "DESKTOP";
-  else if (!cloudStatus(db.settings).leaky) chip.textContent = activeBrain().label || "QWEN";
-  else chip.textContent = activeBrain().label || "CLOUD";
+  if (tog) {
+    tog.classList.toggle("on", secure);
+    tog.classList.toggle("leaky", !secure);
+    tog.textContent = secure ? "SECURE" : "LEAKY";
+  }
+  if (chip) {
+    const labels = { secure: "SECURE", local: "LOCAL", leak: "LEAK", leaky: "LEAKY", cloud: "CLOUD" };
+    const shown = secure ? "secure" : "leaky";
+    chip.textContent = labels[shown] || "LEAKY";
+    chip.classList.remove("leak", "leaky", "secure", "cloud", "local");
+    chip.classList.add(shown);
+  }
+}
+
+function updateBrainChip() {
+  renderPrivacy();
 }
 
 function renderData() {
   const s = db.settings;
   const cloud = cloudStatus(s);
   const paired = desktopConfigured(s);
+  const securePosture = privacyOn(s);
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
     <p class="muted">Crew in your pocket. KIT is you. OPP is the job. COMM routes: desktop GPU → cloud (LEAKY) → on-device Qwen.</p>
@@ -387,30 +403,28 @@ function renderData() {
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
     <h3>DESKTOP GPU</h3>
-    <p class="muted">On desktop Pip: DATA → enable Phone LAN + set a password. Then pair here on the same Wi‑Fi. COMM uses your PC's Ollama/GPU.</p>
-    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.42:7420" /></div>
-    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="Phone LAN password from desktop DATA" /></div>
+    <p class="muted">Same Wi‑Fi as your PC. Desktop Pip DATA → enable Phone LAN + set a password. Tap FIND — no URL typing.</p>
+    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="Phone LAN password from desktop DATA" autocomplete="off" /></div>
     <div class="actions">
-      <button type="button" id="desk-pair" class="primary">${paired ? "RE-PAIR" : "PAIR"}</button>
+      <button type="button" id="desk-find" class="primary">FIND + PAIR</button>
+      <button type="button" id="desk-pair">${paired ? "RE-PAIR" : "PAIR"}</button>
       <button type="button" id="desk-test">TEST</button>
       <button type="button" id="desk-clear">FORGET</button>
     </div>
-    <p class="muted" id="desk-msg">${paired ? "Paired. COMM prefers desktop GPU." : "Not paired."}</p>
+    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="auto-filled by FIND" /></div>
+    <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}` : "Not paired."}</p>
     <h3>BRAIN</h3>
-    <div class="field"><span>POSTURE</span>
-      <select id="set-privacy">
-        <option value="secure" ${s.privacy_mode !== "leaky" ? "selected" : ""}>SECURE — on-device only</option>
-        <option value="leaky" ${s.privacy_mode === "leaky" ? "selected" : ""}>LEAKY — cloud APIs allowed</option>
-      </select>
-    </div>
+    <p class="muted">${cloud.leaky ? `LEAKY on. Keyed: ${cloud.keyed.join(", ") || "none"}. Pin: ${cloud.pin}.` : "SECURE — cloud keys saved but not used until LEAKY. Tap SECURE/LEAKY in the header."} Grok needs LEAKY + pin xai + XAI key.</p>
     <div class="field"><span>PIN</span>
-      <select id="set-pin">
-        <option value="auto" ${s.brain_pin === "auto" ? "selected" : ""}>AUTO</option>
-        <option value="local" ${s.brain_pin === "local" ? "selected" : ""}>LOCAL ONLY</option>
-        ${PROVIDERS.map((p) => `<option value="${p.id}" ${s.brain_pin === p.id ? "selected" : ""}>${p.label}${p.fishy ? " (pin-only)" : ""}</option>`).join("")}
+      <select id="brain-pin">
+        ${["auto", "local", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
+          const on = (s.brain_pin || "auto") === id;
+          const label = id === "xai" ? "xai (Grok)" : id;
+          return `<option value="${id}" ${on ? "selected" : ""}>${label}</option>`;
+        }).join("")}
       </select>
     </div>
-    <p class="muted">${cloud.leaky ? `LEAKY on. Keyed: ${cloud.keyed.join(", ") || "none"}. Pin: ${cloud.pin}.` : "SECURE — cloud keys saved but not used until LEAKY."} Grok needs LEAKY + pin GROK + XAI key.</p>
+    ${securePosture ? `<p class="muted">PIN is stored but ignored while SECURE is on.</p>` : `<p class="muted">LEAKY is on. PIN picks the cloud brain. Chat prefers desktop when paired.</p>`}
     <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="optional" autocomplete="off" /></div>
     <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="optional" autocomplete="off" /></div>
     <div class="field"><span>CEREBRAS</span><input id="set-cerebras" type="password" value="${esc(s.cerebras)}" placeholder="optional" autocomplete="off" /></div>
@@ -437,8 +451,7 @@ function renderData() {
     db.settings.operator = $("#set-op").value.trim();
     db.settings.humor = Number($("#set-humor").value);
     db.settings.honesty = Number($("#set-honesty").value);
-    db.settings.privacy_mode = $("#set-privacy").value;
-    db.settings.brain_pin = $("#set-pin").value;
+    db.settings.brain_pin = ($("#brain-pin") && $("#brain-pin").value) || db.settings.brain_pin;
     db.settings.groq = $("#set-groq").value.trim();
     db.settings.openrouter = $("#set-or").value.trim();
     db.settings.cerebras = $("#set-cerebras").value.trim();
@@ -465,7 +478,7 @@ function renderData() {
       grabSettings();
       const pass = ($("#set-dpass").value || "").trim();
       if (!db.settings.desktop_url) {
-        setStatus("SET DESKTOP URL");
+        setStatus("FIND DESKTOP OR SET URL");
         return;
       }
       setStatus("PAIRING…");
@@ -474,9 +487,33 @@ function renderData() {
         db.settings.desktop_token = out.token || "loopback";
         db.settings.desktop_paired = true;
         persist();
-        $("#desk-msg").textContent = "Paired. COMM prefers desktop GPU.";
+        $("#desk-msg").textContent = `Paired · ${db.settings.desktop_url}`;
         setStatus("DESKTOP PAIRED");
-        updateBrainChip();
+        renderPrivacy();
+      } catch (e) {
+        setStatus(String(e.message || e));
+      }
+    }).catch((e) => setStatus(String(e.message || e)));
+  };
+
+  $("#desk-find").onclick = () => {
+    guardSecrets(db.settings, async () => {
+      grabSettings();
+      const pass = ($("#set-dpass").value || "").trim();
+      if (!pass) {
+        setStatus("SET DESKTOP PASSWORD FIRST");
+        return;
+      }
+      try {
+        const out = await findAndPair(db.settings, pass, (msg) => setStatus(msg));
+        db.settings.desktop_url = out.url;
+        db.settings.desktop_token = out.token || "loopback";
+        db.settings.desktop_paired = true;
+        persist();
+        $("#set-durl").value = out.url;
+        $("#desk-msg").textContent = `Paired · ${out.url}`;
+        setStatus("DESKTOP FOUND + PAIRED");
+        renderPrivacy();
       } catch (e) {
         setStatus(String(e.message || e));
       }
@@ -721,12 +758,22 @@ function boot() {
   };
   $("#comm-tog").onclick = () => document.body.classList.add("comm");
   $("#comm-close").onclick = () => document.body.classList.remove("comm");
+  const privacyTog = $("#privacy-tog");
+  if (privacyTog) {
+    privacyTog.onclick = () => {
+      const secure = privacyOn(db.settings);
+      db.settings.privacy_mode = secure ? "leaky" : "secure";
+      persist();
+      renderPrivacy();
+      setStatus(secure ? "LEAKY // CLOUD UNLOCKED" : "SECURE // ON-DEVICE");
+    };
+  }
   $("#send").onclick = sendChat;
   $("#input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
   render();
-  updateBrainChip();
+  renderPrivacy();
   setStatus("PIP // WAKING");
   ensurePip((msg) => setStatus(msg))
     .then(() => {
