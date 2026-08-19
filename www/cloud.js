@@ -115,23 +115,40 @@ export function chain(settings, lane = "life") {
   return out;
 }
 
-async function openaiOnce(prov, key, model, messages, temperature, maxTokens) {
+async function openaiOnce(prov, key, model, messages, temperature, maxTokens, tools) {
+  const payload = {
+    model,
+    messages,
+    temperature,
+    max_tokens: maxTokens,
+  };
+  if (tools && tools.length) payload.tools = tools;
   const data = await httpPostJson(
     `${prov.base.replace(/\/$/, "")}/chat/completions`,
     {
       Authorization: `Bearer ${key}`,
       ...(prov.headers || {}),
     },
-    {
-      model,
-      messages,
-      temperature,
-      max_tokens: maxTokens,
-    },
+    payload,
   );
-  const text = String((((data.choices || [])[0] || {}).message || {}).content || "").trim();
-  if (!text) throw new Error(`${prov.id} empty reply`);
-  return { text, provider: prov.id, model };
+  const msg = (((data.choices || [])[0] || {}).message || {});
+  const text = String(msg.content || "").trim();
+  if (!text && !(msg.tool_calls || []).length) throw new Error(`${prov.id} empty reply`);
+  return { text, message: msg, tool_calls: msg.tool_calls || [], provider: prov.id, model };
+}
+
+export async function cloudCompleteTools(settings, messages, tools, lane = "boost", temperature = 0.2, maxTokens = 8000) {
+  const errors = [];
+  for (const prov of chain(settings, lane)) {
+    const key = providerKey(settings, prov);
+    if (!key) continue;
+    try {
+      return await openaiOnce(prov, key, modelFor(prov, lane), messages, temperature, maxTokens, tools);
+    } catch (e) {
+      errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
+    }
+  }
+  throw new Error(errors.join(" · ") || "CODE needs LEAKY + a cloud key, or pair desktop for GPU code edits");
 }
 
 export async function cloudComplete(settings, messages, lane = "life", temperature = 0.7, maxTokens = 400) {

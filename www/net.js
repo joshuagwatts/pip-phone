@@ -149,6 +149,56 @@ export async function httpLanPostJson(url, headers, payload, timeoutMs = 60000) 
   return request("POST", url, headers, payload, timeoutMs, assertLan);
 }
 
+/** SSE stream from desktop Pip (CODE apply). Uses fetch ReadableStream — works in Capacitor WebView. */
+export async function* httpLanSSE(url, headers, payload, timeoutMs = 300000) {
+  const target = assertLan(url);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(target, {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent": UA,
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+        ...headers,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const j = await res.json();
+        detail = j.detail || JSON.stringify(j);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() || "";
+      for (const ev of parts) {
+        if (!ev.startsWith("data: ")) continue;
+        try {
+          yield JSON.parse(ev.slice(6));
+        } catch {
+          /* skip bad chunk */
+        }
+      }
+    }
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 export async function openUrl(url, opts = {}) {
   const cap = window.Capacitor;
   const system = Boolean(opts.system);

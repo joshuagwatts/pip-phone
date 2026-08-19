@@ -235,3 +235,56 @@ body.comm #comm { display: flex; }
   letter-spacing: 0.16em;
   color: var(--muted);
 }
+
+.today-wrap { padding: 0.5rem 0.65rem calc(0.5rem + var(--safe-bottom)); overflow: auto; height: 100%; }
+.story-strip { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--line); }
+.story-strip h3 { margin: 0 0 0.5rem; font-size: 11px; letter-spacing: 0.22em; color: var(--phos); }
+.story-line { margin: 0.35rem 0; font-size: 12px; line-height: 1.45; color: var(--text); opacity: 0.92; }
+
+.cal-wrap { max-width: 100%; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+.cal-title { font-size: 12px; letter-spacing: 0.2em; color: var(--phos); }
+.cal-nav { background: var(--panel); border: 1px solid var(--line); color: var(--text); padding: 0.35rem 0.65rem; font: inherit; }
+.cal-dow { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 4px; font-size: 9px; letter-spacing: 0.12em; color: var(--muted); text-align: center; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.cal-cell {
+  position: relative; aspect-ratio: 1; min-height: 2.4rem;
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  font: inherit; font-size: 13px; padding: 0.15rem;
+}
+.cal-cell.off { opacity: 0.35; }
+.cal-cell.today { border-color: var(--phos); box-shadow: inset 0 0 0 1px var(--phos-dim, var(--phos)); }
+.cal-cell.sel { background: var(--inset); border-color: var(--amber); }
+.cal-num { display: block; line-height: 1.1; }
+.cal-dot { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); font-size: 8px; color: var(--phos); letter-spacing: -0.15em; }
+.cal-day-head { margin: 0.85rem 0 0.35rem; font-size: 10px; letter-spacing: 0.18em; color: var(--muted); }
+.cal-events { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.65rem; }
+.cal-event { display: grid; grid-template-columns: 3.2rem 1fr auto; gap: 0.35rem; align-items: start; padding: 0.4rem 0.45rem; background: var(--panel); border: 1px solid var(--line); }
+.cal-time { font-size: 10px; color: var(--amber); letter-spacing: 0.06em; }
+.cal-ev-title { font-size: 13px; }
+.cal-note { grid-column: 2 / -1; margin: 0; font-size: 11px; }
+.cal-del { background: transparent; border: none; color: var(--muted); font-size: 1.1rem; line-height: 1; padding: 0 0.2rem; }
+.cal-add { display: grid; gap: 0.35rem; }
+.cal-add input { background: var(--inset); border: 1px solid var(--line); color: var(--text); padding: 0.45rem 0.5rem; font: inherit; width: 100%; }
+.cal-add .primary { margin-top: 0.15rem; }
+
+.code-wrap { display: flex; flex-direction: column; height: 100%; padding: 0.45rem 0.65rem calc(0.45rem + var(--safe-bottom)); overflow: hidden; }
+.code-wrap h3 { margin: 0 0 0.25rem; font-size: 11px; letter-spacing: 0.22em; color: var(--phos); }
+.code-bar { display: flex; gap: 0.35rem; margin-bottom: 0.35rem; flex-shrink: 0; }
+.code-bar select { flex: 1; background: var(--inset); border: 1px solid var(--line); color: var(--text); font: inherit; padding: 0.35rem; }
+.code-bar button { background: var(--panel); border: 1px solid var(--line); color: var(--text); font: inherit; padding: 0.35rem 0.55rem; }
+#code-body {
+  flex: 1; min-height: 6rem; max-height: 28vh;
+  background: var(--inset); border: 1px solid var(--line); color: var(--text);
+  font: inherit; font-size: 11px; line-height: 1.35; padding: 0.45rem; resize: none; width: 100%;
+}
+.code-chat { flex: 1; display: flex; flex-direction: column; min-height: 0; margin-top: 0.45rem; border-top: 1px solid var(--line); padding-top: 0.45rem; }
+#code-log { flex: 1; overflow: auto; min-height: 4rem; max-height: 22vh; margin-bottom: 0.35rem; }
+.code-msg { margin-bottom: 0.45rem; padding: 0.35rem 0.45rem; background: var(--panel); border: 1px solid var(--line); font-size: 12px; }
+.code-msg.user { border-color: var(--amber); }
+.code-msg .who { font-size: 9px; letter-spacing: 0.16em; color: var(--muted); margin-bottom: 0.2rem; }
+.code-msg .tools { font-size: 10px; margin-top: 0.25rem; }
+#code-input { background: var(--inset); border: 1px solid var(--line); color: var(--text); font: inherit; padding: 0.45rem; width: 100%; resize: none; }
+.code-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
+.code-actions button { background: var(--panel); border: 1px solid var(--line); color: var(--text); font: inherit; padding: 0.4rem 0.55rem; font-size: 11px; }
+.code-actions .primary { border-color: var(--phos); color: var(--phos); }

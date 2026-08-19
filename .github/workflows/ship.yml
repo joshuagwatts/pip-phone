@@ -20,9 +20,13 @@ jobs:
       - run: npm ci --omit=dev
       - name: JS module check
         run: |
+          node --check www/boot.js
           node --check www/brain.js
           node --check www/app.js
           node --check www/cloud.js
+          node --check www/codefs.js
+          node --check www/codeagent.js
+          node --check www/code.js
           node --input-type=module -e "import './www/brain.js'; console.log('brain ok')"
       - run: npx cap sync android
       - name: Ensure CapacitorHttp native plugin
@@ -138,7 +142,11 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Stable rollback** — same Phone Pip as v0.1.6 (Grok, cloud brains, desktop GPU pairing).
+            **Phone Pip v0.1.15** — CODE self-edit, theme engine, calendar, story memory.
+
+            - **CODE tab** — edit phone www via prompts (overlay + RELOAD). UPGRADE PC when paired.
+            - **COMM themes** — phthalo green, reset ui theme (DATA → RESET THEME).
+            - **TODAY** — calendar + substantive story moments.
 
             Install Pip.apk over your current build. KIT stays. Do not uninstall first.
           files: |
