@@ -1,18 +1,57 @@
 {
   "name": "pip-phone",
   "private": true,
-  "version": "0.1.2",
-  "description": "Standalone Pip for Android — OPP, kit, crew voice",
+  "version": "0.1.3",
+  "description": "Standalone Pip — Android, iPhone, Mac, Windows",
+  "main": "desktop/main.js",
   "scripts": {
-    "sync": "cap sync android",
-    "open": "cap open android",
-    "preview": "python -m http.server 7422 --directory www"
+    "sync": "cap sync",
+    "sync:android": "cap sync android",
+    "sync:ios": "cap sync ios",
+    "open:android": "cap open android",
+    "open:ios": "cap open ios",
+    "desktop": "electron .",
+    "dist:win": "electron-builder --win portable --publish never",
+    "dist:mac": "electron-builder --mac dmg --publish never"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",
     "@capacitor/app": "^8.1.1",
     "@capacitor/browser": "^8.0.4",
     "@capacitor/cli": "^8.5.0",
-    "@capacitor/core": "^8.5.0"
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/ios": "^8.5.0"
+  },
+  "devDependencies": {
+    "electron": "^37.3.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.pip.phone",
+    "productName": "Pip",
+    "asar": true,
+    "files": [
+      "desktop/**/*",
+      "www/**/*"
+    ],
+    "directories": {
+      "output": "dist-desktop"
+    },
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "Pip-Windows.exe",
+      "icon": "www/icon-512.png"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "artifactName": "Pip-Mac.${ext}",
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "icon": "www/icon-512.png"
+    }
   }
 }

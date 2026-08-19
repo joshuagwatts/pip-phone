@@ -7,6 +7,12 @@
     "adjustMarginsForEdgeToEdge": "disable",
     "backgroundColor": "#0a0f0a"
   },
+  "ios": {
+    "contentInset": "automatic",
+    "backgroundColor": "#0a0f0a",
+    "preferredContentMode": "mobile",
+    "allowsLinkPreview": false
+  },
   "plugins": {
     "CapacitorHttp": {
       "enabled": false

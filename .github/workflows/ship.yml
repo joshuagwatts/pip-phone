@@ -1,0 +1,97 @@
+name: Ship
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --omit=dev
+      - run: npx cap sync android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+      - name: Build debug APK
+        working-directory: android
+        run: chmod +x gradlew && ./gradlew assembleDebug
+      - name: Name the file Pip.apk
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk Pip.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pip-apk
+          path: Pip.apk
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx electron-builder --win portable --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pip-windows
+          path: dist-desktop/Pip-Windows.exe
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx electron-builder --mac dmg --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pip-mac
+          path: dist-desktop/Pip-Mac.dmg
+          if-no-files-found: error
+
+  release:
+    needs: [android, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Flatten downloads
+        run: |
+          mv Pip-apk/Pip.apk Pip.apk
+          mv Pip-windows/Pip-Windows.exe Pip-Windows.exe
+          mv Pip-mac/Pip-Mac.dmg Pip-Mac.dmg
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.1
+          name: Pip
+          body: |
+            - **Android** — Pip.apk. Open it on the phone. Allow install.
+            - **Windows** — Pip-Windows.exe. Run it.
+            - **Mac** — Pip-Mac.dmg. Right-click Open the first time (unsigned).
+            - **iPhone** — needs a Mac + Xcode. `npx cap sync ios` then Run on the device.
+          files: |
+            Pip.apk
+            Pip-Windows.exe
+            Pip-Mac.dmg
+          fail_on_unmatched_files: true
