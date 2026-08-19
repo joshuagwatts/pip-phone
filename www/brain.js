@@ -260,7 +260,6 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     }
   }
 
-  const cloud = cloudStatus(settings);
   if (cloud.leaky && cloud.keyed.length) {
     try {
       emit(cloud.pin === "xai" ? "GROK" : "CLOUD");

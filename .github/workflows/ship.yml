@@ -18,7 +18,28 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci --omit=dev
+      - name: JS module check
+        run: |
+          node --check www/brain.js
+          node --check www/app.js
+          node --check www/cloud.js
+          node --input-type=module -e "import './www/brain.js'; console.log('brain ok')"
       - run: npx cap sync android
+      - name: Ensure CapacitorHttp native plugin
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("android/app/src/main/assets/capacitor.plugins.json")
+          data = json.loads(p.read_text())
+          hit = {"pkg": "@capacitor/core", "classpath": "com.getcapacitor.plugin.CapacitorHttp"}
+          if not any(x.get("classpath") == hit["classpath"] for x in data):
+              data.append(hit)
+              p.write_text(json.dumps(data, indent="\t") + "\n")
+              print("added CapacitorHttp")
+          else:
+              print("CapacitorHttp already registered")
+          PY
       - name: Stamp Android version
         run: |
           python3 - <<'PY'
