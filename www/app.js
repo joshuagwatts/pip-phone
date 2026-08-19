@@ -1,8 +1,8 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, ensurePip, pipStatus, activeBrain, cloudStatus } from "./brain.js";
 import { probeProvider, PROVIDERS } from "./cloud.js";
-import { desktopConfigured, desktopLogin, desktopStatus } from "./desktop.js";
-import { biometricAvailable, guardSecrets } from "./biometric.js";
+import { desktopConfigured, desktopLogin, desktopStatus, discoverDesktop } from "./desktop.js";
+import { biometricAvailable, guardSecrets, setPin } from "./biometric.js";
 import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
@@ -387,15 +387,16 @@ function renderData() {
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
     <h3>DESKTOP GPU</h3>
-    <p class="muted">On desktop Pip: DATA → enable Phone LAN + set a password. Then pair here on the same Wi‑Fi. COMM uses your PC's Ollama/GPU.</p>
-    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.1.42:7420" /></div>
-    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="Phone LAN password from desktop DATA" /></div>
+    <p class="muted">Desktop Pip DATA → password + LAN and/or VPN (Tailscale / WireGuard). Paste any pairing URL here — Wi‑Fi or VPN.</p>
+    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://100.x.x.x:7420 or http://192.168.x.x:7420" /></div>
+    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="same password as desktop DATA" /></div>
     <div class="actions">
       <button type="button" id="desk-pair" class="primary">${paired ? "RE-PAIR" : "PAIR"}</button>
+      <button type="button" id="desk-discover">DISCOVER</button>
       <button type="button" id="desk-test">TEST</button>
       <button type="button" id="desk-clear">FORGET</button>
     </div>
-    <p class="muted" id="desk-msg">${paired ? "Paired. COMM prefers desktop GPU." : "Not paired."}</p>
+    <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}` : "Not paired."}</p>
     <h3>BRAIN</h3>
     <div class="field"><span>POSTURE</span>
       <select id="set-privacy">
@@ -422,11 +423,12 @@ function renderData() {
       <button type="button" id="probe-groq">PROBE GROQ</button>
     </div>
     <h3>LOCK</h3>
-    <p class="muted">Require biometric unlock before opening keys or pairing. ${biometricAvailable() ? "Sensor available on this device." : "No sensor — lock is a soft gate."}</p>
-    <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
-    <h3>VPN (NEXT)</h3>
-    <p class="muted">Tailscale / WireGuard pairing is on the roadmap so Phone Pip can reach your desktop GPU off Wi‑Fi. For now: same home network + Phone LAN.</p>
-    <div class="field"><span>VPN NOTE</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="Tailscale hostname, WireGuard profile name…" /></div>
+    <p class="muted">Biometric or PIN before keys/pairing. ${biometricAvailable() ? "Sensor available." : "Set a PIN if no sensor."}</p>
+    <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> LOCK KEYS + PAIRING</label>
+    <div class="field"><span>PIN (4+ digits)</span><input id="set-phone-pin" type="password" inputmode="numeric" placeholder="${s.pin_hash ? "leave blank to keep" : "set a PIN"}" autocomplete="off" /></div>
+    <h3>VPN</h3>
+    <p class="muted">Off Wi‑Fi: install Tailscale on PC + phone, enable VPN on desktop DATA, DISCOVER here. WireGuard: copy phone config from desktop DATA → import in WireGuard app → pair at 10.8.0.1:7420.</p>
+    <div class="field"><span>VPN NOTE</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="Tailscale hostname, WG profile name…" /></div>
     <h3>UPDATE</h3>
     <p class="muted" id="pip-ver">Opens GitHub. Download Pip.apk. Install over this app. KIT stays.</p>
     <div class="actions"><button type="button" id="pip-update">UPDATE PIP</button></div>
@@ -451,13 +453,20 @@ function renderData() {
     persist();
   };
 
-  $("#data-save").onclick = () => {
-    guardSecrets(db.settings, () => {
-      grabSettings();
-      setStatus("SAVED");
-      updateBrainChip();
-      render();
-    }).catch((e) => setStatus(String(e.message || e)));
+  $("#data-save").onclick = async () => {
+    try {
+      await guardSecrets(db.settings, async () => {
+        grabSettings();
+        const pin = ($("#set-phone-pin") && $("#set-phone-pin").value) || "";
+        if (pin) await setPin(db.settings, pin);
+        persist();
+        setStatus("SAVED");
+        updateBrainChip();
+        render();
+      });
+    } catch (e) {
+      setStatus(String(e.message || e));
+    }
   };
 
   $("#desk-pair").onclick = () => {
@@ -472,11 +481,37 @@ function renderData() {
       try {
         const out = await desktopLogin(db.settings, pass);
         db.settings.desktop_token = out.token || "loopback";
+        db.settings.desktop_url = out.url || db.settings.desktop_url;
         db.settings.desktop_paired = true;
         persist();
-        $("#desk-msg").textContent = "Paired. COMM prefers desktop GPU.";
+        const extra = (out.urls || []).length > 1 ? ` · ${out.urls.length} URLs` : "";
+        $("#desk-msg").textContent = `Paired · ${db.settings.desktop_url}${extra}`;
         setStatus("DESKTOP PAIRED");
         updateBrainChip();
+      } catch (e) {
+        setStatus(String(e.message || e));
+      }
+    }).catch((e) => setStatus(String(e.message || e)));
+  };
+
+  $("#desk-discover").onclick = () => {
+    guardSecrets(db.settings, async () => {
+      grabSettings();
+      const pass = ($("#set-dpass").value || "").trim();
+      const seed = ($("#set-durl").value || db.settings.desktop_url || "").trim();
+      if (!seed) {
+        setStatus("PASTE A DESKTOP URL FIRST");
+        return;
+      }
+      setStatus("DISCOVERING…");
+      try {
+        const out = await discoverDesktop(seed, pass);
+        db.settings.desktop_url = out.url;
+        db.settings.desktop_token = out.token;
+        db.settings.desktop_paired = true;
+        persist();
+        render();
+        setStatus(`FOUND ${(out.urls || []).length || 1} URL(S)`);
       } catch (e) {
         setStatus(String(e.message || e));
       }

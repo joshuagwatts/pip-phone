@@ -98,22 +98,16 @@ jobs:
           mv Pip-mac/Pip-Mac.dmg Pip-Mac.dmg
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.6
-          name: Pip v0.1.6
+          tag_name: v0.1.7
+          name: Pip v0.1.7
           body: |
-            **Phone Pip v0.1.6** — cloud brains + desktop GPU pairing.
+            **Phone Pip v0.1.7** — VPN pairing + desktop GPU over Tailscale/WireGuard.
 
-            - **Grok / xAI** — DATA → LEAKY → pin GROK → paste XAI key → PROBE GROK
-            - **Cloud router** — Groq, OpenRouter, Cerebras, Mistral, Gemini wired (keys actually used now)
-            - **Desktop GPU** — pair to desktop Pip on same Wi‑Fi; COMM uses PC Ollama
-            - **Output cleanup** — less weird code/json spam from on-device Qwen
-            - **Biometric lock** — optional gate before keys/pairing (when sensor available)
+            - **DISCOVER** — auto-find desktop pairing URLs (LAN + VPN)
+            - **PIN lock** — biometric or PIN before keys/pairing
+            - Pair over Tailscale (100.x) or WireGuard (10.8.0.x)
 
-            **Install**
-            - **Android** — Pip.apk. Install over the previous build. KIT stays.
-            - **Windows** — Pip-Windows.exe
-            - **Mac** — Pip-Mac.dmg
-            - **Desktop Pip** — enable Phone LAN in DATA, set password, restart, pair from phone DATA tab
+            **Desktop Pip** — DATA → VPN mode (Tailscale / WireGuard / All) → restart → pair from phone.
           files: |
             Pip.apk
             Pip-Windows.exe

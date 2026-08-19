@@ -41,6 +41,7 @@ function blank() {
       desktop_token: "",
       desktop_paired: false,
       biometric_lock: false,
+      pin_hash: "",
       vpn_note: "",
     },
   };
