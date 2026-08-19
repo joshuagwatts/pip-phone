@@ -25,8 +25,8 @@ jobs:
           from pathlib import Path
           import json, os, re
           pkg = json.loads(Path("package.json").read_text())
-          name = str(pkg.get("version") or "0.1.4")
-          code = max(21, int(os.environ.get("GITHUB_RUN_NUMBER") or "21"))
+          name = str(pkg.get("version") or "0.1.5")
+          code = max(22, int(os.environ.get("GITHUB_RUN_NUMBER") or "22"))
           p = Path("android/app/build.gradle")
           t = p.read_text()
           t = re.sub(r"versionCode \d+", f"versionCode {code}", t)
@@ -101,7 +101,7 @@ jobs:
           tag_name: v0.1.1
           name: Pip
           body: |
-            - **Android** — Pip.apk. Open it on the phone. It updates over the app already there. Do not uninstall.
+            - **Android** — Pip.apk. Same signing key going forward. If this one refuses to overlay, uninstall once, install this APK, then later updates sit on top.
             - **Windows** — Pip-Windows.exe. Replace the old one. Run it.
             - **Mac** — Pip-Mac.dmg. Right-click Open the first time (unsigned).
             - **iPhone** — needs a Mac + Xcode. `npx cap sync ios` then Run on the device.

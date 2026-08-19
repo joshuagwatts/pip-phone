@@ -43,8 +43,17 @@ uniform float u_fft[64];
 
 export function compile(canvas, src) {
   if (!canvas) return "no canvas";
+  if (rt.canvas && rt.canvas !== canvas) {
+    rt.prog = null;
+    rt.buf = null;
+    rt.gl = null;
+  }
   const gl = canvas.getContext("webgl", { antialias: false, alpha: false, preserveDrawingBuffer: false });
   if (!gl) return "WebGL missing";
+  if (rt.gl && rt.gl !== gl) {
+    rt.prog = null;
+    rt.buf = null;
+  }
   rt.gl = gl;
   rt.canvas = canvas;
   const vs = gl.createShader(gl.VERTEX_SHADER);
@@ -60,13 +69,13 @@ export function compile(canvas, src) {
   gl.bindAttribLocation(prog, 0, "a_pos");
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return gl.getProgramInfoLog(prog) || "link failed";
-  if (rt.prog) gl.deleteProgram(rt.prog);
-  rt.prog = prog;
-  if (!rt.buf) {
-    rt.buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, rt.buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  if (rt.prog) {
+    try { gl.deleteProgram(rt.prog); } catch { /* old context */ }
   }
+  rt.prog = prog;
+  rt.buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, rt.buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
   const u = (name) => gl.getUniformLocation(prog, name);
   rt.loc = {
     res: u("u_resolution"),
@@ -78,7 +87,20 @@ export function compile(canvas, src) {
     energy: u("u_energy"),
     fft: u("u_fft"),
   };
+  canvas.addEventListener("webglcontextlost", (e) => {
+    e.preventDefault();
+    lose();
+  }, { once: true });
   return "";
+}
+
+export function lose() {
+  stopLoop();
+  rt.prog = null;
+  rt.buf = null;
+  rt.gl = null;
+  rt.canvas = null;
+  rt.lastTs = 0;
 }
 
 export function readFft() {
@@ -109,7 +131,11 @@ function frame(ts) {
   rt.raf = 0;
   const gl = rt.gl;
   const canvas = rt.canvas;
-  if (!gl || !canvas || !rt.prog) return;
+  if (!gl || !canvas || !rt.prog || !rt.buf) return;
+  if (typeof gl.isContextLost === "function" && gl.isContextLost()) {
+    lose();
+    return;
+  }
   const dt = rt.lastTs ? Math.min(0.05, (ts - rt.lastTs) / 1000) : 0.016;
   rt.lastTs = ts;
   const fft = readFft();

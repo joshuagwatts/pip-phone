@@ -174,6 +174,30 @@ async function complete(messages, temperature = 0.7, maxTokens = 400) {
   return (await eng.complete(messages, temperature, maxTokens)).trim();
 }
 
+export async function sparkLine(recent = [], stanceLabel = "PIP") {
+  const used = (recent || []).filter(Boolean).slice(-8).join("; ") || "none";
+  const raw = await complete(
+    [
+      {
+        role: "system",
+        content:
+          "You are Pip. One line of encouragement for a full-screen VIBE overlay. " +
+          "Jim Rohn, Bob Ross, Alex Hormozi, Gary Vee. Practical, kind, patient. " +
+          "One sentence. Prefer under 10 words, never over 14. No emoji, no quotes, no name, no greeting. " +
+          "Never: unleash, harness, beast, devour, crush, dominate, warrior, savage, kill it, lock in, get after it.",
+      },
+      { role: "user", content: `Stance ${stanceLabel}. Do not repeat: ${used}` },
+    ],
+    0.95,
+    36,
+  );
+  return String(raw || "")
+    .split(/\n/)[0]
+    .replace(/^["'\s]+|["'\s]+$/g, "")
+    .replace(/^pip\s*[:—-]\s*/i, "")
+    .trim();
+}
+
 export async function chat(settings, history, text, onProgress, kit) {
   track(onProgress);
   const operator = settings.operator || "Joshua";

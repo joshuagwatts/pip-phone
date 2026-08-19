@@ -6,7 +6,7 @@ import { ingestLinks, needsIngest } from "./digest.js";
 import { hasNativeHttp, openUrl } from "./net.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
-import { compile, startLoop, stopLoop, startMic, stopMic, isListening } from "./vibe.js";
+import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -18,31 +18,6 @@ let vibeStem = "sendoff";
 let lastShot = "";
 let radioClock = 0;
 let radioBusy = false;
-
-const RELEASE = "https://github.com/joshuagwatts/pip-phone/releases/latest/download";
-
-function pipPlatform() {
-  const cap = window.Capacitor;
-  if (cap && typeof cap.getPlatform === "function") {
-    const p = cap.getPlatform();
-    if (p && p !== "web") return p;
-  }
-  const ua = navigator.userAgent || "";
-  if (/PipDesktop/i.test(ua) && /Mac OS X/i.test(ua)) return "electron-mac";
-  if (/PipDesktop/i.test(ua)) return "electron-win";
-  if (/iPhone|iPad|iPod/i.test(ua)) return "ios";
-  if (/Android/i.test(ua)) return "android";
-  return "web";
-}
-
-function updateTarget() {
-  const p = pipPlatform();
-  if (p === "android") return { href: `${RELEASE}/Pip.apk`, label: "UPDATE PIP" };
-  if (p === "electron-win") return { href: `${RELEASE}/Pip-Windows.exe`, label: "UPDATE PIP" };
-  if (p === "electron-mac") return { href: `${RELEASE}/Pip-Mac.dmg`, label: "UPDATE PIP" };
-  if (p === "ios") return { href: "https://github.com/joshuagwatts/pip-phone/releases/latest", label: "OPEN RELEASE" };
-  return { href: "https://github.com/joshuagwatts/pip-phone/releases/latest", label: "UPDATE PIP" };
-}
 
 function setStatus(msg) {
   $("#status").textContent = String(msg || "").toUpperCase();
@@ -76,10 +51,23 @@ function render() {
 
 function leaveVibe() {
   stopLoop();
+  lose();
   if (radioClock) {
     clearInterval(radioClock);
     radioClock = 0;
   }
+}
+
+function bootShader(stem) {
+  vibeStem = stem || vibeStem;
+  const go = () => {
+    const canvas = $("#vibe-gl");
+    if (!canvas || tab !== "vibe") return;
+    const err = compile(canvas, shaderOf(vibeStem));
+    if (err) setStatus(err);
+    startLoop();
+  };
+  requestAnimationFrame(() => requestAnimationFrame(go));
 }
 
 function paintMotiv() {
@@ -108,8 +96,7 @@ function paintMotiv() {
   const stem = nxt.vibe || pickShader(line, nxt.kind || "pip", vibeStem).stem;
   if (stem && stem !== vibeStem) {
     vibeStem = stem;
-    const err = compile($("#vibe-gl"), shaderOf(stem));
-    if (err) setStatus(err);
+    bootShader(stem);
     const sel = $("#vibe-file");
     if (sel) sel.value = stem;
   }
@@ -188,18 +175,13 @@ function renderVibe() {
     }
   };
   $("#vibe-file").onchange = () => {
-    vibeStem = $("#vibe-file").value;
-    const err = compile($("#vibe-gl"), shaderOf(vibeStem));
-    if (err) setStatus(err);
+    bootShader($("#vibe-file").value);
   };
   const overlay = $("#vibe-action");
   if (overlay) overlay.onclick = () => tapMotiv(false);
   lastShot = "";
   const startStem = vibeMode === "motivation" ? ((mot.next && mot.next.vibe) || vibeStem) : vibeStem;
-  vibeStem = startStem;
-  const err = compile($("#vibe-gl"), shaderOf(vibeStem));
-  if (err) setStatus(err);
-  startLoop();
+  bootShader(startStem);
   paintMotiv();
   armRadio();
 }
@@ -392,8 +374,8 @@ function renderData() {
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
     <h3>UPDATE</h3>
-    <p class="muted">Open the new file on this device. It installs over Pip. KIT stays. Do not uninstall first.</p>
-    <div class="actions"><button type="button" id="pip-update">${esc(updateTarget().label)}</button></div>
+    <p class="muted" id="pip-ver">Opens GitHub. Download Pip.apk. Install over this app. KIT stays. First time on a new signing key may still ask you to uninstall once — after that, updates overlay.</p>
+    <div class="actions"><button type="button" id="pip-update">UPDATE PIP</button></div>
     <h3>OPTIONAL TURBO</h3>
     <p class="muted">Not required. COMM already runs on-device. Leave blank.</p>
     <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="optional" /></div>
@@ -412,11 +394,22 @@ function renderData() {
   };
   const upd = $("#pip-update");
   if (upd) {
-    upd.onclick = () => {
-      const hit = updateTarget();
-      openUrl(hit.href);
-      setStatus("OPEN THE FILE · INSTALL OVER PIP");
+    upd.onclick = async () => {
+      setStatus("OPENING GITHUB…");
+      try {
+        await openUrl("https://github.com/joshuagwatts/pip-phone/releases/latest", { system: true });
+        setStatus("DOWNLOAD PIP.APK · INSTALL OVER THIS APP");
+      } catch (e) {
+        setStatus(String(e.message || e));
+      }
     };
+  }
+  const cap = window.Capacitor;
+  if (cap && cap.Plugins && cap.Plugins.App && cap.Plugins.App.getInfo) {
+    cap.Plugins.App.getInfo().then((info) => {
+      const el = $("#pip-ver");
+      if (el && info && info.version) el.textContent = `This build ${info.version}. Opens GitHub. Download Pip.apk. Install over this app.`;
+    }).catch(() => {});
   }
 }
 

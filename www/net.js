@@ -91,8 +91,13 @@ export async function httpPostJson(url, headers, payload, timeoutMs = 60000) {
   }
 }
 
-export async function openUrl(url) {
+export async function openUrl(url, opts = {}) {
   const cap = window.Capacitor;
+  const system = Boolean(opts.system);
+  if (system && cap && cap.Plugins && cap.Plugins.App && cap.Plugins.App.openUrl) {
+    await cap.Plugins.App.openUrl({ url });
+    return;
+  }
   if (cap && cap.Plugins && cap.Plugins.Browser) {
     await cap.Plugins.Browser.open({ url });
     return;
