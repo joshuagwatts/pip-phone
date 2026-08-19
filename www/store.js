@@ -21,7 +21,7 @@ const emptyKit = () => Object.fromEntries(KIT_LABELS.map(([k]) => [k, ""]));
 
 function blank() {
   return {
-    kit: emptyKit(),
+    kit: { ...emptyKit(), resume: "", digest: { sources: [], links_key: "" } },
     opps: [],
     chat: [],
     dirty: { answers: [] },

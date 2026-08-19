@@ -2,6 +2,7 @@ import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, ensurePip, pipStatus } from "./brain.js";
 import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
+import { ingestLinks, needsIngest } from "./digest.js";
 import { hasNativeHttp, openUrl } from "./net.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
@@ -296,19 +297,46 @@ function bindPlace() {
 function renderKit() {
   $("#view").innerHTML = `
     <h3>APPLICATION KIT</h3>
-    <p class="muted">Same answers every time. City, state, country is hunt home. Copy. Don't rewrite for sport.</p>
+    <p class="muted">Same answers every time. Paste site and socials in LINKS, then INGEST — Instagram public bio and captions rebuild the resume. City, state, country is hunt home.</p>
     ${KIT_LABELS.map(([k, label]) => {
       const short = k === "city" || k === "state" || k === "country";
       return `<div class="field"><span>${esc(label).toUpperCase()}</span>
         <textarea id="kit-${k}"${short ? ' class="short"' : ""}>${esc(db.kit[k] || "")}</textarea>
       </div>`;
     }).join("")}
-    <div class="dock"><button type="button" class="primary" id="kit-save">SAVE KIT</button></div>`;
+    ${db.kit.resume ? `<h3>ASSEMBLED RESUME</h3><div class="copy-block"><p>${esc(String(db.kit.resume).slice(0, 1600))}${String(db.kit.resume).length > 1600 ? "…" : ""}</p></div>` : ""}
+    <div class="dock">
+      <button type="button" class="primary" id="kit-save">SAVE KIT</button>
+      <button type="button" id="kit-ingest">INGEST LINKS</button>
+    </div>`;
   $("#kit-save").onclick = () => {
-    for (const [k] of KIT_LABELS) db.kit[k] = ($("#kit-" + k).value || "").trim();
+    grabKitFields();
     persist();
     setStatus("KIT SAVED");
   };
+  $("#kit-ingest").onclick = runIngest;
+}
+
+function grabKitFields() {
+  for (const [k] of KIT_LABELS) db.kit[k] = ($("#kit-" + k)?.value || "").trim();
+}
+
+async function runIngest() {
+  grabKitFields();
+  if (!String(db.kit.links || "").trim()) {
+    setStatus("PASTE LINKS FIRST");
+    return;
+  }
+  setStatus("READING LINKS…");
+  try {
+    db.kit = await ingestLinks(db.kit, setStatus);
+    persist();
+    render();
+    const n = (db.kit.digest && db.kit.digest.sources && db.kit.digest.sources.length) || 0;
+    setStatus(n ? `READ ${n} · RESUME READY` : "NOTHING PUBLIC ON THOSE LINKS");
+  } catch (e) {
+    setStatus(String(e.message || e));
+  }
 }
 
 function renderData() {
@@ -387,6 +415,15 @@ async function draftThis() {
   const sel = selected();
   if (!sel) return;
   if (!(sel.questions || []).length) { setStatus("READ PAGE OR PASTE QUESTIONS"); return; }
+  if (needsIngest(db.kit)) {
+    setStatus("READING LINKS…");
+    try {
+      db.kit = await ingestLinks(db.kit, setStatus);
+      persist();
+    } catch (e) {
+      setStatus(String(e.message || e));
+    }
+  }
   const kind = classify(sel.title, sel.url, sel.questions).id;
   sel.kind = kind;
   const seeded = suggestAnswers(sel.questions, db.kit, sel.title, kind);

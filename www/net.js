@@ -28,13 +28,14 @@ function assertPublic(url) {
   return u.toString();
 }
 
-export async function httpGet(url, timeoutMs = 14000) {
+export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
   const target = assertPublic(url);
+  const headers = { "User-Agent": UA, Accept: "text/html,application/json,*/*", ...extraHeaders };
   const http = nativeHttp();
   if (http) {
     const res = await http.get({
       url: target,
-      headers: { "User-Agent": UA, Accept: "text/html,application/json,*/*" },
+      headers,
       connectTimeout: timeoutMs,
       readTimeout: timeoutMs,
       disableRedirects: false,
@@ -46,7 +47,7 @@ export async function httpGet(url, timeoutMs = 14000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(target, { signal: ctrl.signal, redirect: "follow", headers: { "User-Agent": UA } });
+    const res = await fetch(target, { signal: ctrl.signal, redirect: "follow", headers });
     if (!res.ok) throw new Error(`fetch ${res.status}`);
     return { url: res.url, status: res.status, body: await res.text() };
   } finally {

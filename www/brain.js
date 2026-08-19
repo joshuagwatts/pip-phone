@@ -1,5 +1,6 @@
 import { FALLBACK, isBlank, talkSystem, SHOTS } from "./crew.js";
 import { draftVoice } from "./kind.js";
+import { typedLinks } from "./digest.js";
 
 const QWEN_MLC = [
   "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
@@ -208,6 +209,9 @@ export async function draftAnswers(settings, { title, kit, questions, kind }, on
   delete kitBits.email;
   delete kitBits.phone;
   delete kitBits.ready;
+  delete kitBits.digest;
+  kitBits.links_by_kind = typedLinks(kit);
+  kitBits.resume = String(kit.resume || "").slice(0, 2500);
   const asks = questions.map((q) => ({
     q: q.prompt || q.q || "",
     type: q.type || "short",
@@ -221,6 +225,8 @@ export async function draftAnswers(settings, { title, kit, questions, kind }, on
         draftVoice(kind) +
         " Ground every sentence in KIT. Do not invent employers, awards, clients, or numbers. " +
         "If a number is required and missing, write ESTIMATE and say they must confirm. " +
+        "Match the question. Instagram fields get only the Instagram URL. Website fields get the site. " +
+        "Resume/CV fields get the assembled resume. Socials get socials. Do not dump every link into every field. " +
         "No corporate sludge. No emoji. No email or phone. " +
         "Also write a5: the same facts at a 5th-grade reading level. " +
         'Return ONLY JSON {"answers":[{"q":"...","a":"...","a5":"..."}]} one object per question, same q text.',

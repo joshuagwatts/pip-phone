@@ -1,6 +1,7 @@
 import { httpGet } from "./net.js";
 import { uid } from "./store.js";
 import { classify, placeRings, TYPE_QUERIES } from "./kind.js";
+import { pickLink } from "./digest.js";
 
 const FB_RE = /FB_PUBLIC_LOAD_DATA_\s*=\s*(.*?);\s*<\/script>/s;
 const TYPE_NAME = {
@@ -264,8 +265,11 @@ export function answerFromKit(question, kit, title, qtype, kind) {
   if (/city|based|location|hometown|where do you live/.test(q)) {
     return [k.city, k.state, k.country].filter(Boolean).join(", ");
   }
-  if (/instagram|website|portfolio|\blink\b|url|social/.test(q)) return k.links || "";
-  if (/resume|cv|cover letter/.test(q)) return stitch([k.one_liner, k.bio_long || k.bio_short, k.materials]);
+  const picked = pickLink(question, k);
+  if (picked !== null) return picked;
+  if (/\b(resume|cv|curriculum)\b/.test(q) && !/cover/.test(q)) {
+    return (k.resume || stitch([k.one_liner, k.bio_long || k.bio_short, k.materials])).trim();
+  }
   if (/artist bio|bio & experience|artist statement|about yourself|tell us about/.test(q)) {
     if (kind === "job") return stitch([k.one_liner, k.bio_long || k.bio_short, k.materials]);
     if (kind === "music") {
