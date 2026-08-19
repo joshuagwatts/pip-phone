@@ -135,7 +135,7 @@ function renderVibe() {
           <div class="vibe-hint">${esc(mot.hint || "TAP")}</div>
         </div>
       </div>
-      <div class="vibe-foot" id="vibe-msg">${live ? "LIVE // MIC" : "IDLE // MIC PUMPS THE SHADER"}</div>
+      <div class="vibe-foot" id="vibe-msg">${live ? "LIVE // THE ROOM IS LISTENING" : "TAP THE SHOT. MIC PUMPS THE SHADER."}</div>
     </div>`;
   $("#vibe-dance").onclick = () => {
     vibeMode = "dance";
@@ -185,7 +185,7 @@ function renderOpp() {
   if (pane === "add") {
     $("#view").innerHTML = `
       <h3>NEW CALL</h3>
-      <p class="muted">Paste the apply URL. Pip reads public questions. You copy. Pip does not submit.</p>
+      <p class="muted">Drop the live apply URL. I read. I write. You paste. We don't submit.</p>
       <div class="field"><span>TITLE</span><input id="new-title" placeholder="Festival name" /></div>
       <div class="field"><span>URL</span><input id="new-url" placeholder="https://" /></div>
       <div class="field"><span>OR PASTE QUESTIONS</span><textarea id="new-qs" placeholder="One question per line"></textarea></div>
@@ -211,7 +211,7 @@ function renderOpp() {
             <button type="button" data-copy="${i}">COPY</button>
           </div>
           <textarea data-ans="${i}">${esc(a.a || "")}</textarea>
-        </div>`).join("") || `<p class="muted">No questions yet. READ PAGE or paste them.</p>`}
+        </div>`).join("") || `<p class="muted">Form's shy. READ PAGE or paste the questions — I'll write them with you.</p>`}
       <div class="field"><span>PASTE QUESTIONS</span><textarea id="paste-qs" placeholder="If the page is a wall, paste the questions."></textarea></div>
       <div class="dock">
         <button type="button" id="opp-back">BACK</button>
@@ -268,7 +268,7 @@ function renderOpp() {
       <button type="button" class="opp-card" data-id="${esc(o.id)}">
         <b>${esc(o.title)}</b>
         <span>${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · NO FORM"}${o.url ? " · " + esc(o.url.slice(0, 42)) : ""}</span>
-      </button>`).join("") || `<p class="muted">Empty. HUNT finds public calls, or ADD a URL you already have.</p>`}
+      </button>`).join("") || `<p class="muted">Nothing on the desk yet. HUNT a call, or ADD a URL you already want.</p>`}
     <div class="dock">
       <button type="button" class="primary" id="opp-hunt">HUNT</button>
       <button type="button" id="opp-add">ADD</button>
@@ -297,7 +297,7 @@ function bindPlace() {
 function renderKit() {
   $("#view").innerHTML = `
     <h3>APPLICATION KIT</h3>
-    <p class="muted">Same answers every time. Paste site and socials in LINKS, then INGEST — Instagram public bio and captions rebuild the resume. City, state, country is hunt home.</p>
+    <p class="muted">This is you, every time. Ingest the links. Rebuild the resume. Then go make the thing they can walk into.</p>
     ${KIT_LABELS.map(([k, label]) => {
       const short = k === "city" || k === "state" || k === "country";
       return `<div class="field"><span>${esc(label).toUpperCase()}</span>
@@ -343,7 +343,7 @@ function renderData() {
   const s = db.settings;
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">This is the phone. Memory lives here. KIT is the profile. HUNT logs calls and reads questions. DRAFT THIS writes from KIT. Qwen is Pip. Desktop sync comes later.</p>
+    <p class="muted">This phone is crew in your pocket. KIT is you. HUNT finds rooms. DRAFT THIS writes from the kit. COMM is Pip. Enjoy the contribution.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -441,7 +441,7 @@ async function draftThis() {
     Object.assign(sel, mergeDraft(sel, merged));
     persist();
     render();
-    setStatus("DRAFT READY · COPY");
+    setStatus("DRAFT READY · GO PASTE IT");
   } catch (e) {
     setStatus(String(e.message || e));
   }
@@ -559,9 +559,9 @@ function boot() {
   render();
   const chip = $("#mode-chip");
   if (chip) chip.textContent = "QWEN";
-  setStatus("PIP // WAKING QWEN");
+  setStatus("PIP // WAKING");
   ensurePip((msg) => setStatus(msg))
-    .then(() => setStatus("READY"))
+    .then(() => setStatus("PIP ON DECK"))
     .catch((e) => setStatus(String(e.message || e).toUpperCase()));
 }
 

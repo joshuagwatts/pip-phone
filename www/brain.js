@@ -18,9 +18,9 @@ export function brainReady() {
 }
 
 export function pipStatus() {
-  if (backend) return "PIP // QWEN";
-  if (loading) return lastProgress || "PIP // WAKING QWEN";
-  return "PIP // QWEN";
+  if (backend) return "PIP ON DECK";
+  if (loading) return lastProgress || "PIP // WAKING";
+  return "PIP ON DECK";
 }
 
 function emit(msg) {
@@ -87,7 +87,7 @@ function tfProgress(info) {
   } else if (info.status === "download") {
     emit("QWEN FETCH");
   } else if (info.status === "ready" || info.status === "done") {
-    emit("PIP // QWEN");
+    emit("PIP ON DECK");
   }
 }
 
@@ -136,17 +136,17 @@ async function makeTransformers() {
 export async function ensurePip(onProgress) {
   track(onProgress);
   if (backend) {
-    emit("PIP // QWEN");
+    emit("PIP ON DECK");
     return backend;
   }
   if (loading) return loading;
   loading = (async () => {
-    emit("PIP // WAKING QWEN");
+    emit("PIP // WAKING");
     const errors = [];
     if (navigator.gpu) {
       try {
         backend = await makeWebLlm();
-        emit("PIP // QWEN");
+        emit("PIP ON DECK");
         return backend;
       } catch (e) {
         errors.push(String(e.message || e));
@@ -154,7 +154,7 @@ export async function ensurePip(onProgress) {
     }
     try {
       backend = await makeTransformers();
-      emit("PIP // QWEN");
+      emit("PIP ON DECK");
       return backend;
     } catch (e) {
       errors.push(String(e.message || e));

@@ -14,27 +14,27 @@ export const STEM_TAGS = {
 const STANCES = [
   { id: "lunch", lo: 12, hi: 14, label: "LUNCH", beats: [
     { shot: "Smell the roses.", kind: "inspire", vibe: "sendoff" },
-    { shot: "Take a deep breath.", kind: "audit", vibe: "breath" },
-    { shot: "Don't forget to eat!", kind: "act", vibe: "water" },
+    { shot: "Feed the body. Then the dream.", kind: "audit", vibe: "breath" },
+    { shot: "Eat like you matter.", kind: "act", vibe: "water" },
   ]},
   { id: "grind", lo: 14, hi: 16, label: "KEEP GOING", beats: [
-    { shot: "Keep going!", kind: "inspire", vibe: "sendoff" },
-    { shot: "Be honest with yourself.", kind: "audit", vibe: "breath" },
-    { shot: "Do the next small thing.", kind: "act", vibe: "move" },
+    { shot: "The days compound.", kind: "inspire", vibe: "sendoff" },
+    { shot: "Don't wish it easier. Wish you better.", kind: "audit", vibe: "breath" },
+    { shot: "One more honest hour.", kind: "act", vibe: "move" },
   ]},
   { id: "still", lo: 16, hi: 18, label: "PATIENCE", beats: [
-    { shot: "Be light.", kind: "inspire", vibe: "sendoff" },
-    { shot: "Be patient.", kind: "audit", vibe: "breath" },
-    { shot: "Take a deep breath and proceed!", kind: "act", vibe: "mint" },
+    { shot: "Happy little progress.", kind: "inspire", vibe: "sendoff" },
+    { shot: "Slow is how trees grow.", kind: "audit", vibe: "breath" },
+    { shot: "Breathe. Then proceed.", kind: "act", vibe: "mint" },
   ]},
   { id: "push", lo: 18, hi: 20, label: "THE WORK", beats: [
     { shot: "Know your worth.", kind: "inspire", vibe: "sendoff" },
-    { shot: "What actually matters right now?", kind: "audit", vibe: "breath" },
-    { shot: "Stay with the work in front of you.", kind: "act", vibe: "move" },
+    { shot: "Make it useful. Make it seen.", kind: "audit", vibe: "breath" },
+    { shot: "Stay with the thing in front of you.", kind: "act", vibe: "move" },
   ]},
   { id: "dusk", lo: 20, hi: 22, label: "WIND DOWN", beats: [
-    { shot: "Shine on!", kind: "inspire", vibe: "sendoff" },
-    { shot: "You showed up today.", kind: "audit", vibe: "breath" },
+    { shot: "Shine on.", kind: "inspire", vibe: "sendoff" },
+    { shot: "You showed up. That's a life.", kind: "audit", vibe: "breath" },
     { shot: "Go smell the roses.", kind: "act", vibe: "sendoff" },
   ]},
 ];
@@ -45,14 +45,14 @@ const HINTS = {
   inspire: "TAP WHEN IT LANDS",
   audit: "TAP WHEN YOU'VE LOOKED",
   act: "TAP WHEN YOU'VE MOVED",
-  pip: "PIP · STILL GOING",
+  pip: "PIP · STILL WITH YOU",
 };
 
 const POOL = {
-  lunch: ["Eat. The work will wait.", "Take care of the body first.", "A good meal is part of the plan.", "Don't skip the simple things.", "Feed yourself like you matter."],
-  grind: ["Success is a few simple disciplines.", "Do what you can with this hour.", "You don't need more information.", "Just put in the time.", "Work a little on yourself too."],
-  still: ["Patience is a skill.", "Slow is how trees grow.", "Happy little progress.", "There's no rush in the important stuff.", "Macro patience. Micro care."],
-  push: ["The work is the work.", "You don't need a speech. You need a step.", "Make it useful.", "Stay with the thing in front of you.", "Give more than you take today."],
+  lunch: ["Eat. The work will wait.", "A good meal is part of the plan.", "Don't skip the simple things.", "Feed yourself like you matter.", "Fuel first. Then Holowatts."],
+  grind: ["Success is a few simple disciplines.", "You don't need more information.", "Volume. Then skill. Then volume.", "Work a little on yourself too.", "Document the work. The rest is noise."],
+  still: ["Patience is a skill.", "Slow is how trees grow.", "Happy little accidents.", "There's no rush in the important stuff.", "Macro patience. Micro care."],
+  push: ["The work is the love.", "You don't need a speech. You need a step.", "Make it useful. Make it seen.", "Give more than you take today.", "Stay with the thing in front of you."],
   dusk: ["You showed up. That's the whole day.", "Let it be enough.", "Rest is part of the discipline.", "Gratitude looks good on you.", "Tomorrow gets a well-fed you."],
   flow: ["You can do this.", "I'm still here. No hurry.", "Keep your word to yourself.", "Plant something today.", "Be grateful you're in the room."],
   any: [
@@ -63,13 +63,15 @@ const POOL = {
     "A little every day becomes a life.",
     "Simple. Not easy. Still simple.",
     "If it's useful, it's enough.",
-    "Patience is underrated. Use some.",
     "You're allowed to enjoy this.",
     "The garden doesn't shout. It grows.",
-    "Today's a good day to be decent.",
     "Keep your word to yourself.",
-    "Kindness is a strategy.",
     "The days compound. Be kind to them.",
+    "Make something they can walk into.",
+    "Your taste is the strategy.",
+    "Ship the honest version.",
+    "The live room is the point.",
+    "Be so good they have to look.",
   ],
 };
 
