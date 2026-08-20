@@ -91,6 +91,33 @@ p { line-height: 1.45; }
 }
 .opp-card b { display: block; color: var(--phos); margin-bottom: 0.25rem; }
 .opp-card span, .copy-block p { color: var(--muted); font-size: 12px; }
+.opp-search { margin-bottom: 0.75rem; }
+.opp-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.5rem 0 0.75rem; }
+.opp-chip {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+.opp-chip.on { border-color: var(--phos); color: var(--phos); }
+.opp-fit {
+  display: inline-block;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  margin: 0.15rem 0 0.35rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--line);
+}
+.opp-fit.fit-high { color: var(--phos); border-color: var(--phos); }
+.opp-fit.fit-mid { color: var(--amber); border-color: var(--amber); }
+.opp-fit.fit-low { color: var(--muted); }
+.scrape-row { margin-top: 0.5rem; }
+.scrape-inline { display: flex; gap: 0.4rem; align-items: stretch; }
+.scrape-inline input { flex: 1; min-width: 0; }
+.scrape-inline button { flex-shrink: 0; }
+.opp-card .opp-fit { margin-right: 0.35rem; }
 input, textarea, select {
   width: 100%;
   background: var(--inset);

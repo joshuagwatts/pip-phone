@@ -4,7 +4,7 @@ import { probeProvider, probeKeyed, providerHealth, PROVIDERS } from "./cloud.js
 import { desktopConfigured, desktopLogin, desktopStatus, findAndPair, pairAtUrl } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets } from "./biometric.js";
-import { hunt, mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
+import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
 import { hasNativeHttp, openUrl, httpLanGet, httpLanPostJson } from "./net.js";
@@ -27,13 +27,23 @@ import {
   tryMealCommand,
   syncMealsFromDesktop,
 } from "./meals.js";
-import { guideEntries, searchWiki, fetchWikiSummary, tryGuideCommand, formatGuideReply, looksLikeGuideQuery } from "./guide.js";
+import {
+  OPP_TYPES,
+  filterOpps,
+  fitLabel,
+  scoreFit,
+  huntOpportunities,
+  scrapeOpportunityUrl,
+  syncOppsFromDesktop,
+  tryOppCommand,
+} from "./oppdesk.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
 let tab = "opp";
 let pane = "list";
 let oppId = "";
+let oppFilter = { q: "", type: "all" };
 let calState = { calMonth: ym(), calDay: ymd() };
 let vibeMode = "motivation";
 let vibeStem = "sendoff";
@@ -235,9 +245,12 @@ function renderOpp() {
     return;
   }
   if (sel && pane === "call") {
+    const fit = scoreFit(sel, db.kit);
+    const badge = fitLabel(fit.score);
     const answers = sel.answers && sel.answers.length ? sel.answers : (sel.questions || []).map((q) => ({ q: q.prompt || q.q, a: "", a5: "", type: q.type }));
     $("#view").innerHTML = `
       <h3>${esc(sel.title)}</h3>
+      <p class="opp-fit ${badge.cls}">${badge.text} · ${fit.score}%</p>
       ${sel.url ? `<p class="muted">${esc(sel.url)}</p>` : ""}
       ${sel.note ? `<p class="muted">${esc(sel.note)}</p>` : ""}
       <p class="muted">${esc(labelOf(sel.kind || classify(sel.title, sel.url, sel.questions).id))}</p>
@@ -294,27 +307,60 @@ function renderOpp() {
     };
     return;
   }
+  const listed = filterOpps(rows, oppFilter, db.kit);
   $("#view").innerHTML = `
-    <h3>OPEN CALLS</h3>
+    <h3>OPPORTUNITIES</h3>
+    <p class="muted">Indeed-for-artists — Pip hunts real open calls, scrapes the form, drafts from your KIT. You paste. CHAT: <em>search for bass festival VJ calls</em> or paste a URL to scrape.</p>
+    <div class="opp-search">
+      <div class="field span2"><span>SEARCH / FOCUS</span>
+        <input id="opp-q" value="${esc(oppFilter.q)}" placeholder="e.g. public art RFP Oklahoma · VJ festival" />
+      </div>
+      <div class="opp-chips">${OPP_TYPES.map((t) => `
+        <button type="button" class="opp-chip ${oppFilter.type === t.id ? "on" : ""}" data-opp-type="${esc(t.id)}">${esc(t.label)}</button>`).join("")}</div>
+    </div>
     <div class="place-row">
       <div class="field"><span>CITY</span><input id="hunt-city" value="${esc(db.kit.city || "")}" placeholder="Edmond" /></div>
       <div class="field"><span>STATE</span><input id="hunt-state" value="${esc(db.kit.state || "")}" placeholder="Oklahoma" /></div>
       <div class="field span2"><span>COUNTRY</span><input id="hunt-country" value="${esc(db.kit.country || "")}" placeholder="United States" /></div>
     </div>
-    ${rows.map((o) => `
+    <div class="field scrape-row"><span>SCRAPE URL</span>
+      <div class="scrape-inline">
+        <input id="opp-scrape-url" placeholder="https://… apply form" />
+        <button type="button" id="opp-scrape-go">SCRAPE</button>
+      </div>
+    </div>
+    ${listed.map((o) => {
+      const badge = fitLabel(o.fitScore || 0);
+      return `
       <button type="button" class="opp-card" data-id="${esc(o.id)}">
         <b>${esc(o.title)}</b>
-        <span>${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · NO FORM"}${o.url ? " · " + esc(o.url.slice(0, 42)) : ""}</span>
-      </button>`).join("") || `<p class="muted">Nothing on the desk yet. HUNT a call, or ADD a URL you already want.</p>`}
+        <span class="opp-fit ${badge.cls}">${badge.text}</span>
+        <span>${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · scrape"}${o.url ? " · " + esc(o.url.slice(0, 36)) : ""}</span>
+      </button>`;
+    }).join("") || `<p class="muted">Nothing on the desk. SEARCH hunts profile-fit calls. SCRAPE pulls questions from a URL you already found.</p>`}
     <div class="dock">
-      <button type="button" class="primary" id="opp-hunt">HUNT</button>
+      <button type="button" class="primary" id="opp-search-go">SEARCH</button>
+      <button type="button" id="opp-hunt">HUNT ALL</button>
       <button type="button" id="opp-add">ADD</button>
+      ${desktopConfigured(db.settings) ? `<button type="button" id="opp-sync">SYNC</button>` : ""}
     </div>`;
   $("#view").querySelectorAll("[data-id]").forEach((el) => {
     el.onclick = () => { oppId = el.dataset.id; pane = "call"; render(); };
   });
+  $("#view").querySelectorAll("[data-opp-type]").forEach((el) => {
+    el.onclick = () => {
+      oppFilter.type = el.dataset.oppType;
+      render();
+    };
+  });
+  const qEl = $("#opp-q");
+  if (qEl) qEl.onchange = () => { oppFilter.q = qEl.value.trim(); };
   $("#opp-add").onclick = () => { pane = "add"; render(); };
-  $("#opp-hunt").onclick = runHunt;
+  $("#opp-search-go").onclick = () => runHunt(false);
+  $("#opp-hunt").onclick = () => runHunt(true);
+  $("#opp-scrape-go").onclick = scrapeFromBar;
+  const syncBtn = $("#opp-sync");
+  if (syncBtn) syncBtn.onclick = syncOpps;
   bindPlace();
 }
 
@@ -1151,27 +1197,59 @@ async function draftThis() {
   }
 }
 
-async function runHunt() {
+async function scrapeFromBar() {
+  const url = ($("#opp-scrape-url")?.value || "").trim();
+  if (!url) { setStatus("PASTE A URL"); return; }
+  setStatus("SCRAPING…");
+  try {
+    const row = await scrapeOpportunityUrl(url, db.kit, { settings: db.settings });
+    const exists = db.opps.find((o) => o.url === row.url);
+    if (exists) Object.assign(exists, row, { id: exists.id });
+    else db.opps.unshift(row);
+    persist();
+    oppId = (exists || row).id;
+    pane = "call";
+    render();
+    setStatus(row.questions?.length ? `${row.questions.length} QUESTIONS` : "SCRAPED · PASTE Qs IF NEEDED");
+  } catch (e) {
+    setStatus(String(e.message || e));
+  }
+}
+
+async function syncOpps() {
+  setStatus("SYNCING DESKTOP…");
+  const out = await syncOppsFromDesktop(db.settings, db);
+  persist();
+  render();
+  setStatus(out.ok ? `SYNCED ${out.synced}` : "SYNC FAILED");
+}
+
+async function runHunt(allTypes = false) {
   setStatus("HUNTING…");
   try {
     db.kit.city = ($("#hunt-city")?.value || db.kit.city || "").trim();
     db.kit.state = ($("#hunt-state")?.value || db.kit.state || "").trim();
     db.kit.country = ($("#hunt-country")?.value || db.kit.country || "").trim();
+    oppFilter.q = ($("#opp-q")?.value || oppFilter.q || "").trim();
+    if (allTypes) oppFilter.type = "all";
     persist();
-    const found = await hunt("", {
-      city: db.kit.city,
-      state: db.kit.state,
-      country: db.kit.country,
+    const { rows: found } = await huntOpportunities(db.settings, db.kit, {
+      focus: oppFilter.q,
+      type: oppFilter.type,
       onProgress: setStatus,
     });
     const fresh = [];
     let n = 0;
     for (const hit of found) {
-      if (db.opps.some((o) => o.url === hit.url)) continue;
+      if (hit.url && db.opps.some((o) => o.url === hit.url)) continue;
       const row = newOpp(hit);
-      if ((row.questions || []).length) {
-        row.kind = classify(row.title, row.url, row.questions).id;
-        row.answers = suggestAnswers(row.questions, db.kit, row.title, row.kind);
+      if ((hit.questions || []).length) {
+        row.questions = hit.questions;
+        row.kind = hit.kind || classify(row.title, row.url, hit.questions).id;
+        row.answers = (hit.answers || []).length
+          ? hit.answers
+          : suggestAnswers(hit.questions, db.kit, row.title, row.kind);
+        row.note = hit.note || `${labelOf(row.kind)} · ${hit.questions.length} questions`;
       }
       db.opps.unshift(row);
       fresh.push(row);
@@ -1300,6 +1378,27 @@ async function sendChat() {
       render();
     }
     setStatus(mealHit.ok ? "MEALS UPDATED" : "MEALS");
+    return;
+  }
+
+  const oppHit = await tryOppCommand(text, db, {
+    setStatus,
+    persist,
+    render,
+    setOppId: (id) => { oppId = id; },
+    setPane: (p) => { pane = p; },
+    selected,
+    draftThis,
+  });
+  if (oppHit) {
+    addLog("pip", oppHit.reply);
+    if (oppHit.switchTab) {
+      tab = oppHit.switchTab;
+      render();
+    }
+    persist();
+    setStatus(oppHit.ok ? "OPP" : "OPP");
+    if (oppHit.run) await oppHit.run();
     return;
   }
 
