@@ -51,6 +51,7 @@ function blank() {
       vpn_note: "",
       ui_theme: null,
       ui_theme_name: "",
+      brain_health: {},
     },
   };
 }

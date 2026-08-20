@@ -18,7 +18,11 @@ public class MainActivity extends BridgeActivity {
             getWindow().setNavigationBarContrastEnforced(false);
         }
         if (Build.VERSION.SDK_INT >= 23) {
-            requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, 9921);
+            requestPermissions(new String[] {
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            }, 9921);
         }
     }
 }

@@ -1,6 +1,6 @@
 import { load, save, KIT_LABELS } from "./store.js";
-import { chat, draftAnswers, ensurePip, pipStatus, activeBrain, cloudStatus, takePendingTheme } from "./brain.js";
-import { probeProvider, PROVIDERS } from "./cloud.js";
+import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme } from "./brain.js";
+import { probeProvider, probeKeyed, providerHealth, PROVIDERS } from "./cloud.js";
 import { desktopConfigured, desktopLogin, desktopStatus, findAndPair, pairAtUrl } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets } from "./biometric.js";
@@ -12,10 +12,11 @@ import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
 import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
 import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThemeRequest } from "./theme.js";
-import { captureMoment, topMoments } from "./memory.js";
+import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { listEntries, applyAllOverlays } from "./codefs.js";
 import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, startWeatherWatch, filterDossier } from "./wx.js";
+import { describeChain } from "./command.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -397,6 +398,17 @@ function renderPrivacy() {
 
 function updateBrainChip() {
   renderPrivacy();
+  paintBrainStrip();
+}
+
+function paintBrainStrip() {
+  const el = $("#brain-strip");
+  if (!el) return;
+  const keyed = cloudStatus(db.settings).keyed || [];
+  const rows = describeChain(keyed, providerHealth(), desktopConfigured(db.settings), db.settings.brain_pin);
+  el.innerHTML = rows
+    .map((r) => `<span class="brain-chip ${esc(r.state)}" data-brain="${esc(r.id)}">${esc(r.label)}</span>`)
+    .join("");
 }
 
 function paintCalendar() {
@@ -525,6 +537,7 @@ async function renderWx() {
     </div>`;
   try {
     const center = await resolveMapCenter(db.settings);
+    persist();
     const cfg = await loadMapConfig(db.settings);
     cfg.center = { ...cfg.center, ...center };
     $("#wx-layers").innerHTML = layerButtons(cfg, esc);
@@ -694,7 +707,7 @@ function renderData() {
     <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}` : "Not paired."}</p>
     <div class="field"><span>VPN NOTES</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="WireGuard profile name, backup URLs…" /></div>
     <h3>BRAIN</h3>
-    <p class="muted">${cloud.leaky ? `LEAKY on. Keyed: ${cloud.keyed.join(", ") || "none"}. Pin: ${cloud.pin}.` : "SECURE — cloud keys saved but not used until LEAKY. Tap SECURE/LEAKY in the header."} Grok needs LEAKY + pin xai + XAI key.</p>
+    <p class="muted">CHAT uses every keyed API even in SECURE. The CHAT strip shows live (green), keyed (amber), or down (red). Pin LOCAL only if you want on-device Qwen — that model can crash the phone.</p>
     <div class="field"><span>PIN</span>
       <select id="brain-pin">
         ${["auto", "local", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
@@ -704,7 +717,7 @@ function renderData() {
         }).join("")}
       </select>
     </div>
-    ${securePosture ? `<p class="muted">PIN is stored but ignored while SECURE is on.</p>` : `<p class="muted">LEAKY is on. PIN picks the cloud brain. Chat prefers desktop when paired.</p>`}
+    ${securePosture ? `<p class="muted">OPP/CODE stay on-device while SECURE. CHAT still hits keyed clouds shown in the strip.</p>` : `<p class="muted">LEAKY is on. PIN can lock one cloud brain. Chat prefers desktop when paired.</p>`}
     <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="optional" autocomplete="off" /></div>
     <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="optional" autocomplete="off" /></div>
     <div class="field"><span>CEREBRAS</span><input id="set-cerebras" type="password" value="${esc(s.cerebras)}" placeholder="optional" autocomplete="off" /></div>
@@ -1097,6 +1110,7 @@ async function sendChat() {
       renderPrivacy();
     }
     db.chat.push({ role: "pip", content: reply });
+    rememberReply(db, reply);
     persist();
     addLog("pip", reply);
     updateBrainChip();
@@ -1109,7 +1123,7 @@ function boot() {
   bootTheme(db.settings);
   applyAllOverlays();
   db.chat.slice(-20).forEach((m) => addLog(m.role === "user" ? "user" : "pip", m.content));
-  if (!db.chat.length) addLog("pip", "Phone Pip. OPP is the job. Kit stays honest. I draft. You paste. I do not submit.");
+  if (!db.chat.length) addLog("pip", "Pip is happy to help!");
   $("#tabs").onclick = (e) => {
     const b = e.target.closest("[data-tab]");
     if (!b) return;
@@ -1136,7 +1150,11 @@ function boot() {
   });
   render();
   renderPrivacy();
-  setStatus("PIP // WAKING");
+  paintBrainStrip();
+  setStatus("PIP ON DECK");
+  resolveMapCenter(db.settings)
+    .then(() => persist())
+    .catch(() => {});
   startWeatherWatch(
     () => resolveMapCenter(db.settings),
     (live) => {
@@ -1151,14 +1169,19 @@ function boot() {
       setStatus("WX ALERT");
     },
   );
-  ensurePip((msg) => setStatus(msg))
-    .then(async () => {
+  probeKeyed(db.settings)
+    .then((hits) => {
+      db.settings.brain_health = providerHealth();
+      persist();
+      paintBrainStrip();
+      const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
+      const keyed = cloudStatus(db.settings).keyed;
+      if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
+      else if (keyed.length) setStatus("KEYS SAVED · PROBE FAILED");
+      else setStatus("PIP ON DECK · ADD KEYS IN DATA");
       if (desktopConfigured(db.settings)) {
-        await syncEventsFromDesktop(db.settings, db).catch(() => {});
-        persist();
+        return syncEventsFromDesktop(db.settings, db).then(() => persist());
       }
-      setStatus("PIP ON DECK");
-      updateBrainChip();
     })
     .catch((e) => setStatus(String(e.message || e).toUpperCase()));
 }

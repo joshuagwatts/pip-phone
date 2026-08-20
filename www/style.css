@@ -160,6 +160,24 @@ footer.status {
   flex-direction: column;
 }
 body.comm #comm { display: flex; }
+.brain-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0.35rem 0.7rem;
+  border-bottom: 1px solid var(--line);
+}
+.brain-chip {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  padding: 0.12rem 0.35rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.brain-chip.on { color: var(--phos); border-color: var(--phos); }
+.brain-chip.key { color: var(--amber); border-color: var(--amber); }
+.brain-chip.bad { color: var(--leak); border-color: var(--leak); }
+.brain-chip.skip { opacity: 0.45; }
 #log { flex: 1; overflow: auto; padding: 0.8rem; }
 .bubble .who { color: var(--phos); font-size: 10px; letter-spacing: 0.2em; margin-bottom: 0.25rem; }
 .composer {

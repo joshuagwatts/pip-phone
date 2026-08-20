@@ -1,8 +1,9 @@
 import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS } from "./crew.js";
-import { chatChain, chatComplete, chatCloudEnabled, cloudComplete, cloudStatus } from "./cloud.js";
+import { chatChain, chatComplete, chatCloudEnabled, cloudComplete, cloudStatus, markHealth } from "./cloud.js";
 import { desktopChat, desktopConfigured } from "./desktop.js";
 import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
+import { pickJob, skipLocalModel } from "./command.js";
 
 const QWEN_MLC = [
   "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
@@ -30,7 +31,7 @@ export function brainReady() {
 export function pipStatus() {
   if (backend) return "PIP ON DECK";
   if (loading) return lastProgress || "PIP // WAKING";
-  return "PIP ON DECK";
+  return lastProgress || "PIP ON DECK";
 }
 
 export function activeBrain() {
@@ -237,6 +238,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const cloud = cloudStatus(settings);
   const isChat = lane === "life";
   pendingTheme = null;
+  const job = isChat ? "life" : lane === "boost" ? "boost" : "code";
 
   if (desktopConfigured(settings)) {
     try {
@@ -258,7 +260,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const cloudOk = isChat ? chatCloudEnabled(settings) : cloud.leaky && cloud.keyed.length;
   if (cloudOk) {
     try {
-      const first = isChat ? chatChain(settings)[0] : null;
+      const first = isChat ? chatChain(settings, job)[0] : null;
       emit(isChat && first ? String(first.label || first.id).toUpperCase() : cloud.pin === "xai" ? "GROK" : "CLOUD");
       const out = isChat
         ? await chatComplete(settings, messages, temperature, maxTokens)
@@ -266,22 +268,26 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       const cleaned = sanitizeReply(out.text);
       if (cleaned && !isBlank(cleaned)) {
         setBrain(out.provider, out.model);
+        markHealth(out.provider, true);
         return cleaned;
       }
       errors.push(`${out.provider}: blank reply`);
+      if (out.provider) markHealth(out.provider, false, "blank");
     } catch (e) {
       errors.push(String(e.message || e).slice(0, 100));
     }
   }
 
-  try {
-    emit("QWEN");
-    return await localComplete(messages, temperature, maxTokens);
-  } catch (e) {
-    errors.push(String(e.message || e).slice(0, 100));
+  if (!skipLocalModel(settings)) {
+    try {
+      emit("QWEN");
+      return await localComplete(messages, temperature, maxTokens);
+    } catch (e) {
+      errors.push(String(e.message || e).slice(0, 100));
+    }
   }
 
-  throw new Error(errors.join(" · ") || "no brain answered");
+  throw new Error(errors.join(" · ") || "no keyed API answered — paste Groq/Gemini/OpenRouter on DATA");
 }
 
 export async function sparkLine(recent = [], stanceLabel = "PIP") {
@@ -321,13 +327,14 @@ export async function chat(settings, history, text, onProgress, kit, db) {
   let momentLine = "";
   if (db) {
     try {
-      const { storyBrief } = await import("./memory.js");
-      momentLine = storyBrief(db, 10, 14);
+      const { storyBrief, chainBrief } = await import("./memory.js");
+      momentLine = [storyBrief(db, 10, 14), chainBrief(db)].filter(Boolean).join("\n");
     } catch {
       /* optional */
     }
   }
-  const sysBase = talkSystem(operator, settings.humor, settings.honesty, kit);
+  const job = pickJob(text);
+  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. Use the crew chain for this job.`;
   const system = momentLine ? `${sysBase}\n${momentLine}` : sysBase;
   const messages = [
     { role: "system", content: system },
@@ -352,7 +359,7 @@ export async function chat(settings, history, text, onProgress, kit, db) {
           { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
           ...SHOTS,
           { role: "user", content: text },
-          { role: "user", content: "Stay Pip. Two short sentences. No helpdesk." },
+          { role: "user", content: "Stay Pip. Two short sentences. Pip is happy to help." },
         ],
         "life",
         0.35,

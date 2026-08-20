@@ -1,6 +1,7 @@
 /** WX map + storm dossier — runs on phone standalone (public APIs) or via paired desktop. */
 import { httpGet, httpLanGet, httpLanPostJson } from "./net.js";
 import { desktopConfigured } from "./desktop.js";
+import { locateDevice } from "./geo.js";
 
 let map = null;
 let pin = null;
@@ -220,19 +221,19 @@ function parseSwdiShape(shape) {
   return Number.isNaN(lon) || Number.isNaN(lat) ? null : { lon, lat };
 }
 
-async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 180) {
+async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
   const today = new Date();
-  const days = Math.min(Math.max(daysBack, 7), 365);
+  const days = Math.min(Math.max(daysBack, 7), 180);
   const km = Math.min(Math.max(radiusKm, 3), 50);
   const bbox = bboxForKm(lat, lon, km);
   const startLimit = new Date(today);
   startLimit.setDate(startLimit.getDate() - days);
   const chunks = [];
   let cursor = new Date(today);
-  while (cursor > startLimit) {
+  while (cursor > startLimit && chunks.length < 10) {
     const chunkEnd = new Date(cursor);
     const chunkStart = new Date(cursor);
-    chunkStart.setDate(chunkStart.getDate() - 6);
+    chunkStart.setDate(chunkStart.getDate() - 13);
     if (chunkStart < startLimit) chunkStart.setTime(startLimit.getTime());
     chunks.push({ start: chunkStart, end: chunkEnd });
     cursor = new Date(chunkStart);
@@ -344,9 +345,9 @@ function enrichStormDates(storms, hail, wind) {
   return [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 100);
 }
 
-async function fetchSpcReports(lat, lon, radiusKm = 25, daysBack = 60) {
+async function fetchSpcReports(lat, lon, radiusKm = 25, daysBack = 21) {
   const today = new Date();
-  const days = Math.min(Math.max(daysBack, 7), 365);
+  const days = Math.min(Math.max(daysBack, 7), 45);
   const km = Math.min(Math.max(radiusKm, 3), 50);
   const stamps = [];
   for (let d = 0; d < days; d++) {
@@ -404,7 +405,6 @@ async function fetchHailReports(lat, lon, radiusKm = 25, daysBack = 60) {
 }
 
 let mapConfigCache = null;
-let geoCenterCache = null;
 
 const BASE_LAYERS = [
   { id: "osm", label: "Street", kind: "base", url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
@@ -412,30 +412,8 @@ const BASE_LAYERS = [
   { id: "sat", label: "Sat", kind: "base", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
 ];
 
-export function resolveMapCenter(settings) {
-  if (settings?.lat && settings?.lon) {
-    return Promise.resolve({
-      lat: parseFloat(settings.lat),
-      lon: parseFloat(settings.lon),
-      city: settings.city || "",
-    });
-  }
-  if (geoCenterCache) return Promise.resolve(geoCenterCache);
-  if (typeof navigator === "undefined" || !navigator.geolocation) {
-    return Promise.resolve({ lat: 39.7392, lon: -104.9903, city: settings?.city || "" });
-  }
-  return new Promise((resolve) => {
-    navigator.geolocation.getCurrentPosition(
-      (p) => {
-        geoCenterCache = { lat: p.coords.latitude, lon: p.coords.longitude, city: "" };
-        settings.lat = String(geoCenterCache.lat);
-        settings.lon = String(geoCenterCache.lon);
-        resolve(geoCenterCache);
-      },
-      () => resolve({ lat: 39.7392, lon: -104.9903, city: settings?.city || "" }),
-      { timeout: 7000, maximumAge: 600000, enableHighAccuracy: false },
-    );
-  });
+export async function resolveMapCenter(settings) {
+  return locateDevice(settings, httpGet);
 }
 
 async function currentWeather(lat, lon) {
@@ -565,13 +543,14 @@ async function localMapConfig(settings, center) {
 
 async function localResearch(lat, lon, address = "", { deep = true, filters = wxFilters } = {}) {
   const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
-  const days = deep ? Number(filters.days) || 180 : 90;
+  const days = deep ? Math.min(Number(filters.days) || 90, 90) : 45;
   const km = Number(filters.km) || 25;
+  const spcDays = Math.min(days, 21);
   const [geo, wxNow, archiveStorms, spc, swdi] = await Promise.all([
     geoP,
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     historicalStorms(lat, lon, days),
-    fetchSpcReports(lat, lon, km, days),
+    fetchSpcReports(lat, lon, km, spcDays),
     fetchSwdiHail(lat, lon, km, days),
   ]);
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
@@ -656,12 +635,11 @@ export async function quickPin(settings, lat, lon) {
     timeout: 20000,
   }).catch(() => null);
   if (remote) return remote;
-  const [geo, wx, hail] = await Promise.all([
+  const [geo, wx] = await Promise.all([
     reverseGeocode(lat, lon),
     currentWeather(lat, lon),
-    fetchHailReports(lat, lon, wxFilters.km || 25, wxFilters.days || 30),
   ]);
-  return { ok: true, geo, weather: wx, hail, recent_storms: hail.slice(0, 5) };
+  return { ok: true, geo, weather: wx, hail: [], recent_storms: [] };
 }
 
 export function drawHailMarkers(hailRows, windRows) {
@@ -719,8 +697,9 @@ export function mountMap(container, config, { onTap, center }) {
     layers = {};
     overlays = {};
   }
-  const c = center || config.center || { lat: 39.74, lon: -104.99 };
-  map = window.L.map(container, { zoomControl: true, preferCanvas: true }).setView([c.lat, c.lon], 12);
+  const c = center || config.center || { lat: 0, lon: 0 };
+  const zoom = Math.abs(c.lat) < 1 && Math.abs(c.lon) < 1 ? 3 : 12;
+  map = window.L.map(container, { zoomControl: true, preferCanvas: true }).setView([c.lat, c.lon], zoom);
   const all = config.layers || [];
   for (const layer of all) {
     const tile = window.L.tileLayer(layer.url, {

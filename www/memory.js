@@ -53,6 +53,36 @@ export function storyBrief(db, limit = 10, minScore = 14) {
   return "Operator moments (substance, on this device):\n" + lines.join("\n");
 }
 
+export function chainBrief(db) {
+  const health = (db && db.settings && db.settings.brain_health) || {};
+  const keys = ["gemini", "groq", "openrouter", "xai", "cerebras", "mistral"].filter(
+    (id) => db && db.settings && String(db.settings[id === "xai" ? "xai" : id] || "").trim(),
+  );
+  if (!keys.length) return "No cloud keys saved. CHAT will stay local-voiced until DATA has a key.";
+  const bits = keys.map((id) => {
+    const h = health[id];
+    const st = h && h.ok === true ? "live" : h && h.ok === false ? "down" : "keyed";
+    return `${id}:${st}`;
+  });
+  return `Brain network: ${bits.join(" → ")}. Prefer the first live brain. Remember operator moments.`;
+}
+
+export function rememberReply(db, text) {
+  const t = String(text || "").trim();
+  if (t.length < 40) return null;
+  if (!Array.isArray(db.moments)) db.moments = [];
+  db.moments.unshift({
+    id: Date.now().toString(36) + "p",
+    role: "pip",
+    content: t.slice(0, 400),
+    score: 16,
+    tags: "pip",
+    at: new Date().toISOString(),
+  });
+  db.moments = db.moments.slice(0, 200);
+  return db.moments[0];
+}
+
 export function topMoments(db, n = 8) {
   return (db.moments || []).filter((m) => (m.score || 0) >= 14).slice(0, n);
 }

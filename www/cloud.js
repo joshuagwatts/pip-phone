@@ -1,4 +1,4 @@
-import { httpPostJson } from "./net.js";
+import { orderFor } from "./command.js";
 
 const FISHY = new Set(["gemini", "xai"]);
 
@@ -73,6 +73,49 @@ export function keyedProviders(settings) {
   return PROVIDERS.filter((p) => providerKey(settings, p));
 }
 
+const liveHealth = {};
+
+export function providerHealth() {
+  return { ...liveHealth };
+}
+
+export function markHealth(id, ok, error = "") {
+  liveHealth[id] = { ok: Boolean(ok), error: String(error || "").slice(0, 120), at: Date.now() };
+  return liveHealth[id];
+}
+
+export async function probeModels(settings, prov) {
+  const key = providerKey(settings, prov);
+  if (!key) {
+    markHealth(prov.id, false, "no key");
+    return { ok: false, id: prov.id, error: "no key" };
+  }
+  try {
+    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 8000, {
+      Authorization: `Bearer ${key}`,
+      ...(prov.headers || {}),
+    });
+    if (status >= 400) throw new Error(`http ${status}`);
+    const data = JSON.parse(body || "{}");
+    const n = Array.isArray(data.data) ? data.data.length : Array.isArray(data.models) ? data.models.length : 1;
+    if (!n) throw new Error("empty models");
+    markHealth(prov.id, true);
+    return { ok: true, id: prov.id, models: n };
+  } catch (e) {
+    markHealth(prov.id, false, e.message || e);
+    return { ok: false, id: prov.id, error: String(e.message || e).slice(0, 160) };
+  }
+}
+
+export async function probeKeyed(settings) {
+  const keyed = keyedProviders(settings);
+  const out = [];
+  for (const prov of keyed) {
+    out.push(await probeModels(settings, prov));
+  }
+  return out;
+}
+
 export function cloudStatus(settings) {
   const leaky = !privacyOn(settings);
   const pin = brainPin(settings);
@@ -82,6 +125,7 @@ export function cloudStatus(settings) {
     pin,
     keyed: keyed.map((p) => p.id),
     grok: Boolean(providerKey(settings, PROVIDERS.find((x) => x.id === "xai"))),
+    health: providerHealth(),
   };
 }
 
@@ -96,22 +140,11 @@ export function chatCloudEnabled(settings) {
   return keyedProviders(settings).length > 0;
 }
 
-export function chatChain(settings) {
+export function chatChain(settings, job = "life") {
   const pin = brainPin(settings);
-  const out = [];
-
-  if (pin !== "auto" && pin !== "local") {
-    const picked = PROVIDERS.find((p) => p.id === pin);
-    if (picked && providerKey(settings, picked)) out.push(picked);
-    return out;
-  }
-
-  for (const id of CHAT_ORDER) {
-    const prov = PROVIDERS.find((p) => p.id === id);
-    if (!prov || !providerKey(settings, prov)) continue;
-    out.push(prov);
-  }
-  return out;
+  const keyedIds = keyedProviders(settings).map((p) => p.id);
+  const ids = orderFor(job, keyedIds, liveHealth, pin);
+  return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
 }
 
 /** Phone CHAT can use cloud whenever keys exist — OPP/CODE still respect LEAKY via chain(). */
