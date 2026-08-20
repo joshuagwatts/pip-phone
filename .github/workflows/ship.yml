@@ -115,12 +115,14 @@ jobs:
   release:
     needs: [android, windows, macos]
     runs-on: ubuntu-latest
+    env:
+      # Fine-grained PAT from the Holowatts GitHub org/user → Settings → Secrets → HOLOWATTS_GH_TOKEN
+      # Without it, releases show as github-actions[bot]. With it, they show as Holowatts.
+      GH_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
     steps:
       - uses: actions/checkout@v4
       - name: Release gate
         id: gate
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v$(node -p "require('./package.json').version")"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
@@ -139,17 +141,21 @@ jobs:
           mv Pip-mac/Pip-Mac.dmg Pip-Mac.dmg
       - uses: softprops/action-gh-release@v2
         if: steps.gate.outputs.publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
         with:
           tag_name: ${{ steps.gate.outputs.tag }}
-          name: Pip ${{ steps.gate.outputs.tag }}
+          name: Holowatts Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.21** — CHAT theme commands fixed.
+            **Holowatts · Phone Pip v0.1.21** — CHAT theme commands fixed.
 
             - **Refresh ui color** actually re-applies your saved palette (no LLM hallucination).
             - Theme engine catches refresh/reload/fix/sync + ui/color phrasing.
             - Pip won't fake motivational "I repainted it" replies on theme turns.
 
             Install Pip.apk over your current build. Restart desktop Pip for matching theme handling.
+
+            — Holowatts
           files: |
             Pip.apk
             Pip-Windows.exe

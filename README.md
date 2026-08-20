@@ -1,10 +1,21 @@
-# Phone Pip
+# Phone Pip · Holowatts
 
 Same HUD on Android, iPhone, Mac, and Windows. OPP, kit, crew voice. Memory stays on that device. Does not submit forms.
 
 **[Downloads](https://github.com/joshuagwatts/pip-phone/releases/latest)** — `Pip.apk`, `Pip-Windows.exe`, `Pip-Mac.dmg`
 
 Open the new file on the device that already has Pip. It installs over the old one. KIT stays. Do not uninstall first.
+
+## Releases (Holowatts, not github-actions)
+
+Ship uses **`HOLOWATTS_GH_TOKEN`** so GitHub releases publish under the Holowatts account/org instead of `github-actions[bot]`.
+
+1. Create the **[Holowatts](https://github.com/organizations/plan)** org on GitHub (free).
+2. **Transfer** this repo to `holowatts/pip-phone` (Settings → Danger zone → Transfer).
+3. On that org/user: **Settings → Developer settings → Fine-grained token** with **Contents: Read and write** on `pip-phone`.
+4. Repo **Settings → Secrets → Actions → New secret** → name `HOLOWATTS_GH_TOKEN`, paste the token.
+
+Next push to `main` publishes as Holowatts.
 
 ## Brains (v0.1.6+)
 
