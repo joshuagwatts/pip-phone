@@ -27,6 +27,7 @@ jobs:
           node --check www/codefs.js
           node --check www/codeagent.js
           node --check www/code.js
+          node --check www/morning.js
           node --check www/wx.js
           node --input-type=module -e "import './www/brain.js'; console.log('brain ok')"
       - run: npx cap sync android

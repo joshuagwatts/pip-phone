@@ -1,6 +1,7 @@
 /** Background sync while Proton (or any VPN) runs. */
 import { desktopConfigured } from "./desktop.js";
 import { fullOppSync, fetchOppDigest } from "./oppdesk.js";
+import { fullMorningSync } from "./morning.js";
 import { vpnSystemActive, setKeepAlive } from "./proton.js";
 
 let timer = null;
@@ -11,6 +12,8 @@ export function startBackground(db, { persist, render, setStatus, softRefresh })
   const tick = async () => {
     if (!db?.settings) return;
     try {
+      await fullMorningSync(db.settings).catch(() => {});
+      softRefresh?.();
       if (desktopConfigured(db.settings)) {
         const out = await fullOppSync(db.settings, db);
         if (out.pushed || out.pulled) {

@@ -60,6 +60,15 @@ import {
 } from "./oppdesk.js";
 import { openProtonVpn, vpnSystemActive, setKeepAlive } from "./proton.js";
 import { startBackground, toggleKeepAlive } from "./background.js";
+import {
+  morningStatus,
+  wakeNext,
+  checkWake,
+  fullMorningSync,
+  fetchBriefing,
+  getBriefing,
+  pingPresence,
+} from "./morning.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -186,10 +195,24 @@ function armRadio() {
   }, 12000);
 }
 
-function tapMotiv(auto) {
+async function tapMotiv(auto) {
   if (radioBusy) return;
   radioBusy = true;
   try {
+    const nxt = (motivSnap().next || {});
+    if (nxt.kind === "wake" && (nxt.id || nxt.slug) && !auto) {
+      setStatus("WAKE…");
+      try {
+        await checkWake(db.settings, nxt.id || nxt.slug);
+        paintMotiv();
+        setStatus((motivSnap().next || {}).shot || "WAKE DONE");
+        if (tab === "today") renderToday();
+      } catch (e) {
+        setStatus(String(e.message || e).toUpperCase());
+      }
+      armRadio();
+      return;
+    }
     motivTap();
     paintMotiv();
     if (!auto) setStatus((motivSnap().next || {}).shot || "PIP");
@@ -528,6 +551,8 @@ function paintBrainStrip() {
 function softRefresh() {
   if (tab === "opp") renderOpp();
   else if (tab === "data") renderData();
+  else if (tab === "today") renderToday();
+  else if (tab === "vibe" && vibeMode === "motivation") paintMotiv();
   paintBrainStrip();
 }
 
@@ -543,17 +568,77 @@ function paintCalendar() {
 
 function renderToday() {
   const root = $("#view");
-  if (!root.querySelector("#cal-root")) {
-    root.innerHTML = `<div class="today-wrap"><div id="cal-root"></div><div class="story-strip" id="story-strip"></div></div>`;
-    const moments = topMoments(db, 5);
-    const strip = root.querySelector("#story-strip");
-    if (moments.length) {
-      strip.innerHTML = `<h3>YOUR STORY</h3>${moments.map((m) => `<p class="story-line">${esc(m.content)}</p>`).join("")}`;
-    } else {
-      strip.innerHTML = `<p class="muted">Substantive CHAT lines stick here — goals, origin, why you make things. Not "bug again."</p>`;
-    }
-  }
+  const morn = morningStatus();
+  const wake = wakeNext();
+  const brief = getBriefing();
+  const wx = morn.weather;
+  const wxLine = wx?.ok
+    ? `${wx.city || ""} // ${Math.round(wx.temp_f)}F // ${wx.label || ""}`
+    : "";
+  const moments = topMoments(db, 5);
+  root.innerHTML = `
+    <div class="today-wrap">
+      <div class="today-morning">
+        <div class="wx">${esc(wxLine || (desktopConfigured(db.settings) ? "Syncing morning…" : "Local wake · pair desktop for full briefing"))}</div>
+        ${wake ? `
+          <div class="morning-now">
+            <button type="button" id="today-wake" class="shot">${esc(wake.shot || "NOW")}</button>
+            <p class="muted">wake · ${morn.done}/${morn.total} · tap when done · or open VIBE</p>
+          </div>` : (morn.complete ? `<p class="muted">Wake complete · ${morn.done}/${morn.total}</p>` : "")}
+        <div class="brief-card" id="brief-card">
+          ${brief?.text
+            ? `<div class="doc-body">${esc(brief.text)}</div>`
+            : `<p class="muted">${desktopConfigured(db.settings) ? "Listening for morning…" : "Local morning — pair desktop for the full briefing."}</p>`}
+        </div>
+        <div class="today-strip">
+          <button type="button" id="brief-again">AGAIN</button>
+          <button type="button" id="morning-sync">SYNC</button>
+          <span class="muted">${esc(morn.source === "desktop" ? "DESKTOP" : "PHONE")}</span>
+        </div>
+      </div>
+      <div id="cal-root"></div>
+      <div class="story-strip" id="story-strip">
+        ${moments.length
+          ? `<h3>YOUR STORY</h3>${moments.map((m) => `<p class="story-line">${esc(m.content)}</p>`).join("")}`
+          : `<p class="muted">Substantive CHAT lines stick here — goals, origin, why you make things.</p>`}
+      </div>
+    </div>`;
   paintCalendar();
+  const go = $("#today-wake");
+  if (go) {
+    go.onclick = () => {
+      tab = "vibe";
+      vibeMode = "motivation";
+      render();
+    };
+  }
+  $("#brief-again").onclick = async () => {
+    setStatus("MORNING…");
+    try {
+      await fetchBriefing(db.settings, { force: true });
+      renderToday();
+      setStatus("BRIEFING READY");
+    } catch (e) {
+      setStatus(String(e.message || e).toUpperCase());
+    }
+  };
+  $("#morning-sync").onclick = async () => {
+    setStatus("SYNC MORNING…");
+    try {
+      await fullMorningSync(db.settings);
+      renderToday();
+      setStatus("MORNING SYNCED");
+    } catch (e) {
+      setStatus(String(e.message || e).toUpperCase());
+    }
+  };
+  if (!brief?.text) {
+    fetchBriefing(db.settings, { force: false })
+      .then(() => {
+        if (tab === "today") renderToday();
+      })
+      .catch(() => {});
+  }
 }
 
 async function openCodeFile(name) {
@@ -1561,6 +1646,41 @@ function boot() {
   renderPrivacy();
   paintBrainStrip();
   setStatus("PIP ON DECK");
+  const injectNudge = (line) => {
+    if (!line) return;
+    const last = db.chat[db.chat.length - 1];
+    if (last && last.role === "pip" && last.content === line) return;
+    db.chat.push({ role: "pip", content: line });
+    persist();
+    addLog("pip", line);
+    setStatus("WAKE");
+    softRefresh();
+  };
+  const runMorning = () => {
+    fullMorningSync(db.settings)
+      .then((out) => {
+        softRefresh();
+        if (out?.briefing?.text && !db.chat.some((m) => m.role === "pip" && String(m.content || "").startsWith("Good morning"))) {
+          /* briefing stays on TODAY — wake lines come from presence */
+        }
+      })
+      .catch(() => {});
+  };
+  runMorning();
+  setInterval(() => {
+    if (document.hidden) return;
+    pingPresence(db.settings)
+      .then(injectNudge)
+      .catch(() => {});
+  }, 20000);
+  const cap = window.Capacitor;
+  if (cap?.Plugins?.App?.addListener) {
+    cap.Plugins.App.addListener("appStateChange", ({ isActive }) => {
+      if (!isActive) return;
+      runMorning();
+      pingPresence(db.settings).then(injectNudge).catch(() => {});
+    });
+  }
   resolveMapCenter(db.settings)
     .then(() => persist())
     .catch(() => {});

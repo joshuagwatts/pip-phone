@@ -313,6 +313,23 @@ body.comm #comm { display: flex; }
 }
 
 .today-wrap { padding: 0.5rem 0.65rem calc(0.5rem + var(--safe-bottom)); overflow: auto; height: 100%; }
+.today-morning { margin-bottom: 0.85rem; }
+.today-morning .wx { font-size: 11px; letter-spacing: 0.14em; color: var(--muted); margin-bottom: 0.55rem; text-transform: uppercase; }
+.morning-now { margin: 0.4rem 0 0.75rem; }
+.morning-now .shot {
+  display: block; width: 100%; text-align: left;
+  font-family: inherit; font-size: 1.35rem; font-weight: 700; letter-spacing: 0.04em;
+  padding: 0.85rem 0.9rem; border: 1px solid var(--line); background: transparent; color: var(--phos);
+}
+.morning-now .shot:active { border-color: var(--phos); color: #fff; }
+.morning-now .muted { margin: 0.4rem 0 0; letter-spacing: 0.12em; font-size: 11px; }
+.brief-card {
+  border: 1px solid var(--line); padding: 0.75rem 0.85rem; margin-bottom: 0.55rem;
+  max-height: 28vh; overflow: auto;
+}
+.brief-card .doc-body { white-space: pre-wrap; line-height: 1.45; font-size: 0.95rem; }
+.today-strip { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; margin-bottom: 0.75rem; }
+.today-strip button { font-size: 11px; letter-spacing: 0.16em; }
 .story-strip { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--line); }
 .story-strip h3 { margin: 0 0 0.5rem; font-size: 11px; letter-spacing: 0.22em; color: var(--phos); }
 .story-line { margin: 0.35rem 0; font-size: 12px; line-height: 1.45; color: var(--text); opacity: 0.92; }

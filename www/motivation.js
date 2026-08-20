@@ -1,4 +1,5 @@
 import { SHADERS, SHADER_ORDER } from "./shaders.js";
+import { wakeNext } from "./morning.js";
 
 export const STEM_TAGS = {
   water: ["water", "drink", "eat", "lunch", "glass", "thirst", "ocean", "caustic", "aqua", "sip", "hydrate"],
@@ -50,6 +51,7 @@ const BEATS = {
 };
 
 const HINTS = {
+  wake: "TAP WHEN IT'S DONE",
   inspire: "TAP WHEN IT LANDS",
   audit: "TAP WHEN YOU'VE LOOKED",
   act: "TAP WHEN YOU'VE MOVED",
@@ -227,6 +229,16 @@ function kickFill(st) {
 }
 
 export function snapshot() {
+  const wake = wakeNext();
+  if (wake) {
+    return {
+      phase: "wake",
+      label: "WAKE",
+      complete: false,
+      next: wake,
+      hint: HINTS.wake,
+    };
+  }
   const st = stance();
   const mem = load();
   const beats = dailyBeats(st);
@@ -272,6 +284,11 @@ function advanceRadio(st, mem) {
 }
 
 export function tap() {
+  const wake = wakeNext();
+  if (wake) {
+    /* Wake checks go through checkWake in app.js — don't advance local beats. */
+    return snapshot();
+  }
   const st = stance();
   const mem = load();
   const beats = dailyBeats(st);

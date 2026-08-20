@@ -37,6 +37,7 @@ assert(/happy to help/i.test(FALLBACK), "fallback greeting");
 assert(looksLikeMealRequest("plan my meals today"), "meal detect");
 assert(extractGuideQuery("what is the aurora borealis") === "aurora borealis", "guide query");
 await import("../www/oppdesk.js");
+await import("../www/morning.js");
 assert(typeof getCodeChat === "function", "code chat");
 assert(Array.isArray(guideEntries()), "guide cache");
-console.log("ok", 23);
+console.log("ok", 24);
