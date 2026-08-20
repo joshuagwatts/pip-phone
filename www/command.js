@@ -3,7 +3,7 @@
 export const JOBS = {
   life: {
     label: "CHAT",
-    brains: ["gemini", "groq", "openrouter", "xai", "cerebras", "mistral"],
+    brains: ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"],
   },
   boost: {
     label: "DRAFT",
@@ -76,7 +76,7 @@ export function orderFor(job, keyedIds, health = {}, pin = "auto") {
 export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto") {
   const rows = [];
   if (desktop) rows.push({ id: "desktop", label: "DESKTOP", state: "on" });
-  for (const id of ["gemini", "groq", "openrouter", "xai", "cerebras", "mistral"]) {
+  for (const id of ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"]) {
     const keyed = keyedIds.includes(id);
     const ok = health[id]?.ok;
     let state = "off";

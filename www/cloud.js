@@ -148,8 +148,8 @@ function modelFor(prov, lane) {
   return lane === "boost" ? prov.boost : prov.life;
 }
 
-/** CHAT uses every keyed provider — including Gemini/Grok — best model first. */
-const CHAT_ORDER = ["gemini", "groq", "openrouter", "xai", "cerebras", "mistral"];
+/** CHAT — fastest reliable brains first. */
+const CHAT_ORDER = ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"];
 
 export function chatCloudEnabled(settings) {
   return keyedProviders(settings).length > 0;
@@ -205,7 +205,7 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
         ...(prov.headers || {}),
       },
       payload,
-      45000,
+      14000,
     );
   } catch (e) {
     throw new Error(`${prov.id}: ${String(e.message || e).slice(0, 140)}`);

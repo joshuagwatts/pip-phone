@@ -42,6 +42,7 @@ function blank() {
       xai: "",
       desktop_url: "",
       desktop_token: "",
+      desktop_password: "",
       desktop_paired: false,
       biometric_lock: true,
       biometric_native: false,

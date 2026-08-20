@@ -11,9 +11,13 @@ export function hasNativeHttp() {
 }
 
 function parseCookie(setCookie) {
-  const raw = String(setCookie || "");
-  const hit = raw.match(/pip_gate=([^;]+)/);
-  return hit ? hit[1] : "";
+  const parts = Array.isArray(setCookie) ? setCookie : [setCookie];
+  for (const part of parts) {
+    const raw = String(part || "");
+    const hit = raw.match(/pip_gate=([^;,\s]+)/i);
+    if (hit) return hit[1];
+  }
+  return "";
 }
 
 function assertPublic(url) {
@@ -76,7 +80,14 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
             }
           })()
         : res.data || {};
-    const cookie = parseCookie(res.headers && (res.headers["Set-Cookie"] || res.headers["set-cookie"]));
+    let cookie = "";
+    const hdrs = res.headers || {};
+    for (const [k, v] of Object.entries(hdrs)) {
+      if (/^set-cookie$/i.test(k)) {
+        cookie = parseCookie(v);
+        if (cookie) break;
+      }
+    }
     if (cookie) data._cookie = cookie;
     if (!status) {
       const err = new Error("network failed — check Wi‑Fi / VPN");

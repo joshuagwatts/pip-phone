@@ -849,7 +849,7 @@ function renderData() {
     <div class="field"><span>GEMINI</span><input id="set-gemini" type="password" value="${esc(s.gemini)}" placeholder="synced from desktop" autocomplete="off" /></div>
     <div class="field"><span>GROK / XAI</span><input id="set-xai" type="password" value="${esc(s.xai)}" placeholder="synced from desktop" autocomplete="off" /></div>
     <h3>LOCK</h3>
-    <p class="muted">Pip green scan + Android fingerprint sheet (required to actually read your thumb). Cancel → TRY AGAIN or OPEN ANYWAY.</p>
+    <p class="muted">Press & hold the thumbprint until the ring fills. Haptic buzz while scanning. No Android popup.</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
     <h3>UI THEME</h3>
     <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. CHAT: "phthalo green" or "reset ui theme".</p>
@@ -936,6 +936,7 @@ function renderData() {
         const out = await desktopLogin(db.settings, pass);
         db.settings.desktop_token = out.token || "loopback";
         db.settings.desktop_paired = true;
+        if (pass) db.settings.desktop_password = pass;
         persist();
         await afterPair();
       } catch (e) {
@@ -957,6 +958,7 @@ function renderData() {
         db.settings.desktop_url = out.url;
         db.settings.desktop_token = out.token || "loopback";
         db.settings.desktop_paired = true;
+        if (pass) db.settings.desktop_password = pass;
         persist();
         $("#set-durl").value = out.url;
         await afterPair();
@@ -1629,8 +1631,7 @@ function boot() {
     requireAppUnlock(db.settings)
       .then(() => startUi())
       .catch(() => {
-        /* keep scan overlay + retry; still mount UI underneath */
-        startUi();
+        /* stay locked — only a completed hold unlocks */
       });
   } catch (e) {
     const msg = String(e.message || e);

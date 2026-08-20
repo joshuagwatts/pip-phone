@@ -1,5 +1,5 @@
 /** Pull desktop cloud API keys onto the phone — then call providers directly. */
-import { desktopConfigured } from "./desktop.js";
+import { desktopConfigured, desktopLogin } from "./desktop.js";
 import { httpLanGet } from "./net.js";
 
 export const KEY_FIELDS = ["groq", "openrouter", "cerebras", "mistral", "gemini", "xai"];
@@ -42,21 +42,45 @@ export function keyedSummary(settings) {
   );
 }
 
-/** Fetch keys from paired desktop. Throws on network/auth failure. */
+async function refreshToken(settings) {
+  const pass = String(settings.desktop_password || "").trim();
+  if (!pass) throw new Error("session expired — RE-PAIR (save desktop password on pair)");
+  const out = await desktopLogin(settings, pass);
+  const tok = String(out.token || "").trim();
+  if (!tok || tok === "loopback") {
+    throw new Error("re-login failed — check Phone LAN + password on desktop");
+  }
+  settings.desktop_token = tok;
+  settings.desktop_paired = true;
+  return tok;
+}
+
+async function fetchKeysOnce(settings) {
+  const base = lan(settings);
+  return httpLanGet(`${base}/api/phone/cloud-keys`, 12000, headers(settings));
+}
+
+/** Fetch keys from paired desktop. Re-auths once on 401 when password is saved. */
 export async function pullCloudKeys(settings) {
   if (!desktopConfigured(settings)) {
     throw new Error("pair desktop first");
   }
-  const base = lan(settings);
   let pack;
   try {
-    pack = await httpLanGet(`${base}/api/phone/cloud-keys`, 12000, headers(settings));
+    pack = await fetchKeysOnce(settings);
   } catch (e) {
     const msg = String(e.message || e);
-    if (/401|login required/i.test(msg)) {
-      throw new Error("session expired — RE-PAIR desktop");
+    const status = e.status || 0;
+    if (status === 401 || /401|login required/i.test(msg)) {
+      try {
+        await refreshToken(settings);
+        pack = await fetchKeysOnce(settings);
+      } catch (e2) {
+        throw new Error(`key sync failed — ${String(e2.message || e2).slice(0, 80)}`);
+      }
+    } else {
+      throw new Error(`key sync failed — ${msg.slice(0, 80)}`);
     }
-    throw new Error(`key sync failed — ${msg.slice(0, 80)}`);
   }
   const n = applyCloudKeys(settings, pack);
   if (!n && !(pack.keyed || []).length) {
