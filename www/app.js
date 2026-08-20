@@ -17,6 +17,17 @@ import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } fr
 import { listEntries, applyAllOverlays } from "./codefs.js";
 import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, startWeatherWatch, filterDossier } from "./wx.js";
 import { describeChain } from "./command.js";
+import {
+  mealSnapshot,
+  planDay,
+  clearDayPlan,
+  clearWantedMeals,
+  deleteWantedMeal,
+  setShoppingChecked,
+  tryMealCommand,
+  syncMealsFromDesktop,
+} from "./meals.js";
+import { guideEntries, searchWiki, fetchWikiSummary, tryGuideCommand, formatGuideReply, looksLikeGuideQuery } from "./guide.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -63,6 +74,8 @@ function render() {
   else if (tab === "today") renderToday();
   else if (tab === "code") renderCode();
   else if (tab === "wx") renderWx();
+  else if (tab === "meals") renderMeals();
+  else if (tab === "guide") renderGuide();
   else renderOpp();
 }
 
@@ -524,6 +537,138 @@ async function sendCodePrompt(phoneUpgrade) {
     setStatus("CODE ERROR");
   }
   codeState.busy = false;
+}
+
+async function renderMeals() {
+  document.body.classList.remove("comm");
+  await syncMealsFromDesktop(db.settings, db).catch(() => {});
+  persist();
+  const m = mealSnapshot(db);
+  const tgt = m.targets || {};
+  const rem = (m.remaining && m.remaining.remaining) || {};
+  const diet = (tgt.notes || "").trim();
+  $("#view").innerHTML = `
+    <h3>MEALS</h3>
+    <p class="muted">Want-first planning. Tell Pip in CHAT — breakfast: oats · lunch: bowl · dinner: stir fry — or sync from paired desktop.</p>
+    <h3>TARGETS</h3>
+    <p>KCAL ${tgt.kcal || 0} · P ${tgt.protein_g || 0}g · C ${tgt.carbs_g || 0}g · F ${tgt.fat_g || 0}g</p>
+    <p class="muted">Remaining: ${Math.round(rem.kcal || 0)} kcal / ${Math.round(rem.protein_g || 0)}g protein${diet ? ` · ${esc(diet)}` : ""}</p>
+    <h3>WANTED</h3>
+    ${(m.wanted || []).map((w) => `
+      <div class="row"><span>${esc(w.name)}</span><span class="muted">${w.kcal || 0} kcal <button type="button" class="tiny" data-unwant="${esc(w.id)}">X</button></span></div>
+    `).join("") || `<p class="muted">Tell Pip meals you want.</p>`}
+    <h3>PLAN ${esc(m.plan_date || "")}</h3>
+    ${(m.plan || []).map((p) => `
+      <div class="row"><span>${esc(p.slot)} · ${esc(p.meal_name)}</span><span class="muted">${p.kcal || 0}</span></div>
+      ${p.ingredients ? `<p class="muted meal-ings">${esc(p.ingredients)}</p>` : ""}
+    `).join("") || `<p class="muted">No plan yet. REPLAN or ask Pip.</p>`}
+    <h3>SHOPPING</h3>
+    ${(m.shopping || []).map((s) => `
+      <label class="check"><input type="checkbox" data-shop="${esc(s.id)}" ${s.checked ? "checked" : ""} /> ${esc(s.name)} ${esc(s.quantity || "")}</label>
+    `).join("") || `<p class="muted">Empty until a plan has ingredients.</p>`}
+    <div class="actions">
+      <button type="button" id="meal-plan" class="primary">REPLAN TODAY</button>
+      <button type="button" id="meal-clear">CLEAR TODAY</button>
+      <button type="button" id="meal-wclear">CLEAR WANTED</button>
+    </div>`;
+  $("#meal-plan").onclick = () => {
+    const out = planDay(db);
+    persist();
+    renderMeals();
+    setStatus(out.ok ? "MEALS PLANNED" : String(out.error || "PLAN FAILED"));
+  };
+  $("#meal-clear").onclick = () => {
+    clearDayPlan(db);
+    persist();
+    renderMeals();
+    setStatus("TODAY CLEARED");
+  };
+  $("#meal-wclear").onclick = () => {
+    clearWantedMeals(db);
+    persist();
+    renderMeals();
+    setStatus("WANTED CLEARED");
+  };
+  $("#view").querySelectorAll("[data-unwant]").forEach((el) => {
+    el.onclick = () => {
+      deleteWantedMeal(db, el.dataset.unwant);
+      persist();
+      renderMeals();
+    };
+  });
+  $("#view").querySelectorAll("[data-shop]").forEach((el) => {
+    el.onchange = () => {
+      setShoppingChecked(db, el.dataset.shop, el.checked);
+      persist();
+    };
+  });
+}
+
+function renderGuide(entry = null) {
+  document.body.classList.remove("comm");
+  const recent = guideEntries();
+  const show = entry || recent[0] || null;
+  $("#view").innerHTML = `
+    <h3>GUIDE</h3>
+    <p class="muted">Don't Panic. Live Wikipedia — the whole library, one lookup at a time. Recent reads stay on your phone.</p>
+    <div class="guide-search">
+      <input id="guide-q" placeholder="Search the Guide…" value="" />
+      <button type="button" id="guide-go" class="primary">LOOKUP</button>
+    </div>
+    <div id="guide-hit">${show ? `
+      <div class="guide-entry">
+        <h4>${esc(show.title)}</h4>
+        <p>${esc(show.extract || "")}</p>
+        ${show.url ? `<p class="muted"><a href="${esc(show.url)}" target="_blank" rel="noopener" id="guide-full">Full article on Wikipedia →</a></p>` : ""}
+      </div>` : `<p class="muted">Ask in CHAT: "what is aurora borealis" or search here.</p>`}
+    </div>
+    <h3>RECENT</h3>
+    ${recent.slice(0, 12).map((r) => `
+      <button type="button" class="opp-card" data-guide-title="${esc(r.title)}">${esc(r.title)}</button>
+    `).join("") || `<p class="muted">Nothing cached yet.</p>`}`;
+  const runSearch = async () => {
+    const q = ($("#guide-q").value || "").trim();
+    if (!q) return;
+    setStatus("GUIDE LOOKUP…");
+    try {
+      let hit = await fetchWikiSummary(q);
+      if (!hit?.extract) {
+        const picks = await searchWiki(q, 1);
+        if (picks[0]?.title) hit = await fetchWikiSummary(picks[0].title);
+      }
+      if (!hit?.extract) {
+        setStatus("NO GUIDE ENTRY");
+        return;
+      }
+      renderGuide(hit);
+      setStatus("GUIDE OK");
+    } catch (e) {
+      setStatus(String(e.message || e));
+    }
+  };
+  $("#guide-go").onclick = runSearch;
+  $("#guide-q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); runSearch(); }
+  });
+  const full = $("#guide-full");
+  if (full) {
+    full.onclick = (e) => {
+      e.preventDefault();
+      openUrl(full.href, { system: true }).catch(() => window.open(full.href, "_blank"));
+    };
+  }
+  $("#view").querySelectorAll("[data-guide-title]").forEach((btn) => {
+    btn.onclick = async () => {
+      setStatus("GUIDE…");
+      try {
+        const hit = await fetchWikiSummary(btn.dataset.guideTitle);
+        renderGuide(hit);
+        setStatus("GUIDE OK");
+      } catch (e) {
+        setStatus(String(e.message || e));
+      }
+    };
+  });
 }
 
 async function renderWx() {
@@ -1101,6 +1246,49 @@ async function sendChat() {
     return;
   }
 
+  if (looksLikeGuideQuery(text)) {
+    setStatus("GUIDE…");
+    const guideHit = await tryGuideCommand(text);
+    if (guideHit) {
+      addLog("pip", guideHit.reply);
+      persist();
+      if (guideHit.switchTab) {
+        tab = guideHit.switchTab;
+        render();
+      }
+      setStatus(guideHit.ok ? "GUIDE" : "GUIDE MISS");
+      if (guideHit.ok && guideHit.entry) {
+        try {
+          const { guideContextLine } = await import("./guide.js");
+          const follow = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit, db, {
+            guideContext: guideContextLine(guideHit.entry),
+          });
+          if (follow && follow !== guideHit.reply) {
+            db.chat.push({ role: "pip", content: follow });
+            rememberReply(db, follow);
+            persist();
+            addLog("pip", follow);
+          }
+        } catch {
+          /* guide text is enough */
+        }
+      }
+      return;
+    }
+  }
+
+  const mealHit = tryMealCommand(text, db);
+  if (mealHit) {
+    persist();
+    addLog("pip", mealHit.reply);
+    if (mealHit.switchTab) {
+      tab = mealHit.switchTab;
+      render();
+    }
+    setStatus(mealHit.ok ? "MEALS UPDATED" : "MEALS");
+    return;
+  }
+
   try {
     const reply = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit, db);
     const pending = takePendingTheme();
@@ -1123,7 +1311,7 @@ function boot() {
   bootTheme(db.settings);
   applyAllOverlays();
   db.chat.slice(-20).forEach((m) => addLog(m.role === "user" ? "user" : "pip", m.content));
-  if (!db.chat.length) addLog("pip", "Pip is happy to help!");
+  if (!db.chat.length) addLog("pip", "Pip is happy to help! Ask the Guide anything — or say breakfast: oats.");
   $("#tabs").onclick = (e) => {
     const b = e.target.closest("[data-tab]");
     if (!b) return;
@@ -1180,7 +1368,9 @@ function boot() {
       else if (keyed.length) setStatus("KEYS SAVED · PROBE FAILED");
       else setStatus("PIP ON DECK · ADD KEYS IN DATA");
       if (desktopConfigured(db.settings)) {
-        return syncEventsFromDesktop(db.settings, db).then(() => persist());
+        return syncEventsFromDesktop(db.settings, db)
+          .then(() => syncMealsFromDesktop(db.settings, db))
+          .then(() => persist());
       }
     })
     .catch((e) => setStatus(String(e.message || e).toUpperCase()));

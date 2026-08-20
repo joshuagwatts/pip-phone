@@ -1,4 +1,5 @@
 import { orderFor } from "./command.js";
+import { httpPostJson, httpGet } from "./net.js";
 
 const FISHY = new Set(["gemini", "xai"]);
 
@@ -209,9 +210,9 @@ export async function cloudCompleteTools(settings, messages, tools, lane = "boos
   throw new Error(errors.join(" · ") || "CODE needs LEAKY + a cloud key, or pair desktop for GPU code edits");
 }
 
-export async function chatComplete(settings, messages, temperature = 0.7, maxTokens = 1024) {
+export async function chatComplete(settings, messages, temperature = 0.7, maxTokens = 1024, job = "life") {
   const errors = [];
-  for (const prov of chatChain(settings)) {
+  for (const prov of chatChain(settings, job)) {
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {

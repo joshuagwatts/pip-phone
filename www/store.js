@@ -26,6 +26,7 @@ function blank() {
     chat: [],
     moments: [],
     events: [],
+    meals: null,
     dirty: { answers: [] },
     settings: {
       operator: "Joshua",
@@ -72,6 +73,7 @@ export function load() {
       chat: Array.isArray(raw.chat) ? raw.chat : [],
       moments: Array.isArray(raw.moments) ? raw.moments : [],
       events: Array.isArray(raw.events) ? raw.events : [],
+      meals: raw.meals && typeof raw.meals === "object" ? raw.meals : null,
     };
   } catch {
     return blank();

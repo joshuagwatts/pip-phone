@@ -232,13 +232,13 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
   return cleaned;
 }
 
-async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress) {
+async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life") {
   track(onProgress);
   const errors = [];
   const cloud = cloudStatus(settings);
   const isChat = lane === "life";
   pendingTheme = null;
-  const job = isChat ? "life" : lane === "boost" ? "boost" : "code";
+  const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
 
   if (desktopConfigured(settings)) {
     try {
@@ -260,10 +260,10 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const cloudOk = isChat ? chatCloudEnabled(settings) : cloud.leaky && cloud.keyed.length;
   if (cloudOk) {
     try {
-      const first = isChat ? chatChain(settings, job)[0] : null;
+      const first = isChat ? chatChain(settings, routeJob)[0] : null;
       emit(isChat && first ? String(first.label || first.id).toUpperCase() : cloud.pin === "xai" ? "GROK" : "CLOUD");
       const out = isChat
-        ? await chatComplete(settings, messages, temperature, maxTokens)
+        ? await chatComplete(settings, messages, temperature, maxTokens, routeJob)
         : await cloudComplete(settings, messages, lane, temperature, maxTokens);
       const cleaned = sanitizeReply(out.text);
       if (cleaned && !isBlank(cleaned)) {
@@ -321,7 +321,7 @@ async function complete(messages, temperature = 0.7, maxTokens = 400, settings =
   return localComplete(messages, temperature, maxTokens);
 }
 
-export async function chat(settings, history, text, onProgress, kit, db) {
+export async function chat(settings, history, text, onProgress, kit, db, extras = {}) {
   track(onProgress);
   const operator = settings.operator || "Joshua";
   let momentLine = "";
@@ -334,8 +334,19 @@ export async function chat(settings, history, text, onProgress, kit, db) {
     }
   }
   const job = pickJob(text);
+  let context = extras.guideContext || "";
+  if (!context && db) {
+    try {
+      const { mealBrief } = await import("./meals.js");
+      if (job === "meal" || /\b(meals?|breakfast|lunch|dinner)\b/i.test(text)) {
+        context = [context, `Today's meals:\n${mealBrief(db)}`].filter(Boolean).join("\n");
+      }
+    } catch {
+      /* optional */
+    }
+  }
   const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. Use the crew chain for this job.`;
-  const system = momentLine ? `${sysBase}\n${momentLine}` : sysBase;
+  const system = [sysBase, momentLine, context].filter(Boolean).join("\n");
   const messages = [
     { role: "system", content: system },
     ...SHOTS,
@@ -347,7 +358,7 @@ export async function chat(settings, history, text, onProgress, kit, db) {
   ];
   let out = "";
   try {
-    out = await routedComplete(settings, messages, "life", 0.7, 1024, onProgress);
+    out = await routedComplete(settings, messages, "life", 0.7, 1024, onProgress, job);
   } catch {
     out = "";
   }
