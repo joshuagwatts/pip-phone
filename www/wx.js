@@ -24,7 +24,7 @@ const WMO = {
   99: "Severe thunder + hail",
 };
 
-export const DEFAULT_FILTERS = { km: 15, hailIn: 0.75, windMph: 38, days: 180 };
+export const DEFAULT_FILTERS = { km: 25, hailIn: 0, windMph: 38, days: 180 };
 let wxFilters = { ...DEFAULT_FILTERS };
 let overlays = {};
 let activeOverlays = new Set(["radar"]);
@@ -205,9 +205,148 @@ function parseSpcHailCsv(text, reportDay) {
   return parseSpcSection(text, reportDay, "Time,Size,", "hail", "size_in");
 }
 
-async function fetchSpcReports(lat, lon, radiusKm = 15, daysBack = 60) {
+function bboxForKm(lat, lon, radiusKm) {
+  const pad = Math.max(radiusKm * 1.15, 5);
+  const dLat = pad / 111;
+  const dLon = pad / (111 * Math.max(0.25, Math.cos((lat * Math.PI) / 180)));
+  return `${(lon - dLon).toFixed(4)},${(lat - dLat).toFixed(4)},${(lon + dLon).toFixed(4)},${(lat + dLat).toFixed(4)}`;
+}
+
+function parseSwdiShape(shape) {
+  const m = String(shape || "").match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/);
+  if (!m) return null;
+  const lon = parseFloat(m[1]);
+  const lat = parseFloat(m[2]);
+  return Number.isNaN(lon) || Number.isNaN(lat) ? null : { lon, lat };
+}
+
+async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 180) {
   const today = new Date();
-  const days = Math.min(Math.max(daysBack, 7), 90);
+  const days = Math.min(Math.max(daysBack, 7), 365);
+  const km = Math.min(Math.max(radiusKm, 3), 50);
+  const bbox = bboxForKm(lat, lon, km);
+  const startLimit = new Date(today);
+  startLimit.setDate(startLimit.getDate() - days);
+  const chunks = [];
+  let cursor = new Date(today);
+  while (cursor > startLimit) {
+    const chunkEnd = new Date(cursor);
+    const chunkStart = new Date(cursor);
+    chunkStart.setDate(chunkStart.getDate() - 6);
+    if (chunkStart < startLimit) chunkStart.setTime(startLimit.getTime());
+    chunks.push({ start: chunkStart, end: chunkEnd });
+    cursor = new Date(chunkStart);
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  const hits = new Map();
+  const batch = 4;
+  for (let i = 0; i < chunks.length; i += batch) {
+    const part = await Promise.all(
+      chunks.slice(i, i + batch).map(async ({ start, end }) => {
+        const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
+        const url = `https://www.ncdc.noaa.gov/swdiws/json/nx3hail/${fmt(start)}:${fmt(end)}?bbox=${bbox}`;
+        try {
+          const { body } = await httpGet(url, 22000);
+          const data = JSON.parse(body || "{}");
+          return data.result || [];
+        } catch {
+          return [];
+        }
+      }),
+    );
+    for (const rows of part) {
+      for (const item of rows) {
+        const pt = parseSwdiShape(item.SHAPE);
+        if (!pt) continue;
+        const dist = haversineKm(lat, lon, pt.lat, pt.lon);
+        if (dist > km) continue;
+        const ztime = String(item.ZTIME || "");
+        const day = ztime.slice(0, 10) || "";
+        if (!day) continue;
+        const sz = parseFloat(item.MAXSIZE);
+        const row = {
+          kind: "hail",
+          date: day,
+          time: ztime.slice(11, 19),
+          lat: pt.lat,
+          lon: pt.lon,
+          size_in: Number.isNaN(sz) ? "UNK" : sz.toFixed(2),
+          location: "Radar signature",
+          county: "",
+          state: "",
+          comments: `NEXRAD ${item.WSR_ID || ""}`.trim(),
+          source: "noaa-swdi-radar",
+          distance_km: Math.round(dist * 10) / 10,
+          score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3,
+        };
+        const key = `${row.date}|${row.lat.toFixed(2)}|${row.lon.toFixed(2)}`;
+        const prev = hits.get(key);
+        if (!prev || parseFloat(row.size_in) > parseFloat(prev.size_in)) hits.set(key, row);
+      }
+    }
+  }
+  return [...hits.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 120);
+}
+
+function mergeHailRows(...groups) {
+  const merged = groups.flat();
+  merged.sort((a, b) => {
+    const ds = b.date.localeCompare(a.date);
+    if (ds) return ds;
+    return parseFloat(b.size_in) - parseFloat(a.size_in);
+  });
+  return merged.slice(0, 120);
+}
+
+function enrichStormDates(storms, hail, wind) {
+  const byDate = new Map();
+  for (const s of storms || []) {
+    if (s.date) byDate.set(s.date, { ...s, reasons: [...(s.reasons || [])] });
+  }
+  for (const h of hail || []) {
+    if (!h.date) continue;
+    const tag = h.source === "noaa-swdi-radar" ? `radar hail ${h.size_in} in` : `hail ${h.size_in} in`;
+    const cur = byDate.get(h.date);
+    if (cur) {
+      if (!cur.reasons.includes(tag)) cur.reasons.push(tag);
+      cur.score = Math.max(cur.score || 0, h.score || 4);
+    } else {
+      byDate.set(h.date, {
+        date: h.date,
+        score: h.score || 4,
+        label: h.source === "noaa-swdi-radar" ? "Radar hail" : "Hail",
+        reasons: [tag],
+        wind_mph: 0,
+        source: h.source || "hail",
+      });
+    }
+  }
+  for (const w of wind || []) {
+    if (!w.date) continue;
+    const mph = Number(w.wind_mph) || 0;
+    const tag = `wind ${mph.toFixed(0)} mph`;
+    const cur = byDate.get(w.date);
+    if (cur) {
+      if (!cur.reasons.includes(tag)) cur.reasons.push(tag);
+      cur.score = Math.max(cur.score || 0, mph >= 58 ? 4 : 3);
+      cur.wind_mph = Math.max(cur.wind_mph || 0, mph);
+    } else {
+      byDate.set(w.date, {
+        date: w.date,
+        score: mph >= 58 ? 4 : 3,
+        label: "Wind",
+        reasons: [tag],
+        wind_mph: mph,
+        source: w.source || "noaa-spc",
+      });
+    }
+  }
+  return [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 100);
+}
+
+async function fetchSpcReports(lat, lon, radiusKm = 25, daysBack = 60) {
+  const today = new Date();
+  const days = Math.min(Math.max(daysBack, 7), 365);
   const km = Math.min(Math.max(radiusKm, 3), 50);
   const stamps = [];
   for (let d = 0; d < days; d++) {
@@ -258,8 +397,10 @@ async function fetchSpcReports(lat, lon, radiusKm = 15, daysBack = 60) {
   return { hail: hailHits.slice(0, 80), wind: windHits.slice(0, 80) };
 }
 
-async function fetchHailReports(lat, lon, radiusKm = 15, daysBack = 60) {
-  return (await fetchSpcReports(lat, lon, radiusKm, daysBack)).hail;
+async function fetchHailReports(lat, lon, radiusKm = 25, daysBack = 60) {
+  const spc = await fetchSpcReports(lat, lon, radiusKm, daysBack);
+  const swdi = await fetchSwdiHail(lat, lon, radiusKm, daysBack);
+  return mergeHailRows(spc.hail, swdi);
 }
 
 let mapConfigCache = null;
@@ -422,18 +563,22 @@ async function localMapConfig(settings, center) {
   return { center: { lat: c.lat, lon: c.lon, city: c.city || settings?.city || "" }, layers: layerList };
 }
 
-async function localResearch(lat, lon, address = "", { deep = true } = {}) {
+async function localResearch(lat, lon, address = "", { deep = true, filters = wxFilters } = {}) {
   const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
-  const [geo, wxNow, storms, spc] = await Promise.all([
+  const days = deep ? Number(filters.days) || 180 : 90;
+  const km = Number(filters.km) || 25;
+  const [geo, wxNow, archiveStorms, spc, swdi] = await Promise.all([
     geoP,
     currentWeather(lat, lon).catch(() => ({ ok: false })),
-    historicalStorms(lat, lon, deep ? 180 : 90),
-    fetchSpcReports(lat, lon, 15, deep ? 90 : 45),
+    historicalStorms(lat, lon, days),
+    fetchSpcReports(lat, lon, km, days),
+    fetchSwdiHail(lat, lon, km, days),
   ]);
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const city = geo.city || addr.split(",")[0];
-  const hail = spc.hail || [];
+  const hail = mergeHailRows(spc.hail || [], swdi || []);
   const wind = spc.wind || [];
+  const storms = enrichStormDates(archiveStorms, hail, wind);
   const news = [];
   if (deep) {
     for (const q of [`hail damage "${city}"`, `hail storm "${city}"`, `severe weather "${addr}"`, `wind damage "${city}"`]) {
@@ -514,7 +659,7 @@ export async function quickPin(settings, lat, lon) {
   const [geo, wx, hail] = await Promise.all([
     reverseGeocode(lat, lon),
     currentWeather(lat, lon),
-    fetchHailReports(lat, lon, 15, 21),
+    fetchHailReports(lat, lon, wxFilters.km || 25, wxFilters.days || 30),
   ]);
   return { ok: true, geo, weather: wx, hail, recent_storms: hail.slice(0, 5) };
 }
@@ -536,7 +681,7 @@ export function drawHailMarkers(hailRows, windRows) {
       fillOpacity: 0.7,
       weight: 1,
     })
-      .bindPopup(`${h.date} · ${h.size_in} in hail<br>${h.location}, ${h.state}<br>${h.distance_km} km from pin`)
+      .bindPopup(`${h.date} · ${h.size_in} in hail${h.source === "noaa-swdi-radar" ? " (radar)" : ""}<br>${h.location}${h.state ? `, ${h.state}` : ""}<br>${h.distance_km} km from pin`)
       .addTo(hailLayer);
   }
   for (const w of (windRows || []).slice(0, 40)) {
@@ -621,7 +766,7 @@ function cutoffDate(days) {
 
 export function filterDossier(data, filters = wxFilters) {
   const since = cutoffDate(filters.days);
-  const km = Number(filters.km) || 15;
+  const km = Number(filters.km) || 25;
   const hailMin = Number(filters.hailIn) || 0;
   const windMin = Number(filters.windMph) || 0;
   const hail = (data.hail || []).filter((h) => {
@@ -635,7 +780,13 @@ export function filterDossier(data, filters = wxFilters) {
     if (w.distance_km != null && w.distance_km > km) return false;
     return (Number(w.wind_mph) || 0) >= windMin;
   });
-  const storms = (data.storms || []).filter((s) => {
+  const archiveStorms = (data.storms || []).filter(
+    (s) =>
+      (s.source || "").includes("open-meteo") ||
+      (s.reasons || []).some((r) => /precip|thunder|storm|Weather/i.test(r)),
+  );
+  let storms = enrichStormDates(archiveStorms, hail, wind);
+  storms = storms.filter((s) => {
     if (s.date && s.date < since) return false;
     if ((Number(s.wind_mph) || 0) < windMin && !(s.reasons || []).some((r) => /hail|thunder/i.test(r))) {
       return (Number(s.wind_mph) || 0) >= windMin || (Number(s.precip_mm) || 0) >= 25;
@@ -671,6 +822,8 @@ export function renderDossier(root, data, esc, onResearch) {
           <option value="8"${wxFilters.km == 8 ? " selected" : ""}>8 km</option>
           <option value="15"${wxFilters.km == 15 ? " selected" : ""}>15 km</option>
           <option value="25"${wxFilters.km == 25 ? " selected" : ""}>25 km</option>
+          <option value="40"${wxFilters.km == 40 ? " selected" : ""}>40 km</option>
+          <option value="50"${wxFilters.km == 50 ? " selected" : ""}>50 km</option>
         </select></label>
         <label>HAIL ≥ <select id="wx-f-hail">
           <option value="0"${wxFilters.hailIn == 0 ? " selected" : ""}>any</option>
@@ -701,7 +854,7 @@ export function renderDossier(root, data, esc, onResearch) {
         <div class="wx-hail-row"><span class="date">${esc(h.date)}</span>
         <span class="size">${esc(h.size_in)} in</span>
         <span class="dist">${esc(String(h.distance_km))} km</span>
-        ${esc(h.location)}, ${esc(h.state)}</div>`).join("") : `<p class="muted">No hail this close after filters. Widen NEAR or drop HAIL ≥.</p>`}</div>
+        ${esc(h.location || (h.source === "noaa-swdi-radar" ? "Radar" : ""))}${h.state ? `, ${esc(h.state)}` : ""}</div>`).join("") : `<p class="muted">No hail this close after filters. Widen NEAR or drop HAIL ≥.</p>`}</div>
       <h4>WIND NEAR PIN</h4>
       <div class="wx-wind">${wind.length ? wind.slice(0, 12).map((w) => `
         <div class="wx-hail-row"><span class="date">${esc(w.date)}</span>
