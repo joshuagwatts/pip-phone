@@ -58,9 +58,11 @@ export function newOpp({ title, url, note, questions, kind }) {
     note: (note || "").trim(),
     status: "open",
     kind: hit,
+    app_stage: qs.length ? "scraped" : "new",
     questions: qs,
     answers: qs.map((q) => ({ q: q.prompt || q.q || "", a: "", a5: "" })),
     created_at: Date.now(),
+    updated_at: Date.now(),
   };
 }
 

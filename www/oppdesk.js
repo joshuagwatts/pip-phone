@@ -4,7 +4,18 @@ import { httpLanGet, httpLanPostJson } from "./net.js";
 import { classify, labelOf } from "./kind.js";
 import { hunt as localHunt, scrapeUrl, newOpp, suggestAnswers } from "./opp.js";
 
-export const OPP_TYPES = [
+export const APP_STAGES = [
+  { id: "new", label: "New" },
+  { id: "scraped", label: "Scraped" },
+  { id: "drafted", label: "Drafted" },
+  { id: "submitted", label: "Submitted" },
+  { id: "interview", label: "Interview" },
+  { id: "rejected", label: "Rejected" },
+];
+
+export function stageLabel(id) {
+  return APP_STAGES.find((s) => s.id === id)?.label || id || "New";
+}
   { id: "all", label: "All" },
   { id: "festival_install", label: "Install" },
   { id: "festival_artist", label: "Mural" },
@@ -117,12 +128,17 @@ export function looksLikeOppRequest(text) {
 
 function mapDesktopOpp(row) {
   return {
-    id: String(row.id),
+    id: String(row.phone_id || row.id),
+    remote_id: row.id,
+    phone_id: String(row.phone_id || row.id),
     title: row.title || "Untitled",
     url: row.url || "",
     note: row.note || "",
     status: row.status || "open",
     kind: row.call_type || row.kind || classify(row.title, row.url, row.questions).id,
+    app_stage: row.app_stage || "new",
+    fit_score: row.fit_score || 0,
+    submitted_at: row.submitted_at || "",
     questions: row.questions || [],
     answers: (row.answers || []).map((a) => ({
       q: a.q || a.question || "",
@@ -134,36 +150,128 @@ function mapDesktopOpp(row) {
     deadline: row.deadline,
     due_label: row.due_label,
     created_at: Date.parse(row.updated_at || row.created_at || "") || Date.now(),
+    updated_at: row.updated_at || "",
     _remote: true,
     _remoteId: row.id,
   };
 }
 
-export async function syncOppsFromDesktop(settings, db) {
-  if (!desktopConfigured(settings)) return { ok: false, synced: 0 };
-  try {
-    const rows = await httpLanGet(`${lanBase(settings)}/api/opp`, 15000, lanHeaders(settings));
-    if (!Array.isArray(rows)) return { ok: false, synced: 0 };
-    const byUrl = new Map((db.opps || []).map((o) => [o.url, o]));
-    let n = 0;
-    for (const row of rows) {
-      const mapped = mapDesktopOpp(row);
-      if (!mapped.url) continue;
-      const prev = byUrl.get(mapped.url);
-      if (prev) {
-        Object.assign(prev, mapped, { id: prev.id });
-        n += 1;
-      } else {
-        mapped.id = mapped.id || String(row.id);
-        db.opps.unshift(mapped);
-        byUrl.set(mapped.url, mapped);
-        n += 1;
-      }
+export function phoneOppPayload(db) {
+  return (db.opps || [])
+    .filter((o) => o.status !== "done" || o.app_stage === "submitted" || o.app_stage === "interview")
+    .map((o) => {
+      const fit = scoreFit(o, db.kit);
+      return {
+        phone_id: String(o.id),
+        id: String(o.id),
+        title: o.title,
+        url: o.url,
+        note: o.note,
+        status: o.status,
+        kind: o.kind,
+        app_stage: o.app_stage || (o.questions?.length ? "scraped" : "new"),
+        fit_score: o.fitScore || fit.score,
+        questions: o.questions || [],
+        answers: o.answers || [],
+        updated_at: o.updated_at ? new Date(o.updated_at).toISOString() : new Date(o.created_at || Date.now()).toISOString(),
+      };
+    });
+}
+
+export async function pushOppsToDesktop(settings, db) {
+  if (!desktopConfigured(settings)) return { pushed: 0 };
+  const out = await httpLanPostJson(
+    `${lanBase(settings)}/api/opp/sync`,
+    lanHeaders(settings),
+    { opps: phoneOppPayload(db) },
+    120000,
+  );
+  return { pushed: out.pushed || 0, digest: out.digest };
+}
+
+export async function pullOppsFromDesktop(settings, db, since = "") {
+  if (!desktopConfigured(settings)) return { pulled: 0 };
+  const q = since ? `?since=${encodeURIComponent(since)}` : "";
+  const rows = await httpLanGet(`${lanBase(settings)}/api/opp/sync${q}`, 20000, lanHeaders(settings));
+  const list = rows.opportunities || rows || [];
+  if (!Array.isArray(list)) return { pulled: 0 };
+  let n = 0;
+  const byPhone = new Map((db.opps || []).map((o) => [String(o.id), o]));
+  const byUrl = new Map((db.opps || []).filter((o) => o.url).map((o) => [o.url, o]));
+  for (const row of list) {
+    const mapped = mapDesktopOpp(row);
+    const prev = byPhone.get(mapped.phone_id) || (mapped.url && byUrl.get(mapped.url));
+    if (prev) {
+      Object.assign(prev, mapped, { id: prev.id });
+      prev.fitScore = mapped.fit_score || prev.fitScore;
+      n += 1;
+    } else if (mapped.url || mapped.title) {
+      db.opps.unshift(mapped);
+      n += 1;
     }
-    return { ok: true, synced: n };
-  } catch {
-    return { ok: false, synced: 0 };
   }
+  db.opp_sync_at = new Date().toISOString();
+  return { pulled: n };
+}
+
+export async function fullOppSync(settings, db) {
+  const push = await pushOppsToDesktop(settings, db);
+  const pull = await pullOppsFromDesktop(settings, db, db.opp_sync_at || "");
+  return { pushed: push.pushed || 0, pulled: pull.pulled || 0, digest: push.digest };
+}
+
+export async function fetchOppDigest(settings, db) {
+  if (!desktopConfigured(settings)) {
+    db.opp_digest = buildLocalDigest(db);
+    return db.opp_digest;
+  }
+  try {
+    const d = await httpLanGet(`${lanBase(settings)}/api/opp/digest`, 12000, lanHeaders(settings));
+    db.opp_digest = d;
+    return d;
+  } catch {
+    db.opp_digest = buildLocalDigest(db);
+    return db.opp_digest;
+  }
+}
+
+function buildLocalDigest(db) {
+  const rows = filterOpps((db.opps || []).filter((o) => o.status !== "done"), {}, db.kit);
+  return {
+    generated_at: new Date().toISOString().slice(0, 10),
+    summary: `${rows.length} on phone`,
+    top: rows.slice(0, 5).map((o) => ({
+      id: o.id,
+      title: o.title,
+      fit_score: o.fitScore,
+      app_stage: o.app_stage || "new",
+    })),
+  };
+}
+
+export async function setOppStage(settings, db, opp, stage) {
+  opp.app_stage = stage;
+  if (stage === "submitted") opp.submitted_at = new Date().toISOString().slice(0, 10);
+  if (stage === "rejected") opp.status = "done";
+  opp.updated_at = Date.now();
+  if (desktopConfigured(settings) && opp._remoteId) {
+    try {
+      await httpLanPostJson(
+        `${lanBase(settings)}/api/opp/${opp._remoteId}/stage`,
+        lanHeaders(settings),
+        { stage },
+        15000,
+      );
+    } catch {
+      /* local stage still set */
+    }
+  }
+  await pushOppsToDesktop(settings, db);
+}
+
+export async function syncOppsFromDesktop(settings, db) {
+  const out = await fullOppSync(settings, db);
+  return { ok: true, synced: out.pulled + out.pushed };
 }
 
 export async function huntOpportunities(settings, kit, { focus = "", type = "all", onProgress } = {}) {

@@ -103,6 +103,7 @@ const state = {
   oppQuery: localStorage.getItem("pip.oppQuery") || "",
   oppKind: localStorage.getItem("pip.oppKind") || "all",
   oppScrapeUrl: "",
+  oppDigest: null,
   vibe: {
     files: [],
     path: "",
@@ -320,6 +321,7 @@ async function loadTabData() {
   if (state.tab === "board") await loadBoard();
     if (state.tab === "opp") {
     state.opps = await api("/api/opp");
+    try { state.oppDigest = await api("/api/opp/digest"); } catch (_) { state.oppDigest = null; }
     try { state.oppKit = await api("/api/opp/kit"); } catch (_) { state.oppKit = null; }
     if (state.oppId && !(state.opps || []).some((o) => o.id === state.oppId)) {
       state.oppId = null;
@@ -2348,9 +2350,10 @@ function renderOpp(b) {
       ${filtered.map((o) => `
         <button type="button" class="opp-card ${sel && sel.id === o.id ? "on" : ""}" data-opp="${o.id}">
           <b>${esc(o.title)}</b>
-          <span>${o.call_label ? esc(o.call_label) + " · " : ""}${esc(o.due_label || "")}${o.n_questions ? " · " + o.n_questions + " Q" : ""}</span>
+          <span>${o.call_label ? esc(o.call_label) + " · " : ""}${esc(o.due_label || "")}${o.app_stage ? " · " + esc(String(o.app_stage).toUpperCase()) : ""}${o.n_questions ? " · " + o.n_questions + " Q" : ""}</span>
         </button>
       `).join("") || "<p class='muted'>Empty. SEARCH or HUNT finds calls with time left.</p>"}
+      ${state.oppDigest?.summary ? `<p class="muted opp-digest">${esc(state.oppDigest.summary)}</p>` : ""}
       <div class="opp-dock">
         <button class="primary" id="opp-hunt">SEARCH</button>
         <button type="button" id="opp-kit-pane">KIT</button>
@@ -2370,8 +2373,10 @@ function renderOpp(b) {
       ${answerBlocks}
       <div class="opp-dock">
         <button type="button" id="opp-back">BACK</button>
-        <button class="primary" id="opp-draft">DRAFT THIS</button>
+        <button type="button" class="primary" id="opp-draft">DRAFT THIS</button>
         <button id="opp-open">OPEN FORM</button>
+        <button type="button" data-stage="submitted">SUBMITTED</button>
+        <button type="button" data-stage="interview">INTERVIEW</button>
         <button id="opp-done">DONE</button>
       </div>`;
   } else {
@@ -2691,6 +2696,18 @@ function renderOpp(b) {
       setStatus(String(e.message || e));
     }
   };
+  b.querySelectorAll("[data-stage]").forEach((el) => {
+    el.onclick = async (ev) => {
+      ev.stopPropagation();
+      const id = oppId();
+      if (!id) return;
+      await api(`/api/opp/${id}/stage`, { method: "POST", body: JSON.stringify({ stage: el.dataset.stage }) });
+      state.oppDetail = await api(`/api/opp/${id}`);
+      state.opps = await api("/api/opp");
+      renderView();
+      setStatus(el.dataset.stage.toUpperCase());
+    };
+  });
   const done = $("#opp-done");
   if (done) done.onclick = async () => {
     if (!state.oppId) return;
@@ -4089,12 +4106,13 @@ function renderData(b) {
          <p class="muted">${h.phone.restart ? "Restart Pip once, then paste any URL into Phone Pip DATA → VPN URL or FIND + PAIR." : "Phone Pip DATA → VPN URL or FIND + PAIR. Allow Python on private networks if Windows asks."}</p>`
       : `<p class="muted">${(h.phone && h.phone.on) ? "Restart Pip, then URLs show up here." : "Set a password. Turn on LAN and/or VPN below."}</p>`}
     <h3>VPN</h3>
-    <p class="muted">Reach this PC from anywhere. Tailscale is easiest. WireGuard is DIY tunnel + import on the phone.</p>
+    <p class="muted">Reach this PC from anywhere. Tailscale is easiest. WireGuard is DIY. Proton VPN runs as a separate app on phone — use it for outbound privacy; pair via saved URL.</p>
     <div class="field"><span>MODE</span>
       <select id="vpn-mode">
         <option value="off" ${!(h.phone && h.phone.vpn_on) ? "selected" : ""}>OFF</option>
         <option value="tailscale" ${(h.phone && h.phone.vpn_mode === "tailscale") ? "selected" : ""}>TAILSCALE</option>
         <option value="wireguard" ${(h.phone && h.phone.vpn_mode === "wireguard") ? "selected" : ""}>WIREGUARD</option>
+        <option value="proton" ${(h.phone && h.phone.vpn_mode === "proton") ? "selected" : ""}>PROTON (companion)</option>
         <option value="all" ${(h.phone && h.phone.vpn_mode === "all") ? "selected" : ""}>ALL</option>
       </select>
     </div>

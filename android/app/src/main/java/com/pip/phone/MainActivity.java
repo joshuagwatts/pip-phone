@@ -10,6 +10,7 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(VpnBridgePlugin.class);
         super.onCreate(savedInstanceState);
         getWindow().setStatusBarColor(Color.parseColor("#0A0F0A"));
         getWindow().setNavigationBarColor(Color.parseColor("#050805"));

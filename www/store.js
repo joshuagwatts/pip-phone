@@ -50,6 +50,8 @@ function blank() {
       vpn_url: "",
       vpn_host: "",
       vpn_note: "",
+      proton_url: "",
+      keepalive: false,
       ui_theme: null,
       ui_theme_name: "",
       brain_health: {},
@@ -74,6 +76,8 @@ export function load() {
       moments: Array.isArray(raw.moments) ? raw.moments : [],
       events: Array.isArray(raw.events) ? raw.events : [],
       meals: raw.meals && typeof raw.meals === "object" ? raw.meals : null,
+      opp_sync_at: raw.opp_sync_at || "",
+      opp_digest: raw.opp_digest || null,
     };
   } catch {
     return blank();

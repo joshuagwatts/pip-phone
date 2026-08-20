@@ -118,6 +118,24 @@ p { line-height: 1.45; }
 .scrape-inline input { flex: 1; min-width: 0; }
 .scrape-inline button { flex-shrink: 0; }
 .opp-card .opp-fit { margin-right: 0.35rem; }
+.opp-digest {
+  border: 1px solid var(--line);
+  padding: 0.55rem 0.65rem;
+  margin-bottom: 0.75rem;
+  font-size: 12px;
+  color: var(--muted);
+}
+.opp-digest b { color: var(--phos); margin-right: 0.35rem; }
+.opp-stages { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.65rem 0; }
+.opp-stage {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+.opp-stage.on { border-color: var(--amber); color: var(--amber); }
 input, textarea, select {
   width: 100%;
   background: var(--inset);

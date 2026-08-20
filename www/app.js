@@ -29,14 +29,21 @@ import {
 } from "./meals.js";
 import {
   OPP_TYPES,
+  APP_STAGES,
+  stageLabel,
   filterOpps,
   fitLabel,
   scoreFit,
   huntOpportunities,
   scrapeOpportunityUrl,
   syncOppsFromDesktop,
+  fullOppSync,
+  fetchOppDigest,
+  setOppStage,
   tryOppCommand,
 } from "./oppdesk.js";
+import { openProtonVpn, vpnSystemActive, setKeepAlive } from "./proton.js";
+import { startBackground, toggleKeepAlive } from "./background.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -250,7 +257,7 @@ function renderOpp() {
     const answers = sel.answers && sel.answers.length ? sel.answers : (sel.questions || []).map((q) => ({ q: q.prompt || q.q, a: "", a5: "", type: q.type }));
     $("#view").innerHTML = `
       <h3>${esc(sel.title)}</h3>
-      <p class="opp-fit ${badge.cls}">${badge.text} · ${fit.score}%</p>
+      <p class="opp-fit ${badge.cls}">${badge.text} · ${fit.score}% · ${esc(stageLabel(sel.app_stage || (sel.questions?.length ? "scraped" : "new")))}</p>
       ${sel.url ? `<p class="muted">${esc(sel.url)}</p>` : ""}
       ${sel.note ? `<p class="muted">${esc(sel.note)}</p>` : ""}
       <p class="muted">${esc(labelOf(sel.kind || classify(sel.title, sel.url, sel.questions).id))}</p>
@@ -263,24 +270,38 @@ function renderOpp() {
           <textarea data-ans="${i}">${esc(a.a || "")}</textarea>
         </div>`).join("") || `<p class="muted">Form's shy. READ PAGE or paste the questions — I'll write them with you.</p>`}
       <div class="field"><span>PASTE QUESTIONS</span><textarea id="paste-qs" placeholder="If the page is a wall, paste the questions."></textarea></div>
+      <div class="opp-stages">
+        ${APP_STAGES.filter((s) => s.id !== "new").map((s) => `
+          <button type="button" class="opp-stage ${sel.app_stage === s.id ? "on" : ""}" data-stage="${esc(s.id)}">${esc(s.label.toUpperCase())}</button>`).join("")}
+      </div>
       <div class="dock">
         <button type="button" id="opp-back">BACK</button>
         <button type="button" id="opp-read">READ PAGE</button>
         <button type="button" class="primary" id="opp-draft">DRAFT THIS</button>
         <button type="button" id="opp-open">OPEN FORM</button>
-        <button type="button" id="opp-done">DONE</button>
+        <button type="button" id="opp-done">ARCHIVE</button>
       </div>`;
     $("#opp-back").onclick = () => { pane = "list"; oppId = ""; render(); };
     $("#opp-read").onclick = readPage;
     $("#opp-draft").onclick = draftThis;
     $("#opp-open").onclick = () => sel.url && openUrl(sel.url);
-    $("#opp-done").onclick = () => {
+    $("#opp-done").onclick = async () => {
       sel.status = "done";
+      sel.app_stage = sel.app_stage || "submitted";
+      await setOppStage(db.settings, db, sel, sel.app_stage);
       persist();
       pane = "list";
       oppId = "";
       render();
     };
+    $("#view").querySelectorAll("[data-stage]").forEach((el) => {
+      el.onclick = async () => {
+        await setOppStage(db.settings, db, sel, el.dataset.stage);
+        persist();
+        render();
+        setStatus(stageLabel(el.dataset.stage).toUpperCase());
+      };
+    });
     $("#view").querySelectorAll("[data-ans]").forEach((el) => {
       el.oninput = () => {
         const i = Number(el.dataset.ans);
@@ -307,9 +328,14 @@ function renderOpp() {
     };
     return;
   }
+  const digest = db.opp_digest;
+  const digestLine = digest?.summary
+    ? `<div class="opp-digest"><b>TODAY</b> ${esc(digest.summary)}${digest.top?.length ? " · " + digest.top.slice(0, 2).map((t) => esc(t.title)).join(" · ") : ""}</div>`
+    : "";
   const listed = filterOpps(rows, oppFilter, db.kit);
   $("#view").innerHTML = `
     <h3>OPPORTUNITIES</h3>
+    ${digestLine}
     <p class="muted">Indeed-for-artists — Pip hunts real open calls, scrapes the form, drafts from your KIT. You paste. CHAT: <em>search for bass festival VJ calls</em> or paste a URL to scrape.</p>
     <div class="opp-search">
       <div class="field span2"><span>SEARCH / FOCUS</span>
@@ -335,7 +361,7 @@ function renderOpp() {
       <button type="button" class="opp-card" data-id="${esc(o.id)}">
         <b>${esc(o.title)}</b>
         <span class="opp-fit ${badge.cls}">${badge.text}</span>
-        <span>${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · scrape"}${o.url ? " · " + esc(o.url.slice(0, 36)) : ""}</span>
+        <span>${esc(stageLabel(o.app_stage || "new"))} · ${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · scrape"}${o.url ? " · " + esc(o.url.slice(0, 36)) : ""}</span>
       </button>`;
     }).join("") || `<p class="muted">Nothing on the desk. SEARCH hunts profile-fit calls. SCRAPE pulls questions from a URL you already found.</p>`}
     <div class="dock">
@@ -899,6 +925,15 @@ function renderData() {
     <h3>REMOTE DESKTOP</h3>
     <p class="muted">Pair to your PC for GPU/Ollama. Same Wi‑Fi, or off-network via Tailscale / WireGuard. Desktop Pip DATA → password + Phone LAN + VPN mode → copy a URL here.</p>
     <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="from desktop DATA → PHONE" autocomplete="off" /></div>
+    <h3>PROTON VPN</h3>
+    <p class="muted">Not built inside Pip — connect the Proton VPN app, keep it running in background. Pip detects the system VPN and routes hunt/scrape/chat through it automatically. Pair desktop via VPN URL below (Tailscale/WG still best for reaching home PC).</p>
+    <div class="actions">
+      <button type="button" id="proton-open">OPEN PROTON VPN</button>
+      <button type="button" id="proton-check">CHECK VPN</button>
+    </div>
+    <p class="muted" id="proton-msg">${s.keepalive ? "Keepalive on — Pip stays ready while VPN runs." : "Enable keepalive to sync opps in background."}</p>
+    <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> KEEP PIP ALIVE (background sync)</label>
+    <div class="field"><span>PROTON / VPN DESKTOP URL</span><input id="set-proton-url" value="${esc(s.proton_url || s.vpn_url || "")}" placeholder="http://your-pc:7420 when on VPN" /></div>
     <div class="field"><span>VPN URL</span><input id="set-vurl" value="${esc(s.vpn_url || "")}" placeholder="http://100.x.x.x:7420 or http://10.8.0.1:7420" /></div>
     <div class="field"><span>TAILSCALE HOST</span><input id="set-vhost" value="${esc(s.vpn_host || "")}" placeholder="optional · mypc.tail-scale.ts.net" /></div>
     <div class="actions">
@@ -960,10 +995,31 @@ function renderData() {
     db.settings.xai = $("#set-xai").value.trim();
     db.settings.desktop_url = $("#set-durl").value.trim();
     db.settings.vpn_url = ($("#set-vurl") && $("#set-vurl").value.trim()) || "";
+    db.settings.proton_url = ($("#set-proton-url") && $("#set-proton-url").value.trim()) || "";
     db.settings.vpn_host = ($("#set-vhost") && $("#set-vhost").value.trim()) || "";
     db.settings.biometric_lock = Boolean($("#set-bio").checked);
     db.settings.vpn_note = $("#set-vpn").value.trim();
+    db.settings.keepalive = Boolean($("#set-keepalive")?.checked);
     persist();
+  };
+
+  const protonOpen = $("#proton-open");
+  if (protonOpen) protonOpen.onclick = async () => {
+    await openProtonVpn();
+    setStatus("PROTON VPN");
+  };
+  const protonCheck = $("#proton-check");
+  if (protonCheck) protonCheck.onclick = async () => {
+    const on = await vpnSystemActive();
+    const el = $("#proton-msg");
+    if (el) el.textContent = on ? "VPN active — hunt and sync use the tunnel." : "No system VPN detected. Open Proton and connect.";
+    setStatus(on ? "VPN ON" : "VPN OFF");
+  };
+  const keepEl = $("#set-keepalive");
+  if (keepEl) keepEl.onchange = async () => {
+    await toggleKeepAlive(db, keepEl.checked, persist);
+    startBackground(db, { persist, render, setStatus });
+    setStatus(keepEl.checked ? "KEEPALIVE ON" : "KEEPALIVE OFF");
   };
 
   $("#data-save").onclick = () => {
@@ -1149,6 +1205,7 @@ async function readPage() {
       sel.questions = found.questions;
       sel.answers = suggestAnswers(found.questions, db.kit, sel.title, sel.kind);
       sel.kind = classify(sel.title, sel.url, found.questions).id;
+      sel.app_stage = "scraped";
       sel.note = `Read ${found.questions.length} questions (${found.source || "page"}).`;
     } else {
       sel.note = "No form on that page yet. Paste the questions.";
@@ -1189,7 +1246,10 @@ async function draftThis() {
       a5: row.a5 || (seeded[i] && seeded[i].a5) || "",
     }));
     Object.assign(sel, mergeDraft(sel, merged));
+    sel.app_stage = "drafted";
+    sel.updated_at = Date.now();
     persist();
+    if (desktopConfigured(db.settings)) fullOppSync(db.settings, db).catch(() => {});
     render();
     setStatus("DRAFT READY · GO PASTE IT");
   } catch (e) {
@@ -1424,7 +1484,11 @@ function boot() {
   bootTheme(db.settings);
   applyAllOverlays();
   db.chat.slice(-20).forEach((m) => addLog(m.role === "user" ? "user" : "pip", m.content));
-  if (!db.chat.length) addLog("pip", "Pip is happy to help! Ask the Guide anything — or say breakfast: oats.");
+  if (!db.chat.length) addLog("pip", "Pip is happy to help! Hunt opps in CHAT — or connect Proton VPN in DATA for private search.");
+  startBackground(db, { persist, render, setStatus });
+  if (desktopConfigured(db.settings)) {
+    fetchOppDigest(db.settings, db).then(() => { if (tab === "opp") render(); }).catch(() => {});
+  }
   $("#tabs").onclick = (e) => {
     const b = e.target.closest("[data-tab]");
     if (!b) return;
