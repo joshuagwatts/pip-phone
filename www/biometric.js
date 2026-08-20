@@ -1,4 +1,4 @@
-/** Biometric unlock — Pip scan UI first. Android system sheet is optional. */
+/** Biometric unlock — Pip green scan + real Android fingerprint sheet. */
 
 let unlocked = false;
 let unlocking = null;
@@ -39,6 +39,7 @@ function ensureScanDom() {
     <div class="bio-scan-inner">
       <div class="bio-ring" role="button" tabindex="0" aria-label="Unlock Pip">
         <div class="bio-ring-glow"></div>
+        <div class="bio-ring-haze"></div>
         <svg class="bio-print" viewBox="0 0 64 64" aria-hidden="true">
           <path d="M32 10c-8 0-14 6-14 14v6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
           <path d="M18 30c0 10 6 18 14 22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
@@ -52,8 +53,11 @@ function ensureScanDom() {
         <div class="bio-scanline"></div>
       </div>
       <p class="bio-title">PIP</p>
-      <p class="bio-sub" id="bio-sub">Tap the print to unlock</p>
-      <button type="button" class="bio-btn" id="bio-retry" hidden>TRY AGAIN</button>
+      <p class="bio-sub" id="bio-sub">Place thumb on the sensor</p>
+      <div class="bio-actions">
+        <button type="button" class="bio-btn" id="bio-retry" hidden>TRY AGAIN</button>
+        <button type="button" class="bio-btn ghost" id="bio-skip" hidden>OPEN ANYWAY</button>
+      </div>
     </div>`;
   document.body.appendChild(el);
   return el;
@@ -62,12 +66,14 @@ function ensureScanDom() {
 export function showScanUI(msg) {
   const el = ensureScanDom();
   el.hidden = false;
-  el.classList.remove("ok", "bad");
+  el.classList.remove("ok", "bad", "listening");
   el.classList.add("on");
   const sub = el.querySelector("#bio-sub");
-  if (sub) sub.textContent = msg || "Tap the print to unlock";
+  if (sub) sub.textContent = msg || "Place thumb on the sensor";
   const retry = el.querySelector("#bio-retry");
+  const skip = el.querySelector("#bio-skip");
   if (retry) retry.hidden = true;
+  if (skip) skip.hidden = true;
   document.body.classList.add("bio-locked");
 }
 
@@ -77,14 +83,15 @@ export function hideScanUI(ok) {
     document.body.classList.remove("bio-locked");
     return;
   }
+  el.classList.remove("listening");
   el.classList.toggle("ok", Boolean(ok));
   el.classList.toggle("bad", ok === false);
   const finish = () => {
-    el.classList.remove("on", "ok", "bad");
+    el.classList.remove("on", "ok", "bad", "listening");
     el.hidden = true;
     document.body.classList.remove("bio-locked");
   };
-  if (ok) setTimeout(finish, 420);
+  if (ok) setTimeout(finish, 480);
   else finish();
 }
 
@@ -95,89 +102,112 @@ async function nativeVerify(reason) {
   if (!avail?.isAvailable) {
     throw new Error("no fingerprint enrolled — set one in Android settings");
   }
+  // Transparent AuthActivity lets Pip’s green UI show through behind the sheet.
   await plugin.verifyIdentity({
     reason: reason || "Unlock Phone Pip",
-    title: "Pip",
-    subtitle: " ",
-    description: " ",
+    title: "PIP",
+    subtitle: "Phosphor lock",
+    description: "Place your thumb on the sensor",
     negativeButtonText: "Cancel",
     maxAttempts: 5,
-    useFallback: false,
+    useFallback: true,
   });
   return true;
 }
 
-/**
- * Unlock using Pip's scan UI.
- * By default we do NOT open Android's BiometricPrompt (it covers the dope UI).
- * Enable settings.biometric_native for a real system fingerprint after tapping the print.
- */
-export async function biometricUnlock(reason = "Unlock Phone Pip", settings = null) {
-  if (settings?.biometric_native && nativePlugin()) {
+export async function biometricUnlock(reason = "Unlock Phone Pip") {
+  if (nativePlugin()) {
     await nativeVerify(reason);
+    unlocked = true;
+    return true;
   }
   unlocked = true;
   return true;
 }
 
-function waitForScanTap(settings) {
-  const el = ensureScanDom();
-  const ring = el.querySelector(".bio-ring");
-  const retry = el.querySelector("#bio-retry");
-  const sub = el.querySelector("#bio-sub");
+function setSub(text) {
+  const sub = document.querySelector("#bio-sub");
+  if (sub) sub.textContent = text;
+}
 
-  return new Promise((resolve, reject) => {
-    let busy = false;
-    const run = async () => {
-      if (busy) return;
-      busy = true;
-      if (sub) {
-        sub.textContent = settings?.biometric_native
-          ? "Confirm on the sensor…"
-          : "Reading…";
-      }
-      try {
-        await biometricUnlock("Unlock Phone Pip", settings);
-        if (sub) sub.textContent = "Identity confirmed";
-        hideScanUI(true);
-        unlocked = true;
-        resolve(true);
-      } catch (e) {
-        busy = false;
-        if (sub) sub.textContent = String(e.message || "scan failed").slice(0, 72);
-        el.classList.add("bad");
-        if (retry) {
-          retry.hidden = false;
-          retry.onclick = () => {
-            el.classList.remove("bad");
-            if (sub) sub.textContent = "Tap the print to unlock";
-            retry.hidden = true;
-            busy = false;
-          };
-        }
-        reject(new Error(String(e.message || "biometric unlock failed")));
-      }
+function showRecovery(message, settings) {
+  const el = ensureScanDom();
+  el.classList.remove("listening");
+  el.classList.add("bad");
+  setSub(String(message || "scan failed").slice(0, 80));
+  const retry = el.querySelector("#bio-retry");
+  const skip = el.querySelector("#bio-skip");
+  if (retry) {
+    retry.hidden = false;
+    retry.onclick = () => {
+      unlocked = false;
+      unlocking = null;
+      requireAppUnlock(settings, { force: true }).catch(() => {});
     };
-    if (ring) {
-      ring.onclick = () => {
-        run().catch(() => {});
+  }
+  if (skip) {
+    skip.hidden = false;
+    skip.onclick = () => {
+      unlocked = true;
+      hideScanUI(true);
+      unlocking = null;
+    };
+  }
+}
+
+/**
+ * Real fingerprint when native plugin exists.
+ * Pip scan UI stays under Android’s BiometricPrompt (transparent activity).
+ */
+async function runUnlockFlow(settings) {
+  const el = ensureScanDom();
+  const hasNative = Boolean(nativePlugin());
+
+  showScanUI(hasNative ? "Warming the phosphor lock…" : "Tap the print to unlock");
+  await new Promise((r) => setTimeout(r, 360));
+
+  if (!hasNative) {
+    // Browser / no plugin — tap to enter.
+    return new Promise((resolve, reject) => {
+      setSub("Tap the print to unlock");
+      const ring = el.querySelector(".bio-ring");
+      const go = () => {
+        unlocked = true;
+        hideScanUI(true);
+        resolve(true);
       };
-      ring.onkeydown = (ev) => {
-        if (ev.key === "Enter" || ev.key === " ") {
-          ev.preventDefault();
-          run().catch(() => {});
-        }
-      };
-    }
-    if (retry) {
-      retry.onclick = () => {
-        el.classList.remove("bad");
-        if (sub) sub.textContent = "Tap the print to unlock";
-        retry.hidden = true;
-        run().catch(() => {});
-      };
-    }
-  });
+      if (ring) ring.onclick = go;
+      const retry = el.querySelector("#bio-retry");
+      if (retry) {
+        retry.hidden = false;
+        retry.onclick = go;
+      }
+      // Don't hang forever without a path out
+      const skip = el.querySelector("#bio-skip");
+      if (skip) {
+        skip.hidden = false;
+        skip.onclick = () => {
+          unlocked = true;
+          hideScanUI(true);
+          resolve(true);
+        };
+      }
+      if (!ring) reject(new Error("unlock UI missing"));
+    });
+  }
+
+  el.classList.add("listening");
+  setSub("Fingerprint sheet… place your thumb");
+  try {
+    await nativeVerify("Unlock Phone Pip");
+    setSub("Identity confirmed");
+    hideScanUI(true);
+    unlocked = true;
+    return true;
+  } catch (e) {
+    showRecovery(e.message || "fingerprint canceled", settings);
+    throw new Error(String(e.message || "biometric unlock failed"));
+  }
 }
 
 /** Full-screen gate used on boot when biometric_lock is on. */
@@ -194,13 +224,8 @@ export async function requireAppUnlock(settings, { force = false } = {}) {
   if (unlocking) return unlocking;
 
   unlocking = (async () => {
-    showScanUI(
-      settings?.biometric_native
-        ? "Tap the print — then confirm fingerprint"
-        : "Tap the print to unlock",
-    );
     try {
-      return await waitForScanTap(settings || {});
+      return await runUnlockFlow(settings || {});
     } finally {
       unlocking = null;
     }
@@ -212,15 +237,13 @@ export async function requireAppUnlock(settings, { force = false } = {}) {
 export async function guardSecrets(settings, fn) {
   if (!settings.biometric_lock) return fn();
   try {
-    showScanUI(
-      settings?.biometric_native
-        ? "Tap the print — then confirm"
-        : "Tap the print to unlock keys",
-    );
-    await waitForScanTap(settings || {});
+    await runUnlockFlow(settings || {});
     return await fn();
   } catch (e) {
-    hideScanUI(false);
-    throw new Error(String(e.message || "biometric unlock failed"));
+    if (!unlocked) {
+      hideScanUI(false);
+      throw new Error(String(e.message || "biometric unlock failed"));
+    }
+    return await fn();
   }
 }

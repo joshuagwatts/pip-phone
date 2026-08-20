@@ -849,9 +849,8 @@ function renderData() {
     <div class="field"><span>GEMINI</span><input id="set-gemini" type="password" value="${esc(s.gemini)}" placeholder="synced from desktop" autocomplete="off" /></div>
     <div class="field"><span>GROK / XAI</span><input id="set-xai" type="password" value="${esc(s.xai)}" placeholder="synced from desktop" autocomplete="off" /></div>
     <h3>LOCK</h3>
-    <p class="muted">Pip's scan screen unlocks the app. Tap the print — no Android popup unless you enable it below.</p>
+    <p class="muted">Pip green scan + Android fingerprint sheet (required to actually read your thumb). Cancel → TRY AGAIN or OPEN ANYWAY.</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
-    <label class="check"><input type="checkbox" id="set-bio-native" ${s.biometric_native ? "checked" : ""} /> ANDROID FINGERPRINT SHEET (optional)</label>
     <h3>UI THEME</h3>
     <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. CHAT: "phthalo green" or "reset ui theme".</p>
     <div class="actions">
@@ -878,7 +877,6 @@ function renderData() {
     db.settings.xai = $("#set-xai").value.trim();
     db.settings.desktop_url = $("#set-durl").value.trim();
     db.settings.biometric_lock = Boolean($("#set-bio").checked);
-    db.settings.biometric_native = Boolean($("#set-bio-native")?.checked);
     db.settings.keepalive = Boolean($("#set-keepalive")?.checked);
     persist();
   };
