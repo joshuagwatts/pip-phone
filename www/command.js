@@ -58,14 +58,18 @@ export function wantsDesktopCodeUpgrade(text) {
 
 export function orderFor(job, keyedIds, health = {}, pin = "auto") {
   const spec = JOBS[job] || JOBS.life;
-  if (pin && pin !== "auto" && pin !== "local") {
-    if (keyedIds.includes(pin)) return [pin];
-    return [];
-  }
   if (pin === "local") return [];
   const keyed = spec.brains.filter((id) => keyedIds.includes(id));
-  const live = keyed.filter((id) => health[id]?.ok !== false);
-  const down = keyed.filter((id) => health[id]?.ok === false);
+  // Prefer pin first, but always fall through to other keyed brains.
+  let ordered = keyed;
+  if (pin && pin !== "auto" && keyedIds.includes(pin)) {
+    ordered = [pin, ...keyed.filter((id) => id !== pin)];
+  }
+  // If every probe is "bad", still try them — stale health was blocking chat.
+  const anyLive = ordered.some((id) => health[id]?.ok === true);
+  if (!anyLive) return ordered;
+  const live = ordered.filter((id) => health[id]?.ok !== false);
+  const down = ordered.filter((id) => health[id]?.ok === false);
   return [...live, ...down];
 }
 

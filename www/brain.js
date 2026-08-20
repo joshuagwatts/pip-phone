@@ -274,12 +274,12 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
 
   const tryDesktop = async () => {
-    if (!desktopConfigured(settings)) return null;
+    if (!desktopConfigured(settings)) throw new Error("desktop not paired");
     emit("DESKTOP");
     const user = [...messages].reverse().find((m) => m.role === "user");
     const out = await Promise.race([
       desktopChat(settings, String((user && user.content) || "")),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("desktop timeout")), 6000)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("desktop timeout")), 15000)),
     ]);
     const cleaned = sanitizeReply(out.text);
     if (!cleaned || isBlank(cleaned)) throw new Error("desktop blank");
@@ -291,12 +291,17 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     const keyed = chatCloudEnabled(settings);
     if (!keyed) throw new Error("no keys on phone — DATA → SYNC KEYS");
     if (!isChat && !cloud.leaky) throw new Error("SECURE blocks cloud for OPP/CODE — flip LEAKY");
-    const first = isChat ? chatChain(settings, routeJob)[0] : null;
+    const chainList = isChat ? chatChain(settings, routeJob) : null;
+    if (isChat && !(chainList || []).length) {
+      throw new Error("no keyed chat brains — SYNC KEYS or unpin brain");
+    }
+    const first = isChat ? chainList[0] : null;
     emit(isChat && first ? String(first.label || first.id).toUpperCase() : "CLOUD");
     const out = isChat
       ? await chatComplete(settings, messages, temperature, maxTokens, routeJob)
       : await cloudComplete(settings, messages, lane, temperature, maxTokens);
-    const cleaned = sanitizeReply(out.text);
+    // Prefer raw text if sanitize wiped a real answer.
+    const cleaned = sanitizeReply(out.text) || String(out.text || "").trim();
     if (!cleaned || isBlank(cleaned)) throw new Error(`${out.provider} blank`);
     markHealth(out.provider, true);
     return {
@@ -484,10 +489,10 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
 
   if (!hit?.text || isBlank(hit.text)) {
     const tip = errMsg
-      ? `No brain answered — ${errMsg}`
+      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: DATA → RE-PAIR → SYNC KEYS, check the green brain chips, then ask again.`
       : FALLBACK;
-    setTurn({ leaked: false, provider: "", via: "", reason: tip });
-    return { text: tip, leaked: false, provider: "", via: "", error: true };
+    setTurn({ leaked: false, provider: "pip", via: "", reason: tip });
+    return { text: tip, leaked: false, provider: "pip", via: "", error: true };
   }
 
   const leaked = Boolean(hit.leaked || webUsed);

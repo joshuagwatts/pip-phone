@@ -196,14 +196,25 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
     max_tokens: maxTokens,
   };
   if (tools && tools.length) payload.tools = tools;
-  const data = await httpPostJson(
-    `${prov.base.replace(/\/$/, "")}/chat/completions`,
-    {
-      Authorization: `Bearer ${key}`,
-      ...(prov.headers || {}),
-    },
-    payload,
-  );
+  let data;
+  try {
+    data = await httpPostJson(
+      `${prov.base.replace(/\/$/, "")}/chat/completions`,
+      {
+        Authorization: `Bearer ${key}`,
+        ...(prov.headers || {}),
+      },
+      payload,
+      45000,
+    );
+  } catch (e) {
+    throw new Error(`${prov.id}: ${String(e.message || e).slice(0, 140)}`);
+  }
+  if (data?.error) {
+    const err = data.error;
+    const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
+    throw new Error(`${prov.id}: ${String(msg).slice(0, 140)}`);
+  }
   const msg = (((data.choices || [])[0] || {}).message || {});
   const text = String(msg.content || "").trim();
   if (!text && !(msg.tool_calls || []).length) throw new Error(`${prov.id} empty reply`);

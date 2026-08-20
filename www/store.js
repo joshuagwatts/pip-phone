@@ -44,6 +44,7 @@ function blank() {
       desktop_token: "",
       desktop_paired: false,
       biometric_lock: true,
+      biometric_native: false,
       lat: "",
       lon: "",
       city: "",

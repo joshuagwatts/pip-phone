@@ -78,8 +78,16 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
         : res.data || {};
     const cookie = parseCookie(res.headers && (res.headers["Set-Cookie"] || res.headers["set-cookie"]));
     if (cookie) data._cookie = cookie;
+    if (!status) {
+      const err = new Error("network failed — check Wi‑Fi / VPN");
+      err.status = 0;
+      throw err;
+    }
     if (status >= 400) {
-      const err = new Error((data && (data.detail || data.error)) || `http ${status}`);
+      const detail =
+        (data && (data.detail || (typeof data.error === "string" ? data.error : data.error?.message))) ||
+        `http ${status}`;
+      const err = new Error(detail);
       err.status = status;
       throw err;
     }

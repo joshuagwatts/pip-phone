@@ -67,10 +67,11 @@ export function isBlank(text) {
 
 /** Strip model junk / tool leaks — keep markdown code fences for Cursor-style chat. */
 export function sanitizeReply(text) {
-  let t = String(text || "").trim();
-  if (!t) return "";
+  const original = String(text || "").trim();
+  if (!original) return "";
+  let t = original;
   // Tool / JSON leak at start of reply — drop the whole turn.
-  if (/^\s*\{[\s\S]*"name"\s*:/.test(t) && !/[.!?]$/.test(t.slice(-1))) return "";
+  if (/^\s*\{[\s\S]*"name"\s*:/.test(t) && !/[.!?]$/.test(t.slice(-1)) && t.length < 400) return "";
   if (/^\s*<\|im_start\|>/.test(t)) return "";
   t = t.replace(/^pip\s*[:—-]\s*/i, "");
   t = t.replace(/<\|im_start\|>assistant\s*/gi, "");
@@ -80,7 +81,10 @@ export function sanitizeReply(text) {
     if (/^```json/i.test(block.trim()) || /"answers"\s*:/.test(block)) return "";
     return block;
   });
-  return t.trim();
+  t = t.trim();
+  // Never erase a real answer — fall back to original if cleanup went too far.
+  if (!t && original.length > 8) return original;
+  return t;
 }
 
 export const FALLBACK = "Pip is happy to help! Keys look quiet — check the CHAT strip, then ask again.";
