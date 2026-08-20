@@ -185,8 +185,10 @@ nav.tabs {
   z-index: 5;
 }
 nav.tabs::-webkit-scrollbar { display: none; }
-nav.tabs button { flex: 0 0 auto; min-width: 3rem; border: 0; border-right: 1px solid var(--line); padding: 0.85rem 0.45rem; min-height: var(--tab-h); font-size: 10px; letter-spacing: 0.1em; }
+nav.tabs button { flex: 0 0 auto; min-width: 3.4rem; border: 0; border-right: 1px solid var(--line); padding: 0.85rem 0.55rem; min-height: var(--tab-h); font-size: 10px; letter-spacing: 0.12em; }
 nav.tabs button:last-child { border-right: 0; }
+nav.tabs button[data-tab="code"],
+nav.tabs button[data-tab="data"] { min-width: 3.8rem; letter-spacing: 0.16em; }
 .meal-ings { margin: 0.15rem 0 0.5rem; font-size: 11px; }
 .row { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
 .row .tiny { font-size: 10px; padding: 0.1rem 0.35rem; }

@@ -303,6 +303,16 @@ export function tap() {
   return snapshot();
 }
 
+/** Force next radio line + different shader — used if UI needs a hard nudge. */
+export function bump() {
+  const wake = wakeNext();
+  if (wake) return snapshot();
+  const st = stance();
+  const mem = load();
+  advanceRadio(st, mem);
+  return snapshot();
+}
+
 export function shaderOf(stem) {
   return SHADERS[stem] || SHADERS.sendoff || SHADERS["bass-pulse"];
 }

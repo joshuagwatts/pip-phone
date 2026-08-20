@@ -64,6 +64,55 @@ function saveState(st) {
   localStorage.setItem(STATE_KEY, JSON.stringify(st));
 }
 
+function markCheckedLocal(itemId, slug) {
+  const st = loadState();
+  st.date = todayIso();
+  const keys = [String(itemId), String(slug || "")].filter(Boolean);
+  st.checks = { ...st.checks };
+  for (const k of keys) st.checks[k] = true;
+
+  if (st.remote?.morning) {
+    const morn = st.remote.morning;
+    const items = (Array.isArray(morn.items) ? morn.items : []).map((r) => {
+      const hit =
+        keys.includes(String(r.id)) ||
+        keys.includes(String(r.slug)) ||
+        (slug && r.slug === slug);
+      return hit ? { ...r, checked: true } : r;
+    });
+    const next = items.find((r) => !r.checked) || null;
+    const done = items.filter((r) => r.checked).length;
+    st.remote = {
+      ...st.remote,
+      morning: {
+        ...morn,
+        items,
+        next: next
+          ? {
+              ...next,
+              shot: next.shot || MORNING_STEPS.find((s) => s.slug === next.slug)?.shot || next.title,
+              vibe: next.vibe || MORNING_STEPS.find((s) => s.slug === next.slug)?.vibe || "water",
+            }
+          : null,
+        done,
+        total: items.length || MORNING_STEPS.length,
+        complete: items.length > 0 && done === items.length,
+      },
+    };
+  } else {
+    st.source = "local";
+  }
+  saveState(st);
+  return morningStatus();
+}
+
+function itemChecked(st, item) {
+  if (item?.checked) return true;
+  const id = String(item?.id ?? "");
+  const slug = String(item?.slug ?? "");
+  return Boolean((id && st.checks[id]) || (slug && st.checks[slug]));
+}
+
 export function inWindow(hour) {
   const h = hour == null ? new Date().getHours() : hour;
   return MORNING_LO <= h && h < MORNING_HI;
@@ -74,14 +123,24 @@ export function morningStatus() {
   const st = loadState();
   if (st.source === "desktop" && st.remote && st.remote.date === todayIso()) {
     const morn = st.remote.morning || {};
-    const items = Array.isArray(morn.items) ? morn.items : [];
-    const nxt = morn.next || null;
+    const items = (Array.isArray(morn.items) ? morn.items : []).map((r) => ({
+      ...r,
+      checked: itemChecked(st, r),
+    }));
+    const nxt = items.find((r) => !r.checked) || null;
+    const done = items.filter((r) => r.checked).length;
     return {
       items,
-      next: nxt,
-      done: Number(morn.done || 0),
-      total: Number(morn.total || items.length || MORNING_STEPS.length),
-      complete: Boolean(morn.complete),
+      next: nxt
+        ? {
+            ...nxt,
+            shot: nxt.shot || MORNING_STEPS.find((s) => s.slug === nxt.slug)?.shot || nxt.title,
+            vibe: nxt.vibe || MORNING_STEPS.find((s) => s.slug === nxt.slug)?.vibe || "water",
+          }
+        : null,
+      done,
+      total: items.length || MORNING_STEPS.length,
+      complete: items.length > 0 && done === items.length,
       source: "desktop",
       motivation: st.remote.motivation || null,
       weather: st.remote.weather || null,
@@ -140,27 +199,30 @@ export function wakeNext() {
   };
 }
 
-/** Check off a wake shot. Syncs to desktop when paired; always updates local. */
-export async function checkWake(settings, itemId) {
+/** Check off a wake shot. Advances locally first so VIBE never sticks; desktop sync is best-effort. */
+export async function checkWake(settings, itemId, slug) {
   const id = itemId;
   if (id == null || id === "") throw new Error("no wake item");
+  const status = markCheckedLocal(id, slug || id);
+
   if (desktopConfigured(settings)) {
     const base = lan(settings);
-    await httpLanPostJson(
-      `${base}/api/routine/${encodeURIComponent(id)}/check`,
-      headers(settings),
-      { done: true },
-      12000,
-    );
-    await syncMorning(settings);
-    return morningStatus();
+    try {
+      await Promise.race([
+        httpLanPostJson(
+          `${base}/api/routine/${encodeURIComponent(id)}/check`,
+          headers(settings),
+          { done: true },
+          8000,
+        ),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("wake sync timeout")), 8000)),
+      ]);
+      await syncMorning(settings).catch(() => {});
+    } catch {
+      /* local advance already applied */
+    }
   }
-  const st = loadState();
-  st.date = todayIso();
-  st.source = "local";
-  st.checks = { ...st.checks, [String(id)]: true };
-  saveState(st);
-  return morningStatus();
+  return morningStatus() || status;
 }
 
 /** Pull /api/today — morning + motivation — whether briefing exists or not. */
@@ -210,10 +272,19 @@ export async function syncMorning(settings) {
     motivation: today.motivation || null,
     weather: today.weather || null,
   };
+  const prev = loadState();
+  const checks = { ...(prev.date === todayIso() ? prev.checks : {}) };
+  /* Drop local marks that desktop already has checked — keep optimistic phone taps. */
+  for (const r of statusItems) {
+    if (r.checked) {
+      if (r.id != null) delete checks[String(r.id)];
+      if (r.slug) delete checks[String(r.slug)];
+    }
+  }
   saveState({
     date: todayIso(),
     source: "desktop",
-    checks: {},
+    checks,
     remote: packed,
   });
   return { ok: true, paired: true, morning: morningStatus(), today: packed };

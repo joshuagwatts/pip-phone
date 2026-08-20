@@ -142,7 +142,7 @@ function bootShader(stem) {
   requestAnimationFrame(() => requestAnimationFrame(go));
 }
 
-function paintMotiv() {
+function paintMotiv(forceShader) {
   const overlay = $("#vibe-action");
   if (!overlay) return;
   const on = vibeMode === "motivation";
@@ -164,9 +164,12 @@ function paintMotiv() {
     shotEl.classList.toggle("long", line.length > 18);
   }
   if (hintEl) hintEl.textContent = mot.hint || "TAP";
-  overlay.classList.toggle("sendoff", nxt.kind === "inspire" || nxt.kind === "pip");
-  const stem = nxt.vibe || pickShader(line, nxt.kind || "pip", vibeStem).stem;
-  if (stem && stem !== vibeStem) {
+  overlay.classList.toggle("sendoff", nxt.kind === "inspire" || nxt.kind === "pip" || nxt.kind === "wake");
+  let stem = nxt.vibe || pickShader(line, nxt.kind || "pip", vibeStem).stem;
+  if (forceShader || !stem || stem === vibeStem) {
+    stem = pickShader(line, nxt.kind || "pip", vibeStem).stem || stem || vibeStem;
+  }
+  if (stem && (stem !== vibeStem || forceShader)) {
     vibeStem = stem;
     bootShader(stem);
     const sel = $("#vibe-file");
@@ -193,21 +196,22 @@ async function tapMotiv(auto) {
   radioBusy = true;
   try {
     const nxt = (motivSnap().next || {});
-    if (nxt.kind === "wake" && (nxt.id || nxt.slug) && !auto) {
+    if (nxt.kind === "wake" && (nxt.id || nxt.slug)) {
+      if (auto) return;
       setStatus("WAKE…");
       try {
-        await checkWake(db.settings, nxt.id || nxt.slug);
-        paintMotiv();
-        setStatus((motivSnap().next || {}).shot || "WAKE DONE");
-        if (tab === "today") renderToday();
+        await checkWake(db.settings, nxt.id || nxt.slug, nxt.slug);
       } catch (e) {
         setStatus(String(e.message || e).toUpperCase());
       }
+      paintMotiv(true);
+      setStatus((motivSnap().next || {}).shot || "WAKE DONE");
+      if (tab === "today") renderToday();
       armRadio();
       return;
     }
     motivTap();
-    paintMotiv();
+    paintMotiv(true);
     if (!auto) setStatus((motivSnap().next || {}).shot || "PIP");
     armRadio();
   } finally {
@@ -537,8 +541,8 @@ function paintBrainStrip() {
   const html = chainChipsHtml();
   const chat = $("#brain-strip");
   if (chat) chat.innerHTML = html;
-  const code = $("#code-chain");
-  if (code) code.innerHTML = html;
+  const data = $("#data-chain");
+  if (data) data.innerHTML = html;
 }
 
 function softRefresh() {
@@ -883,10 +887,7 @@ async function renderCode() {
   $("#view").innerHTML = `
     <div class="code-wrap">
       <h3>CODE</h3>
-      <p class="muted">${leaky ? "LEAKY — cloud coder edits phone www overlay." : "SECURE — flip LEAKY for on-device CODE, or pair desktop for UPGRADE PC."} CSS live · JS/HTML need RELOAD.</p>
-      <h3>BRAIN CHAIN</h3>
-      <div id="code-chain" class="brain-strip" aria-label="connected APIs"></div>
-      <p class="muted">Green = live · gray = keyed but down · desktop chip = PC paired · keys in DATA</p>
+      <p class="muted">${leaky ? "LEAKY — cloud coder edits phone www overlay." : "SECURE — flip LEAKY for on-device CODE, or pair desktop for UPGRADE PC."} CSS live · JS/HTML need RELOAD. API keys live in DATA.</p>
       <div class="code-bar">
         <select id="code-file">${entries.map((e) => `<option value="${esc(e.name)}" ${e.name === codeState.openFile ? "selected" : ""}>${esc(e.name)}${e.overlay ? " *" : ""}</option>`).join("")}</select>
         <button type="button" id="code-save">SAVE</button>
@@ -906,7 +907,6 @@ async function renderCode() {
       </div>
     </div>`;
   paintCodeChat(false);
-  paintBrainStrip();
   $("#code-file").onchange = async (e) => {
     if (codeState.dirty && !confirm("Discard unsaved edits?")) {
       e.target.value = codeState.openFile;
@@ -997,7 +997,8 @@ function renderData() {
     <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}` : "Not paired."}</p>
     <div class="field"><span>VPN NOTES</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="WireGuard profile name, backup URLs…" /></div>
     <h3>BRAIN</h3>
-    <p class="muted">CHAT uses every keyed API even in SECURE. The CHAT strip shows live (green), keyed (amber), or down (red). Pin LOCAL only if you want on-device Qwen — that model can crash the phone.</p>
+    <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
+    <p class="muted">Green = live · amber = keyed · red = down. CHAT uses every keyed API even in SECURE. Pin LOCAL only if you want on-device Qwen — that model can crash the phone.</p>
     <div class="field"><span>PIN</span>
       <select id="brain-pin">
         ${["auto", "local", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
@@ -1031,6 +1032,8 @@ function renderData() {
     <div class="actions"><button type="button" id="pip-update">UPDATE PIP</button></div>
     <p class="muted">${hasNativeHttp() ? "Native app: can read public apply pages." : "Browser preview: paste questions if a page blocks the read."}</p>
     <div class="dock"><button type="button" class="primary" id="data-save">SAVE</button></div>`;
+
+  paintBrainStrip();
 
   const grabSettings = () => {
     db.settings.operator = $("#set-op").value.trim();
@@ -1068,7 +1071,7 @@ function renderData() {
   const keepEl = $("#set-keepalive");
   if (keepEl) keepEl.onchange = async () => {
     await toggleKeepAlive(db, keepEl.checked, persist);
-    startBackground(db, { persist, render, setStatus });
+    startBackground(db, { persist, setStatus, softRefresh });
     setStatus(keepEl.checked ? "KEEPALIVE ON" : "KEEPALIVE OFF");
   };
 
