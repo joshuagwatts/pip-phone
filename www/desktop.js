@@ -1,13 +1,7 @@
 import { httpLanGet, httpLanPostJson } from "./net.js";
 
 const PORT = 7420;
-const SUBNETS = ["192.168.1", "192.168.0", "10.0.0", "192.168.50", "192.168.2", "10.0.1"];
-const PRIORITY_HOSTS = [
-  ...Array.from({ length: 40 }, (_, i) => i + 2),
-  100, 101, 102, 103, 104, 105, 106, 107, 108,
-  200, 201, 202, 203,
-  254,
-];
+const FALLBACK_SUBNETS = ["192.168.1", "192.168.0", "10.0.0", "192.168.50", "192.168.2", "10.0.1"];
 
 /** Always force port 7420 — http://IP alone was hitting port 80. */
 export function normalizeUrl(raw) {
@@ -50,19 +44,84 @@ function authHeaders(settings) {
   };
 }
 
-async function probeDesktop(url, timeoutMs = 2200) {
+/** Host octets in DHCP-friendly order (covers .162 etc.). */
+function hostOrder() {
+  const mid = [];
+  for (let i = 100; i <= 200; i++) mid.push(i);
+  const low = [];
+  for (let i = 2; i <= 99; i++) low.push(i);
+  const high = [];
+  for (let i = 201; i <= 254; i++) high.push(i);
+  return [...mid, ...low, ...high, 1];
+}
+
+/** Guess phone Wi‑Fi subnet via WebRTC local candidates (works in Capacitor WebView). */
+async function guessSubnets() {
+  const out = [];
+  const add = (subnet) => {
+    if (subnet && !out.includes(subnet)) out.push(subnet);
+  };
+  try {
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    pc.createDataChannel("pip");
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await new Promise((resolve) => {
+      const t = setTimeout(resolve, 700);
+      pc.onicecandidate = (ev) => {
+        if (!ev.candidate) {
+          clearTimeout(t);
+          resolve();
+        }
+      };
+    });
+    const sdp = String(pc.localDescription?.sdp || "");
+    pc.close();
+    for (const m of sdp.matchAll(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/g)) {
+      const ip = m[1];
+      if (/^127\.|^0\.|^255\./.test(ip)) continue;
+      if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) {
+        add(ip.split(".").slice(0, 3).join("."));
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  for (const s of FALLBACK_SUBNETS) add(s);
+  return out;
+}
+
+async function pingReady(url, timeoutMs = 700) {
   const base = normalizeUrl(url);
   if (!base) return null;
   try {
-    const ready = await httpLanGet(`${base}/api/ready`, Math.min(timeoutMs, 2000));
+    const ready = await httpLanGet(`${base}/api/ready`, timeoutMs);
     if (!ready || ready.ok === false) return null;
-    const st = await httpLanGet(`${base}/api/auth/status`, timeoutMs);
-    if (!st.phone_lan && !st.on) {
-      /* still try login — older builds */
+    return base;
+  } catch {
+    return null;
+  }
+}
+
+async function probeDesktop(url, timeoutMs = 4000) {
+  const base = normalizeUrl(url);
+  if (!base) return null;
+  try {
+    const ready = await pingReady(base, Math.min(timeoutMs, 2500));
+    if (!ready) return null;
+    let st = {};
+    try {
+      st = await httpLanGet(`${base}/api/auth/status`, timeoutMs);
+    } catch {
+      st = {};
     }
     const login = await httpLanPostJson(`${base}/api/auth/login`, {}, { password: "" }, timeoutMs);
     const tok = String(login.token || login._cookie || "").trim();
-    if (!tok && !login.ok && !login.loopback) return null;
+    if (!tok && !login.ok) {
+      const detail = String(login.detail || "").trim();
+      if (detail) throw Object.assign(new Error(detail), { hard: true });
+      return null;
+    }
     return {
       url: base,
       token: tok || "",
@@ -70,7 +129,8 @@ async function probeDesktop(url, timeoutMs = 2200) {
       phone_lan: Boolean(st.phone_lan || st.on),
       urls: (st.urls || []).map(normalizeUrl).filter(Boolean),
     };
-  } catch {
+  } catch (e) {
+    if (e && e.hard) throw e;
     return null;
   }
 }
@@ -187,31 +247,36 @@ export async function desktopGpuPing(settings) {
 }
 
 async function scanLan(onProgress) {
-  if (onProgress) onProgress("SCANNING Wi‑Fi…");
-  const targets = [];
-  const seen = new Set();
-  for (const subnet of SUBNETS) {
-    for (const host of PRIORITY_HOSTS) {
-      const url = `http://${subnet}.${host}:${PORT}`;
-      if (seen.has(url)) continue;
-      seen.add(url);
-      targets.push(url);
+  if (onProgress) onProgress("FINDING YOUR Wi‑Fi…");
+  const subnets = await guessSubnets();
+  const hosts = hostOrder();
+  const batch = 32;
+
+  for (const subnet of subnets) {
+    if (onProgress) onProgress(`SCAN ${subnet}.* …`);
+    for (let i = 0; i < hosts.length; i += batch) {
+      const chunk = hosts.slice(i, i + batch).map((h) => `http://${subnet}.${h}:${PORT}`);
+      if (onProgress) {
+        onProgress(`SCAN ${subnet}.${hosts[i]}–${subnet}.${hosts[Math.min(i + batch - 1, hosts.length - 1)]}…`);
+      }
+      const pings = await Promise.all(chunk.map((url) => pingReady(url, 650)));
+      const alive = pings.filter(Boolean);
+      for (const base of alive) {
+        if (onProgress) onProgress(`FOUND ${base} — pairing…`);
+        try {
+          const hit = await probeDesktop(base, 6000);
+          if (hit) return hit;
+        } catch (e) {
+          if (e && e.hard) throw e;
+        }
+      }
     }
-  }
-  const batch = 24;
-  for (let i = 0; i < targets.length; i += batch) {
-    const chunk = targets.slice(i, i + batch);
-    if (onProgress) onProgress(`SCAN ${i + 1}–${Math.min(i + batch, targets.length)}…`);
-    const hits = await Promise.all(chunk.map((url) => probeDesktop(url, 1100)));
-    const found = hits.find(Boolean);
-    if (found) return found;
   }
   return null;
 }
 
 /**
- * One-shot connect: use typed URL if present, else scan Wi‑Fi.
- * Keeps the URL that actually worked (never swaps to a wrong NIC).
+ * One-shot connect: use typed URL if present, else scan full Wi‑Fi subnet.
  */
 export async function connectDesktop(settings, onProgress) {
   const typed = normalizeUrl(settings.desktop_url);
@@ -219,16 +284,22 @@ export async function connectDesktop(settings, onProgress) {
 
   if (typed) {
     if (onProgress) onProgress(`CONNECTING ${typed}…`);
-    hit = await probeDesktop(typed, 6000);
+    try {
+      hit = await probeDesktop(typed, 8000);
+    } catch (e) {
+      throw new Error(String(e.message || e));
+    }
     if (!hit) {
       throw new Error(
-        `no Pip at ${typed} — desktop DATA → TURN ON LAN, allow Python firewall, same Wi‑Fi`,
+        `can't reach ${typed} — allow Python on Windows Firewall (Private), same Wi‑Fi, desktop Pip open`,
       );
     }
   } else {
     hit = await scanLan(onProgress);
     if (!hit) {
-      throw new Error("no desktop Pip on Wi‑Fi — turn ON LAN on desktop, same network, try again");
+      throw new Error(
+        "scan found nothing — on desktop DATA tap COPY URL, paste into DESKTOP URL here, then CONNECT. Also allow Python firewall.",
+      );
     }
   }
 

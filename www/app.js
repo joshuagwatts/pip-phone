@@ -848,7 +848,7 @@ function renderData() {
     </div>
 
     <h3>DESKTOP GPU</h3>
-    <p class="muted">Same Wi‑Fi as this PC. Leave URL blank and tap CONNECT — Pip finds the desktop. Or paste the COPY URL from desktop DATA.</p>
+    <p class="muted">Same Wi‑Fi. Tap CONNECT (scans your whole subnet). If it fails: desktop DATA → COPY URL → paste below → CONNECT. Windows may need Open-Firewall.bat once.</p>
     <div class="desk-status ${paired ? (deskLive === false ? "bad" : deskLive === true ? "on" : "key") : "off"}" id="desk-status">${esc(deskLine)}</div>
     <div class="field"><span>DESKTOP URL (optional)</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="blank = auto-find · or http://192.168.x.x:7420" /></div>
     <div class="actions">
