@@ -6,7 +6,7 @@ import { vpnSystemActive, setKeepAlive } from "./proton.js";
 let timer = null;
 let watching = false;
 
-export function startBackground(db, { persist, render, setStatus }) {
+export function startBackground(db, { persist, render, setStatus, softRefresh }) {
   stopBackground();
   const tick = async () => {
     if (!db?.settings) return;
@@ -15,7 +15,8 @@ export function startBackground(db, { persist, render, setStatus }) {
         const out = await fullOppSync(db.settings, db);
         if (out.pushed || out.pulled) {
           persist?.();
-          render?.();
+          if (softRefresh) softRefresh();
+          else render?.();
           setStatus?.(`SYNC · ${out.pushed}↑ ${out.pulled}↓`);
         }
         await fetchOppDigest(db.settings, db);

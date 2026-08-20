@@ -4,7 +4,8 @@ import { isDenverFallback, validCoord } from "../www/geo.js";
 import { substanceScore } from "../www/memory.js";
 import { isBlank, FALLBACK } from "../www/crew.js";
 import { looksLikeMealRequest } from "../www/meals.js";
-import { extractGuideQuery } from "../www/guide.js";
+import { extractGuideQuery, guideEntries } from "../www/guide.js";
+import { getCodeChat } from "../www/code.js";
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -36,4 +37,6 @@ assert(/happy to help/i.test(FALLBACK), "fallback greeting");
 assert(looksLikeMealRequest("plan my meals today"), "meal detect");
 assert(extractGuideQuery("what is the aurora borealis") === "aurora borealis", "guide query");
 await import("../www/oppdesk.js");
-console.log("ok", 21);
+assert(typeof getCodeChat === "function", "code chat");
+assert(Array.isArray(guideEntries()), "guide cache");
+console.log("ok", 23);

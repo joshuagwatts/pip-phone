@@ -15,6 +15,22 @@ import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThe
 import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { listEntries, applyAllOverlays } from "./codefs.js";
+import {
+  loadFile,
+  saveFile,
+  getCodeChat,
+  resetCodeChat,
+  resetOverlays,
+  streamCodeApply,
+  consumeCodeStream,
+} from "./code.js";
+import {
+  guideEntries,
+  tryGuideCommand,
+  fetchWikiSummary,
+  searchWiki,
+  looksLikeGuideQuery,
+} from "./guide.js";
 import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier } from "./wx.js";
 import { describeChain } from "./command.js";
 import {
@@ -89,7 +105,14 @@ function render() {
   else if (tab === "data") renderData();
   else if (tab === "vibe") renderVibe();
   else if (tab === "today") renderToday();
-  else if (tab === "code") renderCode();
+  else if (tab === "code") {
+    $("#view").innerHTML = `<div class="code-wrap"><h3>CODE</h3><p class="muted">Loading…</p></div>`;
+    renderCode().catch((e) => {
+      $("#view").innerHTML = `<div class="code-wrap"><h3>CODE ERROR</h3><p class="muted">${esc(String(e.message || e))}</p></div>`;
+      setStatus("CODE ERROR");
+      console.error(e);
+    });
+  }
   else if (tab === "wx") renderWx();
   else if (tab === "meals") renderMeals();
   else if (tab === "guide") renderGuide();
@@ -486,14 +509,26 @@ function updateBrainChip() {
   paintBrainStrip();
 }
 
-function paintBrainStrip() {
-  const el = $("#brain-strip");
-  if (!el) return;
+function chainChipsHtml() {
   const keyed = cloudStatus(db.settings).keyed || [];
   const rows = describeChain(keyed, providerHealth(), desktopConfigured(db.settings), db.settings.brain_pin);
-  el.innerHTML = rows
+  return rows
     .map((r) => `<span class="brain-chip ${esc(r.state)}" data-brain="${esc(r.id)}">${esc(r.label)}</span>`)
     .join("");
+}
+
+function paintBrainStrip() {
+  const html = chainChipsHtml();
+  const chat = $("#brain-strip");
+  if (chat) chat.innerHTML = html;
+  const code = $("#code-chain");
+  if (code) code.innerHTML = html;
+}
+
+function softRefresh() {
+  if (tab === "opp") renderOpp();
+  else if (tab === "data") renderData();
+  paintBrainStrip();
 }
 
 function paintCalendar() {
@@ -838,6 +873,9 @@ async function renderCode() {
     <div class="code-wrap">
       <h3>CODE</h3>
       <p class="muted">${leaky ? "LEAKY — cloud coder edits phone www overlay." : "SECURE — flip LEAKY for on-device CODE, or pair desktop for UPGRADE PC."} CSS live · JS/HTML need RELOAD.</p>
+      <h3>BRAIN CHAIN</h3>
+      <div id="code-chain" class="brain-strip" aria-label="connected APIs"></div>
+      <p class="muted">Green = live · gray = keyed but down · desktop chip = PC paired · keys in DATA</p>
       <div class="code-bar">
         <select id="code-file">${entries.map((e) => `<option value="${esc(e.name)}" ${e.name === codeState.openFile ? "selected" : ""}>${esc(e.name)}${e.overlay ? " *" : ""}</option>`).join("")}</select>
         <button type="button" id="code-save">SAVE</button>
@@ -857,6 +895,7 @@ async function renderCode() {
       </div>
     </div>`;
   paintCodeChat(false);
+  paintBrainStrip();
   $("#code-file").onchange = async (e) => {
     if (codeState.dirty && !confirm("Discard unsaved edits?")) {
       e.target.value = codeState.openFile;
@@ -1487,7 +1526,7 @@ function boot() {
     db.chat.slice(-20).forEach((m) => addLog(m.role === "user" ? "user" : "pip", m.content));
     if (!db.chat.length) addLog("pip", "Pip is happy to help! Hunt opps in CHAT — or connect Proton VPN in DATA for private search.");
     try {
-      startBackground(db, { persist, render, setStatus });
+      startBackground(db, { persist, setStatus, softRefresh });
     } catch {
       /* background sync optional */
     }
@@ -1539,23 +1578,29 @@ function boot() {
       setStatus("WX ALERT");
     },
   );
-  probeKeyed(db.settings)
-    .then((hits) => {
-      db.settings.brain_health = providerHealth();
-      persist();
-      paintBrainStrip();
-      const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
-      const keyed = cloudStatus(db.settings).keyed;
-      if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
-      else if (keyed.length) setStatus("KEYS SAVED · PROBE FAILED");
-      else setStatus("PIP ON DECK · ADD KEYS IN DATA");
-      if (desktopConfigured(db.settings)) {
-        return syncEventsFromDesktop(db.settings, db)
-          .then(() => syncMealsFromDesktop(db.settings, db))
-          .then(() => persist());
-      }
-    })
-    .catch((e) => setStatus(String(e.message || e).toUpperCase()));
+  const deferProbe = (fn) => {
+    if (typeof requestIdleCallback === "function") requestIdleCallback(fn, { timeout: 2500 });
+    else setTimeout(fn, 80);
+  };
+  deferProbe(() => {
+    probeKeyed(db.settings)
+      .then((hits) => {
+        db.settings.brain_health = providerHealth();
+        persist();
+        paintBrainStrip();
+        const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
+        const keyed = cloudStatus(db.settings).keyed;
+        if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
+        else if (keyed.length) setStatus("KEYS SAVED · PROBE FAILED");
+        else setStatus("PIP ON DECK · ADD KEYS IN DATA");
+        if (desktopConfigured(db.settings)) {
+          return syncEventsFromDesktop(db.settings, db)
+            .then(() => syncMealsFromDesktop(db.settings, db))
+            .then(() => persist());
+        }
+      })
+      .catch((e) => setStatus(String(e.message || e).toUpperCase()));
+  });
   } catch (e) {
     const msg = String(e.message || e);
     $("#view").innerHTML = `<h3>PIP ERROR</h3><p class="muted">${esc(msg)}</p>`;
