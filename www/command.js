@@ -73,19 +73,9 @@ export function orderFor(job, keyedIds, health = {}, pin = "auto") {
   return [...live, ...down];
 }
 
-export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto", desktopLive = null) {
+export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto", desktopLive = null, leaky = false) {
   const rows = [];
-  if (desktop) {
-    let state = "key";
-    if (desktopLive === true) state = "on";
-    else if (desktopLive === false) state = "bad";
-    else if (pin === "desktop" || pin === "auto") state = "key";
-    rows.push({
-      id: "desktop",
-      label: "DESKTOP",
-      state,
-    });
-  }
+  const cloudRows = [];
   for (const id of ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"]) {
     const keyed = keyedIds.includes(id);
     const ok = health[id]?.ok;
@@ -93,12 +83,31 @@ export function describeChain(keyedIds, health = {}, desktop = false, pin = "aut
     if (keyed && ok === true) state = "on";
     else if (keyed && ok === false) state = "bad";
     else if (keyed) state = "key";
-    rows.push({
+    cloudRows.push({
       id,
       label: id === "xai" ? "GROK" : id.toUpperCase(),
       state,
     });
   }
+  const desk = desktop
+    ? [
+        {
+          id: "desktop",
+          label: "DESKTOP",
+          state:
+            desktopLive === true
+              ? "on"
+              : desktopLive === false
+                ? "bad"
+                : pin === "desktop" || (!leaky && pin === "auto")
+                  ? "key"
+                  : "key",
+        },
+      ]
+    : [];
+  // LEAKY: show cloud strip first (master brain). SECURE: desktop first.
+  if (leaky) rows.push(...cloudRows, ...desk);
+  else rows.push(...desk, ...cloudRows);
   rows.push({
     id: "local",
     label: "QWEN",

@@ -1,6 +1,6 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
-import { probeKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint } from "./cloud.js";
+import { probeKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth } from "./cloud.js";
 import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets, requireAppUnlock } from "./biometric.js";
@@ -522,12 +522,14 @@ function updateBrainChip() {
 function chainChipsHtml() {
   const keyed = cloudStatus(db.settings).keyed || [];
   const live = db.settings.desktop_live;
+  const leaky = !privacyOn(db.settings);
   const rows = describeChain(
     keyed,
     providerHealth(),
     desktopConfigured(db.settings),
     db.settings.brain_pin,
     live === true ? true : live === false ? false : null,
+    leaky,
   );
   return rows
     .map((r) => `<span class="brain-chip ${esc(r.state)}" data-brain="${esc(r.id)}">${esc(r.label)}</span>`)
@@ -544,8 +546,12 @@ function paintBrainStrip() {
 
 function softRefresh() {
   if (tab === "opp") renderOpp();
-  else if (tab === "data") renderData();
-  else if (tab === "today") renderToday();
+  else if (tab === "data") {
+    const ae = document.activeElement;
+    const editing = ae && ae.closest && ae.closest("#view") && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName);
+    if (editing) paintBrainStrip();
+    else renderData();
+  } else if (tab === "today") renderToday();
   else if (tab === "meals") renderMeals();
   else if (tab === "vibe" && vibeMode === "motivation") paintMotiv();
   paintBrainStrip();
@@ -824,16 +830,18 @@ function renderData() {
   const keyRows = PROVIDERS.map((p) => {
     const info = keyTag(s, p, health[p.id]);
     const hint = keyHint(s, p);
+    const has = Boolean(String(s[p.field] || "").trim());
     const get = p.keyUrl
       ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener noreferrer">GET KEY</a>`
       : "";
+    const ph = has ? `paste to replace · ${hint || "••••"}` : "paste key";
     return `<div class="key-row ${esc(info.state)}">
       <div class="key-meta">
         <span class="key-name">${esc(p.label.toUpperCase())}</span>
         <span class="key-tag">${esc(info.tag)}${hint ? ` · ${esc(hint)}` : ""}</span>
       </div>
-      <p class="muted key-tip">${esc(p.tip || "")} ${get}</p>
-      <input id="set-${esc(p.field)}" type="password" value="${esc(s[p.field] || "")}" placeholder="paste key" autocomplete="off" />
+      <p class="muted key-tip">${esc(p.tip || "")} ${get}${has ? ` · <button type="button" class="key-clear" data-field="${esc(p.field)}">CLEAR</button>` : ""}</p>
+      <input id="set-${esc(p.field)}" type="password" value="" placeholder="${esc(ph)}" autocomplete="off" data-keep="${has ? "1" : "0"}" />
     </div>`;
   }).join("");
 
@@ -880,7 +888,9 @@ function renderData() {
         }).join("")}
       </select>
     </div>
-    ${securePosture ? `<p class="muted">SECURE: OPP scrapes stay limited. CHAT cloud keys still work when LIVE.</p>` : `<p class="muted">LEAKY: cloud unlocked for OPP + in-chat coding tools.</p>`}
+    ${securePosture
+      ? `<p class="muted">SECURE: desktop GPU first · cloud keys as fallback · OPP scrapes stay limited.</p>`
+      : `<p class="muted">LEAKY: master brain — LIVE cloud keys upscale/downscale first, then desktop, then Qwen.</p>`}
     <div class="key-list">${keyRows}</div>
 
     <h3>LOCK</h3>
@@ -906,7 +916,10 @@ function renderData() {
     db.settings.brain_pin = ($("#brain-pin") && $("#brain-pin").value) || db.settings.brain_pin;
     for (const p of PROVIDERS) {
       const el = $(`#set-${p.field}`);
-      if (el) db.settings[p.field] = el.value.trim();
+      if (!el) continue;
+      const v = el.value.trim();
+      // Blank field = keep existing key (so re-open DATA doesn't wipe).
+      if (v) db.settings[p.field] = v;
     }
     db.settings.desktop_url = normalizeUrl($("#set-durl").value.trim());
     if ($("#set-durl")) $("#set-durl").value = db.settings.desktop_url;
@@ -1011,6 +1024,77 @@ function renderData() {
       if (href) openUrl(href, { system: true }).catch(() => window.open(href, "_blank"));
     });
   });
+
+  document.querySelectorAll(".key-clear").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const field = btn.getAttribute("data-field");
+      if (!field) return;
+      db.settings[field] = "";
+      const prov = PROVIDERS.find((p) => p.field === field);
+      if (prov) {
+        markHealth(prov.id, false, "cleared");
+        if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
+          delete db.settings.brain_health[prov.id];
+        }
+      }
+      persist();
+      setStatus(`CLEARED · ${String(field).toUpperCase()}`);
+      paintBrainStrip();
+      renderData();
+    });
+  });
+
+  const saveBtn = $("#data-save");
+  if (saveBtn) {
+    saveBtn.onclick = () => {
+      guardSecrets(db.settings, () => {
+        grabSettings();
+        setStatus("SAVED · TAP PROBE KEYS");
+        updateBrainChip();
+        paintBrainStrip();
+        renderData();
+      }).catch((e) => setStatus(String(e.message || e)));
+    };
+  }
+
+  const themeResetBtn = $("#theme-reset");
+  if (themeResetBtn) {
+    themeResetBtn.onclick = () => {
+      resetTheme(db.settings);
+      persist();
+      renderData();
+      renderPrivacy();
+      setStatus("THEME RESET · PHOSPHOR GREEN");
+    };
+  }
+
+  const probeBtn = $("#brain-probe");
+  if (probeBtn) {
+    probeBtn.onclick = async () => {
+      grabSettings();
+      const box = $("#brain-probe-out");
+      if (box) box.textContent = "PROBING HOSTS…";
+      setStatus("PROBING KEYS…");
+      try {
+        const hits = await probeKeyed(db.settings);
+        db.settings.brain_health = providerHealth();
+        persist();
+        paintBrainStrip();
+        const lines = PROVIDERS.map((p) => {
+          const info = keyTag(db.settings, p, providerHealth()[p.id]);
+          const hit = (hits || []).find((h) => h.id === p.id);
+          const err = hit && !hit.ok ? ` · ${hit.error || ""}` : "";
+          return `${p.label.toUpperCase()} // ${info.tag}${err}`;
+        });
+        if (box) box.innerHTML = lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join("");
+        const live = (hits || []).filter((h) => h.ok).map((h) => h.id.toUpperCase());
+        setStatus(live.length ? `LIVE · ${live.join(" · ")}` : "NO LIVE KEYS — check paste / GET KEY");
+      } catch (e) {
+        if (box) box.textContent = String(e.message || e);
+        setStatus(String(e.message || e).toUpperCase());
+      }
+    };
+  }
 }
 
 
@@ -1512,7 +1596,7 @@ function boot() {
           db.settings.privacy_mode = secure ? "leaky" : "secure";
           persist();
           renderPrivacy();
-          setStatus(secure ? "LEAKY // CLOUD OK FOR OPP + CHAT CODE" : "SECURE // PREFER LOCAL · CLOUD = LEAKED");
+          setStatus(secure ? "LEAKY // MASTER BRAIN · LIVE KEYS FIRST" : "SECURE // DESKTOP FIRST · CLOUD = FALLBACK");
         };
       }
       $("#send").onclick = sendChat;

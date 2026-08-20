@@ -1,8 +1,6 @@
 import { orderFor } from "./command.js";
 import { httpPostJson, httpGet } from "./net.js";
 
-const FISHY = new Set(["gemini", "xai"]);
-
 /** @type {Array<{id:string, label:string, field:string, base:string, life:string, boost:string, fishy?:boolean, headers?:Record<string,string>}>} */
 export const PROVIDERS = [
   {
@@ -175,9 +173,7 @@ function modelFor(prov, lane) {
   return lane === "boost" ? prov.boost : prov.life;
 }
 
-/** CHAT — fastest reliable brains first. */
-const CHAT_ORDER = ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"];
-
+/** CHAT — fastest reliable brains first (orderFor / JOBS.life owns the cascade). */
 export function chatCloudEnabled(settings) {
   return keyedProviders(settings).length > 0;
 }
@@ -189,30 +185,14 @@ export function chatChain(settings, job = "life") {
   return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
 }
 
-/** Phone CHAT can use cloud whenever keys exist — OPP/CODE still respect LEAKY via chain(). */
+/** OPP/CODE cloud chain — same LIVE upscale/downscale as CHAT when LEAKY. */
 export function chain(settings, lane = "life") {
   if (privacyOn(settings)) return [];
   const pin = brainPin(settings);
-  const out = [];
-
-  if (pin !== "auto" && pin !== "local") {
-    const picked = PROVIDERS.find((p) => p.id === pin);
-    if (picked && providerKey(settings, picked)) out.push(picked);
-    return out;
-  }
-
-  const order =
-    lane === "boost"
-      ? ["groq", "openrouter", "cerebras", "mistral"]
-      : ["groq", "openrouter", "xai", "cerebras", "mistral"];
-
-  for (const id of order) {
-    const prov = PROVIDERS.find((p) => p.id === id);
-    if (!prov || !providerKey(settings, prov)) continue;
-    if (prov.fishy && FISHY.has(prov.id)) continue;
-    out.push(prov);
-  }
-  return out;
+  const keyedIds = keyedProviders(settings).map((p) => p.id);
+  const job = lane === "boost" ? "boost" : lane === "code" ? "code" : "life";
+  const ids = orderFor(job, keyedIds, liveHealth, pin);
+  return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
 }
 
 async function openaiOnce(prov, key, model, messages, temperature, maxTokens, tools) {
@@ -267,8 +247,11 @@ export async function cloudCompleteTools(settings, messages, tools, lane = "boos
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {
-      return await openaiOnce(prov, key, modelFor(prov, lane), messages, temperature, maxTokens, tools);
+      const out = await openaiOnce(prov, key, modelFor(prov, lane), messages, temperature, maxTokens, tools);
+      markHealth(prov.id, true);
+      return out;
     } catch (e) {
+      markHealth(prov.id, false, String(e.message || e).slice(0, 120));
       errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
     }
   }
@@ -281,8 +264,11 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {
-      return await openaiOnce(prov, key, modelFor(prov, "life"), messages, temperature, maxTokens);
+      const out = await openaiOnce(prov, key, modelFor(prov, "life"), messages, temperature, maxTokens);
+      markHealth(prov.id, true);
+      return out;
     } catch (e) {
+      markHealth(prov.id, false, String(e.message || e).slice(0, 120));
       errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
     }
   }
@@ -295,8 +281,11 @@ export async function cloudComplete(settings, messages, lane = "life", temperatu
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {
-      return await openaiOnce(prov, key, modelFor(prov, lane), messages, temperature, maxTokens);
+      const out = await openaiOnce(prov, key, modelFor(prov, lane), messages, temperature, maxTokens);
+      markHealth(prov.id, true);
+      return out;
     } catch (e) {
+      markHealth(prov.id, false, String(e.message || e).slice(0, 120));
       errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
     }
   }

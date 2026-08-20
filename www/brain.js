@@ -258,11 +258,11 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
 }
 
 /**
- * Privacy-first chain:
- * 1) Desktop GPU (stays on your PC) — private
- * 2) Cloud APIs in brain order — LEAKED
- * 3) On-device Qwen if pin=local — private
- * LEAKY mode tries cloud earlier so OPP/CODE scrapes aren't blocked.
+ * Brain chain:
+ * SECURE chat: desktop GPU → cloud LIVE cascade → Qwen
+ * LEAKY chat (auto): cloud LIVE cascade (upscale/downscale) → desktop → Qwen
+ * Pin desktop / local / specific cloud still respected.
+ * OPP/CODE: LEAKY unlocks cloud; SECURE blocks cloud scrapes.
  */
 async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life") {
   track(onProgress);
@@ -316,20 +316,29 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     return localComplete(messages, temperature, maxTokens);
   };
 
-  /** Chat: desktop GPU first when paired, then phone cloud keys, then on-device Qwen. */
   const pin = String(settings?.brain_pin || "auto").toLowerCase();
   const steps = [];
   if (isChat) {
     if (pin === "local") {
       steps.push(["local", tryLocal]);
-    } else if (pin !== "auto" && pin !== "desktop") {
+    } else if (pin === "desktop") {
+      steps.push(["desktop", tryDesktop]);
+      steps.push(["cloud", tryCloud]);
+      steps.push(["local", tryLocal]);
+    } else if (pin !== "auto") {
+      // Pinned cloud id — try that family first via chatChain, then desktop, then Qwen
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
       steps.push(["local", tryLocal]);
-    } else {
-      // auto / desktop pin → GPU first, then cloud keys, then Qwen
+    } else if (secure) {
+      // SECURE auto: private GPU first, then LIVE cloud cascade, then Qwen
       steps.push(["desktop", tryDesktop]);
       steps.push(["cloud", tryCloud]);
+      steps.push(["local", tryLocal]);
+    } else {
+      // LEAKY auto: master brain — LIVE keys upscale/downscale, then desktop, then Qwen
+      steps.push(["cloud", tryCloud]);
+      steps.push(["desktop", tryDesktop]);
       steps.push(["local", tryLocal]);
     }
   } else if (secure) {

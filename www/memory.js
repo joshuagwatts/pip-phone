@@ -55,16 +55,23 @@ export function storyBrief(db, limit = 10, minScore = 14) {
 
 export function chainBrief(db) {
   const health = (db && db.settings && db.settings.brain_health) || {};
-  const keys = ["gemini", "groq", "openrouter", "xai", "cerebras", "mistral"].filter(
-    (id) => db && db.settings && String(db.settings[id === "xai" ? "xai" : id] || "").trim(),
+  const leaky = String(db?.settings?.privacy_mode || "secure").toLowerCase() === "leaky";
+  const keys = ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"].filter(
+    (id) => db && db.settings && String(db.settings[id] || "").trim(),
   );
-  if (!keys.length) return "No cloud keys saved. CHAT will stay local-voiced until DATA has a key.";
+  if (!keys.length) {
+    return leaky
+      ? "LEAKY but no cloud keys — paste in DATA or use desktop GPU."
+      : "No cloud keys saved. SECURE prefers desktop GPU, then Qwen.";
+  }
   const bits = keys.map((id) => {
     const h = health[id];
     const st = h && h.ok === true ? "live" : h && h.ok === false ? "down" : "keyed";
     return `${id}:${st}`;
   });
-  return `Brain network: ${bits.join(" → ")}. Prefer the first live brain. Remember operator moments.`;
+  return leaky
+    ? `LEAKY master brain: ${bits.join(" → ")}. Upscale to LIVE, downscale on fail, then desktop, then Qwen.`
+    : `SECURE cascade: desktop → ${bits.join(" → ")} → Qwen. Prefer private first.`;
 }
 
 export function rememberReply(db, text) {

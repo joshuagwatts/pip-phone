@@ -260,7 +260,18 @@ body.comm #comm { display: flex; }
 .key-row.bad .key-tag { color: var(--leak); }
 .key-tip { margin: 0 0 0.4rem; font-size: 11px; }
 .key-get { color: var(--phos); text-decoration: underline; margin-left: 0.35rem; }
-.key-row input { width: 100%; }
+.key-clear {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  text-decoration: underline;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 0;
+  cursor: pointer;
+}
+.key-clear:active { color: var(--leak); }
 .probe-out { margin: 0.4rem 0 0.8rem; font-size: 11px; }
 .probe-out .row { display: flex; justify-content: space-between; padding: 0.15rem 0; border-bottom: 1px solid var(--line); }
 #log { flex: 1; overflow: auto; padding: 0.8rem; }
