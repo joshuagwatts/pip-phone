@@ -230,7 +230,8 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
   startLimit.setDate(startLimit.getDate() - days);
   const chunks = [];
   let cursor = new Date(today);
-  while (cursor > startLimit && chunks.length < 10) {
+  const maxChunks = days > 120 ? 14 : 10;
+  while (cursor > startLimit && chunks.length < maxChunks) {
     const chunkEnd = new Date(cursor);
     const chunkStart = new Date(cursor);
     chunkStart.setDate(chunkStart.getDate() - 13);
@@ -345,9 +346,9 @@ function enrichStormDates(storms, hail, wind) {
   return [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 100);
 }
 
-async function fetchSpcReports(lat, lon, radiusKm = 25, daysBack = 21) {
+async function fetchSpcReports(lat, lon, radiusKm = 25, daysBack = 30) {
   const today = new Date();
-  const days = Math.min(Math.max(daysBack, 7), 45);
+  const days = Math.min(Math.max(daysBack, 7), 90);
   const km = Math.min(Math.max(radiusKm, 3), 50);
   const stamps = [];
   for (let d = 0; d < days; d++) {
@@ -405,6 +406,14 @@ async function fetchHailReports(lat, lon, radiusKm = 25, daysBack = 60) {
 }
 
 let mapConfigCache = null;
+const MAP_MAX_ZOOM = 18;
+const RADAR_NATIVE_ZOOM = 7;
+const RADAR_TILE_SIZE = 512;
+
+function rainTileUrl(host, path, color = "2/1_1") {
+  const base = String(host || "https://tilecache.rainviewer.com").replace(/\/+$/, "");
+  return `${base}${path}/${RADAR_TILE_SIZE}/{z}/{x}/{y}/${color}.png`;
+}
 
 const BASE_LAYERS = [
   { id: "osm", label: "Street", kind: "base", url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
@@ -502,6 +511,7 @@ async function localMapConfig(settings, center) {
   try {
     const { body } = await httpGet("https://api.rainviewer.com/public/weather-maps.json", 2500);
     const rv = JSON.parse(body || "{}");
+    const host = rv.host || "https://tilecache.rainviewer.com";
     const past = ((rv.radar || {}).past || []).slice(-1)[0];
     const ir = ((rv.satellite || {}).infrared || []).slice(-1)[0];
     const vis = ((rv.satellite || {}).visible || []).slice(-1)[0];
@@ -510,9 +520,10 @@ async function localMapConfig(settings, center) {
         id: "radar",
         label: "Radar",
         kind: "overlay",
-        url: `https://tilecache.rainviewer.com${past.path}/256/{z}/{x}/{y}/6/1_1.png`,
+        url: rainTileUrl(host, past.path),
         attribution: "© RainViewer",
-        opacity: 0.65,
+        opacity: 0.72,
+        maxNativeZoom: RADAR_NATIVE_ZOOM,
       });
     }
     if (ir?.path) {
@@ -520,9 +531,10 @@ async function localMapConfig(settings, center) {
         id: "clouds",
         label: "Clouds",
         kind: "overlay",
-        url: `https://tilecache.rainviewer.com${ir.path}/256/{z}/{x}/{y}/0/0_0.png`,
+        url: rainTileUrl(host, ir.path, "0/0_0"),
         attribution: "© RainViewer",
         opacity: 0.55,
+        maxNativeZoom: RADAR_NATIVE_ZOOM,
       });
     }
     if (vis?.path) {
@@ -530,9 +542,10 @@ async function localMapConfig(settings, center) {
         id: "vis",
         label: "Vis",
         kind: "overlay",
-        url: `https://tilecache.rainviewer.com${vis.path}/256/{z}/{x}/{y}/0/0_0.png`,
+        url: rainTileUrl(host, vis.path, "0/0_0"),
         attribution: "© RainViewer",
         opacity: 0.45,
+        maxNativeZoom: RADAR_NATIVE_ZOOM,
       });
     }
   } catch {
@@ -543,15 +556,17 @@ async function localMapConfig(settings, center) {
 
 async function localResearch(lat, lon, address = "", { deep = true, filters = wxFilters } = {}) {
   const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
-  const days = deep ? Math.min(Number(filters.days) || 90, 90) : 45;
+  const filterDays = Number(filters.days) || 180;
+  const archiveDays = Math.min(filterDays, 730);
+  const swdiDays = Math.min(filterDays, 180);
   const km = Number(filters.km) || 25;
-  const spcDays = Math.min(days, 21);
+  const spcDays = Math.min(filterDays, deep ? 90 : 30);
   const [geo, wxNow, archiveStorms, spc, swdi] = await Promise.all([
     geoP,
     currentWeather(lat, lon).catch(() => ({ ok: false })),
-    historicalStorms(lat, lon, days),
+    historicalStorms(lat, lon, archiveDays),
     fetchSpcReports(lat, lon, km, spcDays),
-    fetchSwdiHail(lat, lon, km, days),
+    fetchSwdiHail(lat, lon, km, swdiDays),
   ]);
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const city = geo.city || addr.split(",")[0];
@@ -561,7 +576,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const news = [];
   if (deep) {
     for (const q of [`hail damage "${city}"`, `hail storm "${city}"`, `severe weather "${addr}"`, `wind damage "${city}"`]) {
-      for (const hit of await searchNews(q, 4)) {
+      for (const hit of await searchNews(q, 3)) {
         if (!news.some((n) => n.url === hit.url)) news.push(hit);
       }
     }
@@ -580,7 +595,49 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
     owner_name: "",
     owner_phone: "",
     owner_email: "",
+    _meta: { fetchedDays: Math.max(archiveDays, swdiDays, spcDays), fetchedKm: km, deep: Boolean(deep) },
   };
+}
+
+export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
+  const geo = await reverseGeocode(lat, lon);
+  const addr = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const partial = {
+    ok: true,
+    address: addr,
+    lat,
+    lon,
+    zillow_url: zillowUrl(addr),
+    storms: [],
+    hail: [],
+    wind: [],
+    news: [],
+    owner_name: "",
+    owner_phone: "",
+    owner_email: "",
+  };
+  if (onPartial) onPartial(partial);
+  const km = Number(wxFilters.km) || 25;
+  const [wxNow, spc, swdi] = await Promise.all([
+    currentWeather(lat, lon).catch(() => ({ ok: false })),
+    fetchSpcReports(lat, lon, km, 30),
+    fetchSwdiHail(lat, lon, km, 60),
+  ]);
+  const hail = mergeHailRows(spc.hail || [], swdi || []);
+  const wind = spc.wind || [];
+  return {
+    ...partial,
+    weather: wxNow,
+    hail,
+    wind,
+    storms: enrichStormDates([], hail, wind),
+    _meta: { fetchedDays: 60, fetchedKm: km, deep: false },
+  };
+}
+
+export async function refetchDossier(settings, lat, lon, address, filters = wxFilters) {
+  const f = { ...wxFilters, ...filters };
+  return localResearch(lat, lon, address, { deep: true, filters: f });
 }
 
 export async function loadMapConfig(settings) {
@@ -592,21 +649,35 @@ export async function loadMapConfig(settings) {
 }
 
 export async function researchPin(settings, lat, lon, address = "", deep = true) {
+  let remote = null;
   try {
-    const remote = await api("/api/storm/research", {
+    remote = await api("/api/storm/research", {
       settings,
       method: "POST",
       body: { lat, lon, address, deep },
       timeout: deep ? 180000 : 60000,
     });
-    if (usableRemote(remote)) return normalizeDossier(remote);
   } catch {
     /* local fallback */
   }
-  return localResearch(lat, lon, address, { deep });
+  const local = await localResearch(lat, lon, address, { deep, filters: wxFilters });
+  if (usableRemote(remote)) {
+    const norm = normalizeDossier(remote) || local;
+    if ((local.hail?.length || 0) > (norm.hail?.length || 0)) {
+      norm.hail = local.hail;
+      norm.wind = local.wind || [];
+      norm.storms = local.storms || [];
+    }
+    norm._meta = local._meta || norm._meta;
+    return norm;
+  }
+  return local;
 }
 
-export async function pinDossier(settings, lat, lon, { onPartial } = {}) {
+export async function pinDossier(settings, lat, lon, { onPartial, deep = false } = {}) {
+  if (!deep) {
+    return normalizeDossier(await quickDossier(settings, lat, lon, { onPartial })) || null;
+  }
   const geo = await reverseGeocode(lat, lon);
   const addr = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const partial = {
@@ -699,13 +770,25 @@ export function mountMap(container, config, { onTap, center }) {
   }
   const c = center || config.center || { lat: 0, lon: 0 };
   const zoom = Math.abs(c.lat) < 1 && Math.abs(c.lon) < 1 ? 3 : 12;
-  map = window.L.map(container, { zoomControl: true, preferCanvas: true }).setView([c.lat, c.lon], zoom);
+  map = window.L.map(container, {
+    zoomControl: true,
+    preferCanvas: false,
+    scrollWheelZoom: true,
+    touchZoom: true,
+    doubleClickZoom: true,
+    maxZoom: MAP_MAX_ZOOM,
+  }).setView([c.lat, c.lon], zoom);
   const all = config.layers || [];
   for (const layer of all) {
+    const isOverlay = layer.kind === "overlay";
     const tile = window.L.tileLayer(layer.url, {
       attribution: layer.attribution || "",
       opacity: layer.opacity ?? 1,
-      maxZoom: 19,
+      maxZoom: MAP_MAX_ZOOM,
+      maxNativeZoom: isOverlay ? layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM : 19,
+      tileSize: isOverlay ? 256 : 256,
+      updateWhenZooming: true,
+      keepBuffer: 2,
     });
     if (layer.kind === "overlay") overlays[layer.id] = tile;
     else layers[layer.id] = tile;
@@ -775,10 +858,11 @@ export function filterDossier(data, filters = wxFilters) {
   return { hail, wind, storms };
 }
 
-export function renderDossier(root, data, esc, onResearch) {
+export function renderDossier(root, data, esc, onResearch, onRefetch) {
   const news = data.news || [];
   const addr = data.address || "";
   const zurl = data.zillow_url || (addr ? zillowUrl(addr) : "");
+  const meta = data._meta || {};
   const { hail, wind, storms } = filterDossier(data, wxFilters);
   const wxLine =
     data.weather && data.weather.ok
@@ -796,6 +880,7 @@ export function renderDossier(root, data, esc, onResearch) {
         ${zurl ? `<a href="${esc(zurl)}" target="_blank" rel="noopener">ZILLOW SEARCH</a>` : ""}
         ${onResearch ? `<button type="button" id="wx-deep" class="primary">DEEP RESEARCH</button>` : ""}
       </div>
+      <p class="muted wx-meta">${meta.deep ? `Deep scan · ${meta.fetchedDays || "?"}d · ${meta.fetchedKm || "?"} km` : "Quick scan · tap DEEP RESEARCH for full hail history + news"}</p>
       <div class="wx-filters">
         <label>NEAR <select id="wx-f-km">
           <option value="8"${wxFilters.km == 8 ? " selected" : ""}>8 km</option>
@@ -851,9 +936,27 @@ export function renderDossier(root, data, esc, onResearch) {
   const bind = (id, key, cast) => {
     const el = root.querySelector(id);
     if (!el) return;
-    el.onchange = () => {
+    el.onchange = async () => {
       wxFilters[key] = cast(el.value);
-      renderDossier(root, data, esc, onResearch);
+      const needRefetch =
+        onRefetch &&
+        ((key === "days" && Number(wxFilters.days) > (meta.fetchedDays || 0)) ||
+          (key === "km" && Number(wxFilters.km) > (meta.fetchedKm || 0)));
+      if (needRefetch) {
+        root.querySelector(".wx-meta").textContent = "Refetching storm data…";
+        try {
+          const fresh = await onRefetch({ ...wxFilters });
+          if (fresh) {
+            renderDossier(root, fresh, esc, onResearch, onRefetch);
+            const f = filterDossier(fresh, wxFilters);
+            drawHailMarkers(f.hail, f.wind);
+            return;
+          }
+        } catch {
+          /* fall through to re-filter */
+        }
+      }
+      renderDossier(root, data, esc, onResearch, onRefetch);
       const f = filterDossier(data, wxFilters);
       drawHailMarkers(f.hail, f.wind);
     };

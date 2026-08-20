@@ -15,7 +15,7 @@ import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThe
 import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { listEntries, applyAllOverlays } from "./codefs.js";
-import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, startWeatherWatch, filterDossier } from "./wx.js";
+import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier } from "./wx.js";
 import { describeChain } from "./command.js";
 import {
   mealSnapshot,
@@ -708,26 +708,40 @@ async function onWxTap(lat, lon) {
   wxState.lon = lon;
   setStatus("PINNED · ADDRESS…");
   const panel = $("#wx-panel");
-  try {
-    const data = await pinDossier(db.settings, lat, lon, {
-      onPartial: (partial) => {
-        wxState.address = partial.address || "";
-        renderDossier(panel, partial, esc, null);
-        setStatus("PINNED · STORMS + HAIL…");
-      },
-    });
-    wxState.address = data.address || "";
-    wxState.data = data;
-    drawHailMarkers(data.hail, data.wind);
-    renderDossier(panel, data, esc, async () => {
-      setStatus("DEEP RESEARCH…");
+  const onDeep = async () => {
+    setStatus("DEEP RESEARCH…");
+    const meta = panel.querySelector(".wx-meta");
+    if (meta) meta.textContent = "Deep scan running (hail + news)…";
+    try {
       const deep = await researchPin(db.settings, lat, lon, wxState.address, true);
       wxState.data = deep;
       const f = filterDossier(deep);
       drawHailMarkers(f.hail, f.wind);
-      renderDossier(panel, deep, esc, null);
+      renderDossier(panel, deep, esc, onDeep, onRefetch);
       setStatus("DOSSIER UPDATED");
+    } catch (e) {
+      panel.innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
+      setStatus("WX ERROR");
+    }
+  };
+  const onRefetch = async (filters) => {
+    const fresh = await refetchDossier(db.settings, lat, lon, wxState.address, filters);
+    wxState.data = fresh;
+    return fresh;
+  };
+  try {
+    const data = await pinDossier(db.settings, lat, lon, {
+      onPartial: (partial) => {
+        wxState.address = partial.address || "";
+        renderDossier(panel, partial, esc, onDeep, onRefetch);
+        setStatus("PINNED · HAIL NEARBY…");
+      },
     });
+    wxState.address = data.address || "";
+    wxState.data = data;
+    const f = filterDossier(data);
+    drawHailMarkers(f.hail, f.wind);
+    renderDossier(panel, data, esc, onDeep, onRefetch);
     setStatus("WX DOSSIER");
   } catch (e) {
     panel.innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
