@@ -10,7 +10,12 @@ function lan(settings) {
 
 function headers(settings) {
   const tok = String(settings.desktop_token || "").trim();
-  return tok ? { Cookie: `pip_gate=${tok}` } : {};
+  if (!tok || tok === "loopback") return {};
+  return {
+    Cookie: `pip_gate=${tok}`,
+    "X-Pip-Token": tok,
+    Authorization: `Bearer ${tok}`,
+  };
 }
 
 /** Apply a /api/phone/cloud-keys payload onto phone settings. Returns count of keys set. */
@@ -43,7 +48,19 @@ export async function pullCloudKeys(settings) {
     throw new Error("pair desktop first");
   }
   const base = lan(settings);
-  const pack = await httpLanGet(`${base}/api/phone/cloud-keys`, 15000, headers(settings));
+  let pack;
+  try {
+    pack = await httpLanGet(`${base}/api/phone/cloud-keys`, 12000, headers(settings));
+  } catch (e) {
+    const msg = String(e.message || e);
+    if (/401|login required/i.test(msg)) {
+      throw new Error("session expired — RE-PAIR desktop");
+    }
+    throw new Error(`key sync failed — ${msg.slice(0, 80)}`);
+  }
   const n = applyCloudKeys(settings, pack);
-  return { ...pack, applied: n, keyed: keyedSummary(settings) };
+  if (!n && !(pack.keyed || []).length) {
+    return { ...pack, applied: 0, keyed: [], empty: true };
+  }
+  return { ...pack, applied: n, keyed: keyedSummary(settings), empty: false };
 }

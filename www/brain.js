@@ -276,7 +276,10 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     if (!desktopConfigured(settings)) return null;
     emit("DESKTOP");
     const user = [...messages].reverse().find((m) => m.role === "user");
-    const out = await desktopChat(settings, String((user && user.content) || ""));
+    const out = await Promise.race([
+      desktopChat(settings, String((user && user.content) || "")),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("desktop timeout")), 6000)),
+    ]);
     const cleaned = sanitizeReply(out.text);
     if (!cleaned || isBlank(cleaned)) throw new Error("desktop blank");
     if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
@@ -304,18 +307,18 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     return localComplete(messages, temperature, maxTokens);
   };
 
-  /** Order: private first, cloud only when needed (or LEAKY for non-chat). */
+  /** Snappy order: if phone has keys, cloud first; else desktop (short timeout); then local. */
+  const hasKeys = chatCloudEnabled(settings);
   const steps = [];
   if (isChat) {
-    steps.push(["desktop", tryDesktop]);
-    if (secure) {
-      steps.push(["cloud", tryCloud]);
-      steps.push(["local", tryLocal]);
-    } else {
+    if (hasKeys) {
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
-      steps.push(["local", tryLocal]);
+    } else {
+      steps.push(["desktop", tryDesktop]);
+      steps.push(["cloud", tryCloud]);
     }
+    steps.push(["local", tryLocal]);
   } else if (secure) {
     steps.push(["desktop", tryDesktop]);
     steps.push(["cloud", tryCloud]);
@@ -407,10 +410,15 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   let webUsed = Boolean(extras.webContext);
   if (!context) {
     try {
-      const { webBrief } = await import("./web.js");
-      emit("WEB…");
-      context = await webBrief(text);
-      webUsed = Boolean(context);
+      const { webBrief, wantsWeb } = await import("./web.js");
+      if (wantsWeb(text)) {
+        emit("WEB…");
+        context = await Promise.race([
+          webBrief(text),
+          new Promise((resolve) => setTimeout(() => resolve(""), 2500)),
+        ]);
+        webUsed = Boolean(context);
+      }
     } catch {
       /* optional */
     }

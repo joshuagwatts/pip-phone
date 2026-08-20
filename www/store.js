@@ -43,7 +43,7 @@ function blank() {
       desktop_url: "",
       desktop_token: "",
       desktop_paired: false,
-      biometric_lock: false,
+      biometric_lock: true,
       lat: "",
       lon: "",
       city: "",

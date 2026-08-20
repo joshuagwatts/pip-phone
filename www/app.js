@@ -3,7 +3,7 @@ import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingThe
 import { probeKeyed, providerHealth, hydrateHealth } from "./cloud.js";
 import { desktopConfigured, desktopLogin, desktopStatus, findAndPair } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
-import { biometricAvailable, guardSecrets } from "./biometric.js";
+import { biometricAvailable, guardSecrets, requireAppUnlock } from "./biometric.js";
 import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
@@ -1006,7 +1006,7 @@ function renderData() {
     <div class="field"><span>GEMINI</span><input id="set-gemini" type="password" value="${esc(s.gemini)}" placeholder="synced from desktop" autocomplete="off" /></div>
     <div class="field"><span>GROK / XAI</span><input id="set-xai" type="password" value="${esc(s.xai)}" placeholder="synced from desktop" autocomplete="off" /></div>
     <h3>LOCK</h3>
-    <p class="muted">Require biometric unlock before opening keys or pairing. ${biometricAvailable() ? "Sensor available on this device." : "No sensor — lock is a soft gate."}</p>
+    <p class="muted">Require fingerprint unlock when Pip opens. ${biometricAvailable() ? "Sensor ready on this device." : "Install Pip.apk for native fingerprint."}</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
     <h3>UI THEME</h3>
     <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. CHAT: "phthalo green" or "reset ui theme".</p>
@@ -1510,142 +1510,149 @@ function boot() {
     bootTheme(db.settings);
     applyAllOverlays();
     hydrateHealth(db.settings.brain_health);
-    db.chat.slice(-20).forEach((m) =>
-      addLog(m.role === "user" ? "user" : "pip", m.content, {
-        leaked: Boolean(m.leaked),
-        brain: m.brain || "",
-      }),
-    );
-    if (!db.chat.length) {
-      addLog(
-        "pip",
-        "Pip is happy to help. Pair desktop in DATA → SYNC KEYS. Chat prefers your PC, then cloud (marked LEAKED), then local.",
+    if (db.settings.biometric_lock === undefined) {
+      db.settings.biometric_lock = true;
+      persist();
+    }
+    const startUi = () => {
+      db.chat.slice(-20).forEach((m) =>
+        addLog(m.role === "user" ? "user" : "pip", m.content, {
+          leaked: Boolean(m.leaked),
+          brain: m.brain || "",
+        }),
       );
-    }
-    try {
-      startBackground(db, { persist, setStatus, softRefresh });
-    } catch {
-      /* background sync optional */
-    }
-    if (desktopConfigured(db.settings)) {
-      fetchOppDigest(db.settings, db).then(() => { if (tab === "opp") render(); }).catch(() => {});
-    }
-  $("#tabs").onclick = (e) => {
-    const b = e.target.closest("[data-tab]");
-    if (!b) return;
-    tab = b.dataset.tab;
-    pane = "list";
-    document.body.classList.remove("comm");
-    render();
-  };
-  $("#comm-tog").onclick = () => document.body.classList.add("comm");
-  $("#comm-close").onclick = () => document.body.classList.remove("comm");
-  const privacyTog = $("#privacy-tog");
-  if (privacyTog) {
-    privacyTog.onclick = () => {
-      const secure = privacyOn(db.settings);
-      db.settings.privacy_mode = secure ? "leaky" : "secure";
-      persist();
+      if (!db.chat.length) {
+        addLog(
+          "pip",
+          "Pip is happy to help. Pair desktop in DATA → SYNC KEYS. Chat uses keys on this phone first.",
+        );
+      }
+      try {
+        startBackground(db, { persist, setStatus, softRefresh });
+      } catch {
+        /* background sync optional */
+      }
+      if (desktopConfigured(db.settings)) {
+        fetchOppDigest(db.settings, db).then(() => { if (tab === "opp") render(); }).catch(() => {});
+      }
+      $("#tabs").onclick = (e) => {
+        const b = e.target.closest("[data-tab]");
+        if (!b) return;
+        tab = b.dataset.tab;
+        pane = "list";
+        document.body.classList.remove("comm");
+        render();
+      };
+      $("#comm-tog").onclick = () => document.body.classList.add("comm");
+      $("#comm-close").onclick = () => document.body.classList.remove("comm");
+      const privacyTog = $("#privacy-tog");
+      if (privacyTog) {
+        privacyTog.onclick = () => {
+          const secure = privacyOn(db.settings);
+          db.settings.privacy_mode = secure ? "leaky" : "secure";
+          persist();
+          renderPrivacy();
+          setStatus(secure ? "LEAKY // CLOUD OK FOR OPP/CODE" : "SECURE // PREFER LOCAL · CLOUD = LEAKED");
+        };
+      }
+      $("#send").onclick = sendChat;
+      $("#input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+      });
+      render();
       renderPrivacy();
-      setStatus(secure ? "LEAKY // CLOUD OK FOR OPP/CODE" : "SECURE // PREFER LOCAL · CLOUD = LEAKED");
-    };
-  }
-  $("#send").onclick = sendChat;
-  $("#input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
-  });
-  render();
-  renderPrivacy();
-  paintBrainStrip();
-  setStatus("PIP ON DECK");
-  const injectNudge = (line) => {
-    if (!line) return;
-    const last = db.chat[db.chat.length - 1];
-    if (last && last.role === "pip" && last.content === line) return;
-    db.chat.push({ role: "pip", content: line });
-    persist();
-    addLog("pip", line);
-    setStatus("WAKE");
-    softRefresh();
-  };
-  const runMorning = () => {
-    fullMorningSync(db.settings)
-      .then((out) => {
-        softRefresh();
-        if (out?.briefing?.text && !db.chat.some((m) => m.role === "pip" && String(m.content || "").startsWith("Good morning"))) {
-          /* briefing stays on TODAY — wake lines come from presence */
-        }
-      })
-      .catch(() => {});
-  };
-  runMorning();
-  setInterval(() => {
-    if (document.hidden) return;
-    pingPresence(db.settings)
-      .then(injectNudge)
-      .catch(() => {});
-  }, 20000);
-  const cap = window.Capacitor;
-  if (cap?.Plugins?.App?.addListener) {
-    cap.Plugins.App.addListener("appStateChange", ({ isActive }) => {
-      if (!isActive) return;
-      runMorning();
-      pingPresence(db.settings).then(injectNudge).catch(() => {});
-    });
-  }
-  resolveMapCenter(db.settings)
-    .then(() => persist())
-    .catch(() => {});
-  startWeatherWatch(
-    () => resolveMapCenter(db.settings),
-    (live) => {
-      const line = (live.severity && live.severity.line) || "";
-      if (!line) return;
-      const nws = (live.alerts || []).slice(0, 2).map((a) => a.event).filter(Boolean);
-      const msg = nws.length ? `${line} ${nws.join(". ")}.` : line;
-      window.__pipWxLine = msg;
-      db.chat.push({ role: "pip", content: msg });
-      persist();
-      addLog("pip", msg);
-      setStatus("WX ALERT");
-    },
-  );
-  const deferProbe = (fn) => {
-    if (typeof requestIdleCallback === "function") requestIdleCallback(fn, { timeout: 2500 });
-    else setTimeout(fn, 80);
-  };
-  deferProbe(async () => {
-    try {
-      if (desktopConfigured(db.settings)) {
-        try {
-          const keys = await pullCloudKeys(db.settings);
-          if (keys.applied) {
-            persist();
-            setStatus(`KEYS · ${keys.keyed.join(" · ").toUpperCase()}`);
-          }
-        } catch {
-          /* pair may be offline */
-        }
-      }
-      const hits = await probeKeyed(db.settings);
-      db.settings.brain_health = providerHealth();
-      persist();
       paintBrainStrip();
-      const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
-      const keyed = cloudStatus(db.settings).keyed;
-      if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
-      else if (keyed.length) setStatus("KEYS ON PHONE · PROBE FAILED");
-      else if (desktopConfigured(db.settings)) setStatus("PAIRED · SYNC KEYS IN DATA");
-      else setStatus("PIP ON DECK · PAIR DESKTOP FOR KEYS");
-      if (desktopConfigured(db.settings)) {
-        await syncEventsFromDesktop(db.settings, db);
-        await syncMealsFromDesktop(db.settings, db);
+      setStatus("PIP ON DECK");
+      const injectNudge = (line) => {
+        if (!line) return;
+        const last = db.chat[db.chat.length - 1];
+        if (last && last.role === "pip" && last.content === line) return;
+        db.chat.push({ role: "pip", content: line });
         persist();
+        addLog("pip", line);
+        setStatus("WAKE");
+        softRefresh();
+      };
+      const runMorning = () => {
+        fullMorningSync(db.settings)
+          .then(() => softRefresh())
+          .catch(() => {});
+      };
+      runMorning();
+      setInterval(() => {
+        if (document.hidden) return;
+        pingPresence(db.settings).then(injectNudge).catch(() => {});
+      }, 20000);
+      const cap = window.Capacitor;
+      if (cap?.Plugins?.App?.addListener) {
+        cap.Plugins.App.addListener("appStateChange", ({ isActive }) => {
+          if (!isActive) return;
+          runMorning();
+          pingPresence(db.settings).then(injectNudge).catch(() => {});
+        });
       }
-    } catch (e) {
-      setStatus(String(e.message || e).toUpperCase());
-    }
-  });
+      resolveMapCenter(db.settings).then(() => persist()).catch(() => {});
+      startWeatherWatch(
+        () => resolveMapCenter(db.settings),
+        (live) => {
+          const line = (live.outlook && live.outlook.line) || "";
+          if (!line) return;
+          const nws = (live.alerts || []).slice(0, 2).map((a) => a.event).filter(Boolean);
+          const msg = nws.length ? `${line} ${nws.join(". ")}.` : line;
+          window.__pipWxLine = msg;
+          db.chat.push({ role: "pip", content: msg });
+          persist();
+          addLog("pip", msg);
+          setStatus("WX ALERT");
+        },
+      );
+      const deferProbe = (fn) => {
+        if (typeof requestIdleCallback === "function") requestIdleCallback(fn, { timeout: 2500 });
+        else setTimeout(fn, 80);
+      };
+      deferProbe(async () => {
+        try {
+          if (desktopConfigured(db.settings)) {
+            try {
+              const keys = await pullCloudKeys(db.settings);
+              if (keys.applied) {
+                persist();
+                setStatus(`KEYS · ${keys.keyed.join(" · ").toUpperCase()}`);
+                paintBrainStrip();
+              } else if (keys.empty) {
+                setStatus("PAIRED · NO KEYS ON DESKTOP YET");
+              }
+            } catch (e) {
+              setStatus(String(e.message || e).toUpperCase());
+            }
+          }
+          const hits = await probeKeyed(db.settings);
+          db.settings.brain_health = providerHealth();
+          persist();
+          paintBrainStrip();
+          const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
+          const keyed = cloudStatus(db.settings).keyed;
+          if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
+          else if (keyed.length) setStatus("KEYS ON PHONE · PROBE WEAK");
+          else if (desktopConfigured(db.settings)) setStatus("PAIRED · TAP SYNC KEYS");
+          else setStatus("PIP ON DECK · PAIR DESKTOP");
+          if (desktopConfigured(db.settings)) {
+            await syncEventsFromDesktop(db.settings, db);
+            await syncMealsFromDesktop(db.settings, db);
+            persist();
+          }
+        } catch (e) {
+          setStatus(String(e.message || e).toUpperCase());
+        }
+      });
+    };
+
+    requireAppUnlock(db.settings)
+      .then(() => startUi())
+      .catch(() => {
+        /* keep scan overlay + retry; still mount UI underneath */
+        startUi();
+      });
   } catch (e) {
     const msg = String(e.message || e);
     $("#view").innerHTML = `<h3>PIP ERROR</h3><p class="muted">${esc(msg)}</p>`;

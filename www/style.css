@@ -412,3 +412,54 @@ body.wx-tab main { padding: 0; overflow: hidden; }
 .wx-alert.severe { color: var(--leak); border-color: var(--leak); }
 .wx-filters { display: flex; flex-wrap: wrap; gap: 0.35rem 0.55rem; margin: 0.35rem 0 0.5rem; font-size: 10px; letter-spacing: 0.12em; color: var(--muted); }
 .wx-filters select { background: var(--panel); color: var(--text); border: 1px solid var(--line); font: inherit; font-size: 10px; padding: 0.15rem 0.25rem; }
+
+/* Biometric unlock */
+body.bio-locked > *:not(#bio-scan) { visibility: hidden; }
+.bio-scan {
+  position: fixed; inset: 0; z-index: 100;
+  display: grid; place-items: center;
+  background:
+    radial-gradient(ellipse at 50% 35%, rgba(125, 255, 90, 0.12), transparent 55%),
+    linear-gradient(160deg, #050805 0%, #0a140c 45%, #061008 100%);
+}
+.bio-scan[hidden] { display: none !important; }
+.bio-scan-inner { text-align: center; padding: 1.5rem; }
+.bio-ring {
+  position: relative; width: 9.5rem; height: 9.5rem; margin: 0 auto 1.25rem;
+  border-radius: 50%;
+  border: 1px solid rgba(125, 255, 90, 0.35);
+  display: grid; place-items: center;
+  overflow: hidden;
+}
+.bio-ring-glow {
+  position: absolute; inset: -20%;
+  background: conic-gradient(from 0deg, transparent, rgba(125, 255, 90, 0.55), transparent 40%);
+  animation: bio-spin 2.4s linear infinite;
+  opacity: 0.85;
+}
+.bio-scan.on .bio-ring { box-shadow: 0 0 40px rgba(125, 255, 90, 0.25), inset 0 0 30px rgba(125, 255, 90, 0.08); }
+.bio-print { width: 3.6rem; height: 3.6rem; color: var(--phos); position: relative; z-index: 1; filter: drop-shadow(0 0 8px rgba(125, 255, 90, 0.55)); }
+.bio-scanline {
+  position: absolute; left: 8%; right: 8%; height: 2px; z-index: 2;
+  background: linear-gradient(90deg, transparent, var(--phos), transparent);
+  box-shadow: 0 0 12px var(--phos);
+  animation: bio-scan 1.6s ease-in-out infinite;
+}
+.bio-title { margin: 0; letter-spacing: 0.45em; color: var(--phos); font-size: 1.35rem; }
+.bio-sub { margin: 0.55rem 0 0; color: var(--muted); letter-spacing: 0.14em; font-size: 11px; text-transform: uppercase; }
+.bio-btn {
+  margin-top: 1.1rem; border: 1px solid var(--phos); background: transparent;
+  color: var(--phos); letter-spacing: 0.2em; padding: 0.55rem 1rem; font: inherit; font-size: 11px;
+}
+.bio-scan.ok .bio-ring { border-color: var(--phos); }
+.bio-scan.ok .bio-sub { color: var(--phos); }
+.bio-scan.bad .bio-ring { border-color: var(--leak); }
+.bio-scan.bad .bio-print { color: var(--leak); }
+.bio-scan.bad .bio-sub { color: var(--leak); }
+@keyframes bio-spin { to { transform: rotate(360deg); } }
+@keyframes bio-scan {
+  0% { top: 18%; opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { top: 78%; opacity: 0; }
+}
