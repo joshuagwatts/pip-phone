@@ -3,7 +3,7 @@
   "appName": "Pip",
   "webDir": "www",
   "android": {
-    "allowMixedContent": false,
+    "allowMixedContent": true,
     "adjustMarginsForEdgeToEdge": "disable",
     "backgroundColor": "#0a0f0a"
   },

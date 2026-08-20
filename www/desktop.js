@@ -106,21 +106,26 @@ async function pingReady(url, timeoutMs = 700) {
 async function probeDesktop(url, timeoutMs = 4000) {
   const base = normalizeUrl(url);
   if (!base) return null;
+  let lastErr = "";
   try {
     const ready = await pingReady(base, Math.min(timeoutMs, 2500));
-    if (!ready) return null;
+    if (!ready) {
+      lastErr = `no response from ${base}`;
+      const err = new Error(lastErr);
+      err.hard = true;
+      throw err;
+    }
     let st = {};
     try {
       st = await httpLanGet(`${base}/api/auth/status`, timeoutMs);
-    } catch {
-      st = {};
+    } catch (e) {
+      lastErr = String(e.message || e);
     }
     const login = await httpLanPostJson(`${base}/api/auth/login`, {}, { password: "" }, timeoutMs);
     const tok = String(login.token || login._cookie || "").trim();
     if (!tok && !login.ok) {
-      const detail = String(login.detail || "").trim();
-      if (detail) throw Object.assign(new Error(detail), { hard: true });
-      return null;
+      const detail = String(login.detail || lastErr || "login failed").trim();
+      throw Object.assign(new Error(detail), { hard: true });
     }
     return {
       url: base,
@@ -130,7 +135,9 @@ async function probeDesktop(url, timeoutMs = 4000) {
       urls: (st.urls || []).map(normalizeUrl).filter(Boolean),
     };
   } catch (e) {
-    if (e && e.hard) throw e;
+    // Surface auth/LAN problems; keep scanning on dead sockets.
+    const msg = String(e.message || e || "");
+    if (e && e.hard && /LAN|password|login|Wi-?Fi|firewall|VPN/i.test(msg)) throw e;
     return null;
   }
 }
@@ -287,18 +294,19 @@ export async function connectDesktop(settings, onProgress) {
     try {
       hit = await probeDesktop(typed, 8000);
     } catch (e) {
-      throw new Error(String(e.message || e));
+      const msg = String(e.message || e);
+      throw new Error(
+        `${msg} — OFF phone VPN · same Wi‑Fi as PC · run Open-Firewall.bat as Admin · test in phone Chrome: ${typed}/api/ready`,
+      );
     }
     if (!hit) {
-      throw new Error(
-        `can't reach ${typed} — allow Python on Windows Firewall (Private), same Wi‑Fi, desktop Pip open`,
-      );
+      throw new Error(`can't reach ${typed} — OFF phone VPN, run Open-Firewall.bat as Admin`);
     }
   } else {
     hit = await scanLan(onProgress);
     if (!hit) {
       throw new Error(
-        "scan found nothing — on desktop DATA tap COPY URL, paste into DESKTOP URL here, then CONNECT. Also allow Python firewall.",
+        "scan found nothing — desktop DATA → COPY URL → paste into DESKTOP URL → CONNECT. Or run Open-Firewall.bat as Admin.",
       );
     }
   }

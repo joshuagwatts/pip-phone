@@ -65,11 +65,19 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
       disableRedirects: false,
     };
     if (body !== undefined) {
-      req.data = body;
+      // CapacitorHttp on Android is happiest with a JSON string body.
+      req.data = typeof body === "string" ? body : JSON.stringify(body);
       req.headers["Content-Type"] = "application/json";
     }
-    const res = method === "POST" ? await http.post(req) : await http.get(req);
-    const status = res.status || 0;
+    let res;
+    try {
+      res = method === "POST" ? await http.post(req) : await http.get(req);
+    } catch (e) {
+      const err = new Error(String(e?.message || e || "native http failed"));
+      err.status = 0;
+      throw err;
+    }
+    const status = Number(res.status) || 0;
     const data =
       typeof res.data === "string"
         ? (() => {
@@ -79,7 +87,9 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
               return { raw: res.data };
             }
           })()
-        : res.data || {};
+        : res.data && typeof res.data === "object"
+          ? res.data
+          : {};
     let cookie = "";
     const hdrs = res.headers || {};
     for (const [k, v] of Object.entries(hdrs)) {
@@ -90,7 +100,7 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
     }
     if (cookie) data._cookie = cookie;
     if (!status) {
-      const err = new Error("network failed — same Wi‑Fi? desktop Pip running?");
+      const err = new Error("network failed — turn OFF phone VPN, same Wi‑Fi, run Open-Firewall.bat as Admin");
       err.status = 0;
       throw err;
     }
