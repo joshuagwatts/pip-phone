@@ -49,60 +49,92 @@ async function api(path, opts = {}) {
   return null;
 }
 
+async function reverseNominatim(lat, lon) {
+  const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1&zoom=18`;
+  try {
+    const { body } = await httpGet(url, 9000, { "Accept-Language": "en" });
+    const data = JSON.parse(body || "{}");
+    const a = data.address || {};
+    let house = "";
+    if (a.house_number && a.road) house = `${a.house_number} ${a.road}`;
+    else if (a.road) house = a.road;
+    else if (data.name) house = data.name;
+    const city = a.city || a.town || a.village || a.hamlet || "";
+    const state = a.state || a.region || "";
+    const zip = a.postcode || "";
+    const parts = [house, city, state, zip].filter(Boolean);
+    const line = parts.join(", ") || String(data.display_name || "").split(",").slice(0, 3).join(", ");
+    if (!line.trim()) return { ok: false };
+    return { ok: true, address: line, city: city || line.split(",")[0], lat, lon, source: "nominatim" };
+  } catch {
+    return { ok: false };
+  }
+}
+
 async function reverseGeocode(lat, lon) {
-  const { body } = await httpGet(
-    `https://geocoding-api.open-meteo.com/v1/reverse?latitude=${lat}&longitude=${lon}&language=en`,
-  );
-  const data = JSON.parse(body || "{}");
-  const hit = (data.results || [])[0];
-  if (!hit) return { ok: false, error: "no address" };
-  const address = [hit.name, hit.admin1, hit.country].filter(Boolean).join(", ");
-  return { ok: true, address, city: hit.name || "", lat, lon };
+  const nom = await reverseNominatim(lat, lon);
+  if (nom.ok) return nom;
+  try {
+    const { body } = await httpGet(
+      `https://geocoding-api.open-meteo.com/v1/reverse?latitude=${lat}&longitude=${lon}&language=en`,
+    );
+    const data = JSON.parse(body || "{}");
+    const hit = (data.results || [])[0];
+    if (!hit) return { ok: false, address: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon };
+    const address = [hit.name, hit.admin1, hit.country].filter(Boolean).join(", ");
+    return { ok: true, address, city: hit.name || "", lat, lon, source: "open-meteo" };
+  } catch {
+    return { ok: false, address: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon };
+  }
 }
 
 async function historicalStorms(lat, lon, days = 540) {
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(start.getDate() - Math.min(days, 730));
-  const params = new URLSearchParams({
-    latitude: lat,
-    longitude: lon,
-    start_date: start.toISOString().slice(0, 10),
-    end_date: end.toISOString().slice(0, 10),
-    daily: "weather_code,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max",
-    timezone: "auto",
-    wind_speed_unit: "mph",
-    precipitation_unit: "mm",
-  });
-  const { body } = await httpGet(`https://archive-api.open-meteo.com/v1/archive?${params}`);
-  const data = JSON.parse(body || "{}");
-  const daily = data.daily || {};
-  const times = daily.time || [];
-  const out = [];
-  for (let i = 0; i < times.length; i++) {
-    const code = parseInt((daily.weather_code || [])[i] || 0, 10);
-    const precip = parseFloat((daily.precipitation_sum || [])[i] || 0);
-    const wind = parseFloat((daily.wind_speed_10m_max || [])[i] || 0);
-    const gust = parseFloat((daily.wind_gusts_10m_max || [])[i] || 0);
-    let score = 0;
-    const reasons = [];
-    if ([95, 96, 99, 82, 65, 75].includes(code)) {
-      score += 3;
-      reasons.push(WMO[code] || "storm");
+  try {
+    const end = new Date();
+    const start = new Date(end);
+    start.setDate(start.getDate() - Math.min(days, 730));
+    const params = new URLSearchParams({
+      latitude: lat,
+      longitude: lon,
+      start_date: start.toISOString().slice(0, 10),
+      end_date: end.toISOString().slice(0, 10),
+      daily: "weather_code,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max",
+      timezone: "auto",
+      wind_speed_unit: "mph",
+      precipitation_unit: "mm",
+    });
+    const { body } = await httpGet(`https://archive-api.open-meteo.com/v1/archive?${params}`, 25000);
+    const data = JSON.parse(body || "{}");
+    const daily = data.daily || {};
+    const times = daily.time || [];
+    const out = [];
+    for (let i = 0; i < times.length; i++) {
+      const code = parseInt((daily.weather_code || [])[i] || 0, 10);
+      const precip = parseFloat((daily.precipitation_sum || [])[i] || 0);
+      const wind = parseFloat((daily.wind_speed_10m_max || [])[i] || 0);
+      const gust = parseFloat((daily.wind_gusts_10m_max || [])[i] || 0);
+      let score = 0;
+      const reasons = [];
+      if ([95, 96, 99, 82, 65, 75].includes(code)) {
+        score += 3;
+        reasons.push(WMO[code] || "storm");
+      }
+      if (Math.max(wind, gust) >= 38) {
+        score += 2;
+        reasons.push(`wind ${Math.max(wind, gust).toFixed(0)} mph`);
+      }
+      if (precip >= 25) {
+        score += 2;
+        reasons.push(`precip ${precip.toFixed(0)} mm`);
+      }
+      if (score >= 2) {
+        out.push({ date: times[i], score, label: WMO[code] || "Weather", reasons, source: "open-meteo-archive" });
+      }
     }
-    if (Math.max(wind, gust) >= 38) {
-      score += 2;
-      reasons.push(`wind ${Math.max(wind, gust).toFixed(0)} mph`);
-    }
-    if (precip >= 25) {
-      score += 2;
-      reasons.push(`precip ${precip.toFixed(0)} mm`);
-    }
-    if (score >= 2) {
-      out.push({ date: times[i], score, label: WMO[code] || "Weather", reasons, source: "open-meteo-archive" });
-    }
+    return out.sort((a, b) => b.score - a.score || b.date.localeCompare(a.date)).slice(0, 80);
+  } catch {
+    return [];
   }
-  return out.sort((a, b) => b.score - a.score || b.date.localeCompare(a.date)).slice(0, 80);
 }
 
 function parseSpcHailCsv(text, reportDay) {
@@ -279,6 +311,22 @@ async function searchNews(query, limit = 6) {
   }
 }
 
+function normalizeDossier(raw) {
+  if (!raw || raw.ok === false) return null;
+  const d = raw.dossier && typeof raw.dossier === "object" ? { ...raw.dossier, ...raw } : { ...raw };
+  if (!d.address && !d.storms && !d.hail && !d.zillow_url) return null;
+  if (!d.zillow_url && d.address) d.zillow_url = zillowUrl(d.address);
+  d.storms = d.storms || d.recent_storms || [];
+  d.hail = d.hail || [];
+  d.news = d.news || [];
+  return d;
+}
+
+function usableRemote(d) {
+  const n = normalizeDossier(d);
+  return n && (n.address || n.storms?.length || n.hail?.length || n.zillow_url);
+}
+
 async function localMapConfig(settings, center) {
   const c = center || (await resolveMapCenter(settings));
   const layerList = [...BASE_LAYERS];
@@ -294,13 +342,13 @@ async function localMapConfig(settings, center) {
   return { center: { lat: c.lat, lon: c.lon, city: c.city || settings?.city || "" }, layers: layerList };
 }
 
-async function localResearch(lat, lon, address = "", { deep = false } = {}) {
+async function localResearch(lat, lon, address = "", { deep = true } = {}) {
   const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
   const [geo, wxNow, storms, hail] = await Promise.all([
     geoP,
-    currentWeather(lat, lon),
-    historicalStorms(lat, lon, deep ? 540 : 120),
-    fetchHailReports(lat, lon, 80, deep ? 90 : 21),
+    currentWeather(lat, lon).catch(() => ({ ok: false })),
+    historicalStorms(lat, lon, deep ? 540 : 180),
+    fetchHailReports(lat, lon, 80, deep ? 90 : 45),
   ]);
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const city = geo.city || addr.split(",")[0];
@@ -315,7 +363,7 @@ async function localResearch(lat, lon, address = "", { deep = false } = {}) {
   }
   const news = [];
   if (deep) {
-    for (const q of [`hail damage "${city}"`, `hail storm "${city}"`, `severe weather "${addr}"`]) {
+    for (const q of [`hail damage "${city}"`, `hail storm "${city}"`, `severe weather "${addr}"`, `wind damage "${city}"`]) {
       for (const hit of await searchNews(q, 4)) {
         if (!news.some((n) => n.url === hit.url)) news.push(hit);
       }
@@ -345,14 +393,40 @@ export async function loadMapConfig(settings) {
   return mapConfigCache;
 }
 
-export async function researchPin(settings, lat, lon, address = "", deep = false) {
-  const remote = await api("/api/storm/research", {
-    settings,
-    method: "POST",
-    body: { lat, lon, address, deep },
-    timeout: deep ? 180000 : 45000,
-  }).catch(() => null);
-  return remote || localResearch(lat, lon, address, { deep });
+export async function researchPin(settings, lat, lon, address = "", deep = true) {
+  try {
+    const remote = await api("/api/storm/research", {
+      settings,
+      method: "POST",
+      body: { lat, lon, address, deep },
+      timeout: deep ? 180000 : 60000,
+    });
+    if (usableRemote(remote)) return normalizeDossier(remote);
+  } catch {
+    /* local fallback */
+  }
+  return localResearch(lat, lon, address, { deep });
+}
+
+export async function pinDossier(settings, lat, lon, { onPartial } = {}) {
+  const geo = await reverseGeocode(lat, lon);
+  const addr = geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const partial = {
+    ok: true,
+    address: addr,
+    lat,
+    lon,
+    zillow_url: zillowUrl(addr),
+    storms: [],
+    hail: [],
+    news: [],
+    owner_name: "",
+    owner_phone: "",
+    owner_email: "",
+  };
+  if (onPartial) onPartial(partial);
+  const full = await researchPin(settings, lat, lon, addr, true);
+  return normalizeDossier(full) || partial;
 }
 
 export async function quickPin(settings, lat, lon) {
@@ -431,11 +505,17 @@ export function renderDossier(root, data, esc, onResearch) {
   const hail = data.hail || [];
   const news = data.news || [];
   const addr = data.address || "";
+  const zurl = data.zillow_url || (addr ? zillowUrl(addr) : "");
+  const wxLine =
+    data.weather && data.weather.ok
+      ? `${Math.round(data.weather.temp_f)}°F · ${esc(data.weather.label || "Weather")}`
+      : "";
   root.innerHTML = `
     <div class="wx-dossier">
       <div class="wx-addr">${esc(addr)}</div>
+      ${wxLine ? `<div class="wx-now">${wxLine}</div>` : ""}
       <div class="wx-links">
-        ${data.zillow_url ? `<a href="${esc(data.zillow_url)}" target="_blank" rel="noopener">ZILLOW</a>` : ""}
+        ${zurl ? `<a href="${esc(zurl)}" target="_blank" rel="noopener">ZILLOW SEARCH</a>` : ""}
         ${onResearch ? `<button type="button" id="wx-deep" class="primary">DEEP RESEARCH</button>` : ""}
       </div>
       <div class="wx-contacts">

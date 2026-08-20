@@ -15,7 +15,7 @@ import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThe
 import { captureMoment, topMoments } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { listEntries, applyAllOverlays } from "./codefs.js";
-import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot } from "./wx.js";
+import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier } from "./wx.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -548,25 +548,30 @@ async function renderWx() {
 async function onWxTap(lat, lon) {
   wxState.lat = lat;
   wxState.lon = lon;
-  setStatus("PINNED · RESEARCHING…");
-  $("#wx-panel").innerHTML = `<p class="muted">Pulling storm history…</p>`;
+  setStatus("PINNED · ADDRESS…");
+  const panel = $("#wx-panel");
   try {
-    const hit = await quickPin(db.settings, lat, lon);
-    wxState.address = hit.geo?.address || "";
-    const data = await researchPin(db.settings, lat, lon, wxState.address, false);
+    const data = await pinDossier(db.settings, lat, lon, {
+      onPartial: (partial) => {
+        wxState.address = partial.address || "";
+        renderDossier(panel, partial, esc, null);
+        setStatus("PINNED · STORMS + HAIL…");
+      },
+    });
+    wxState.address = data.address || "";
     wxState.data = data;
     drawHailMarkers(data.hail);
-    renderDossier($("#wx-panel"), data, esc, async () => {
+    renderDossier(panel, data, esc, async () => {
       setStatus("DEEP RESEARCH…");
       const deep = await researchPin(db.settings, lat, lon, wxState.address, true);
       wxState.data = deep;
       drawHailMarkers(deep.hail);
-      renderDossier($("#wx-panel"), deep, esc, null);
+      renderDossier(panel, deep, esc, null);
       setStatus("DOSSIER UPDATED");
     });
     setStatus("WX DOSSIER");
   } catch (e) {
-    $("#wx-panel").innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
+    panel.innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
     setStatus("WX ERROR");
   }
 }
