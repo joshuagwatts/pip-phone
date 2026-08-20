@@ -24,13 +24,6 @@ import {
   streamCodeApply,
   consumeCodeStream,
 } from "./code.js";
-import {
-  guideEntries,
-  tryGuideCommand,
-  fetchWikiSummary,
-  searchWiki,
-  looksLikeGuideQuery,
-} from "./guide.js";
 import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier } from "./wx.js";
 import { describeChain } from "./command.js";
 import {
@@ -106,6 +99,7 @@ function selected() {
 }
 
 function render() {
+  if (tab === "guide") tab = "opp";
   document.body.classList.toggle("vibe-tab", tab === "vibe");
   document.body.classList.toggle("wx-tab", tab === "wx");
   $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
@@ -124,7 +118,6 @@ function render() {
   }
   else if (tab === "wx") renderWx();
   else if (tab === "meals") renderMeals();
-  else if (tab === "guide") renderGuide();
   else renderOpp();
 }
 
@@ -796,73 +789,6 @@ async function renderMeals() {
   });
 }
 
-function renderGuide(entry = null) {
-  document.body.classList.remove("comm");
-  const recent = guideEntries();
-  const show = entry || recent[0] || null;
-  $("#view").innerHTML = `
-    <h3>GUIDE</h3>
-    <p class="muted">Don't Panic. Live Wikipedia — the whole library, one lookup at a time. Recent reads stay on your phone.</p>
-    <div class="guide-search">
-      <input id="guide-q" placeholder="Search the Guide…" value="" />
-      <button type="button" id="guide-go" class="primary">LOOKUP</button>
-    </div>
-    <div id="guide-hit">${show ? `
-      <div class="guide-entry">
-        <h4>${esc(show.title)}</h4>
-        <p>${esc(show.extract || "")}</p>
-        ${show.url ? `<p class="muted"><a href="${esc(show.url)}" target="_blank" rel="noopener" id="guide-full">Full article on Wikipedia →</a></p>` : ""}
-      </div>` : `<p class="muted">Ask in CHAT: "what is aurora borealis" or search here.</p>`}
-    </div>
-    <h3>RECENT</h3>
-    ${recent.slice(0, 12).map((r) => `
-      <button type="button" class="opp-card" data-guide-title="${esc(r.title)}">${esc(r.title)}</button>
-    `).join("") || `<p class="muted">Nothing cached yet.</p>`}`;
-  const runSearch = async () => {
-    const q = ($("#guide-q").value || "").trim();
-    if (!q) return;
-    setStatus("GUIDE LOOKUP…");
-    try {
-      let hit = await fetchWikiSummary(q);
-      if (!hit?.extract) {
-        const picks = await searchWiki(q, 1);
-        if (picks[0]?.title) hit = await fetchWikiSummary(picks[0].title);
-      }
-      if (!hit?.extract) {
-        setStatus("NO GUIDE ENTRY");
-        return;
-      }
-      renderGuide(hit);
-      setStatus("GUIDE OK");
-    } catch (e) {
-      setStatus(String(e.message || e));
-    }
-  };
-  $("#guide-go").onclick = runSearch;
-  $("#guide-q").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); runSearch(); }
-  });
-  const full = $("#guide-full");
-  if (full) {
-    full.onclick = (e) => {
-      e.preventDefault();
-      openUrl(full.href, { system: true }).catch(() => window.open(full.href, "_blank"));
-    };
-  }
-  $("#view").querySelectorAll("[data-guide-title]").forEach((btn) => {
-    btn.onclick = async () => {
-      setStatus("GUIDE…");
-      try {
-        const hit = await fetchWikiSummary(btn.dataset.guideTitle);
-        renderGuide(hit);
-        setStatus("GUIDE OK");
-      } catch (e) {
-        setStatus(String(e.message || e));
-      }
-    };
-  });
-}
-
 async function renderWx() {
   document.body.classList.remove("comm");
   document.body.classList.add("wx-tab");
@@ -1520,37 +1446,6 @@ async function sendChat() {
     addLog("pip", "Name the color clearly — e.g. phthalo green. Or say refresh ui color / reset ui theme.");
     setStatus("THEME · NEED COLOR NAME");
     return;
-  }
-
-  if (looksLikeGuideQuery(text)) {
-    setStatus("GUIDE…");
-    const guideHit = await tryGuideCommand(text);
-    if (guideHit) {
-      addLog("pip", guideHit.reply);
-      persist();
-      if (guideHit.switchTab) {
-        tab = guideHit.switchTab;
-        render();
-      }
-      setStatus(guideHit.ok ? "GUIDE" : "GUIDE MISS");
-      if (guideHit.ok && guideHit.entry) {
-        try {
-          const { guideContextLine } = await import("./guide.js");
-          const follow = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit, db, {
-            guideContext: guideContextLine(guideHit.entry),
-          });
-          if (follow && follow !== guideHit.reply) {
-            db.chat.push({ role: "pip", content: follow });
-            rememberReply(db, follow);
-            persist();
-            addLog("pip", follow);
-          }
-        } catch {
-          /* guide text is enough */
-        }
-      }
-      return;
-    }
   }
 
   const mealHit = tryMealCommand(text, db);

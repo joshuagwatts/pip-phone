@@ -25,10 +25,6 @@ export const JOBS = {
     label: "MEALS",
     brains: ["gemini", "groq", "openrouter", "cerebras", "mistral"],
   },
-  guide: {
-    label: "GUIDE",
-    brains: ["gemini", "groq", "openrouter", "xai", "cerebras", "mistral"],
-  },
 };
 
 const CODE_HINT =
@@ -36,13 +32,10 @@ const CODE_HINT =
 const WX_HINT = /\b(hail|storm|radar|weather|nws|wind report|dossier|roof)\b/i;
 const DRAFT_HINT = /\b(apply|application|draft|resume|cover letter|bio|opp|open call)\b/i;
 const MEAL_HINT = /\b(meals?|breakfast|lunch|dinner|snack|grocery|macros?|kcal|vegan|vegetarian|what to eat|meal plan)\b/i;
-const GUIDE_HINT =
-  /^(?:what(?:'s| is| are)|who(?:'s| is| are)|tell me about|define|explain|lookup|look up|wiki|guide)/i;
 const NOT_CHAT_JOB = /\b(apply|application|hail|storm|zillow|deadline|cover letter)\b/i;
 
 export function pickJob(text) {
   const t = String(text || "");
-  if (GUIDE_HINT.test(t.trim())) return "guide";
   if (MEAL_HINT.test(t) && !DRAFT_HINT.test(t)) return "meal";
   if (WX_HINT.test(t) && !DRAFT_HINT.test(t)) return "wx";
   if (CODE_HINT.test(t)) return "code";

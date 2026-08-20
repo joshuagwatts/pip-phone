@@ -334,8 +334,17 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     }
   }
   const job = pickJob(text);
-  let context = extras.guideContext || "";
-  if (!context && db) {
+  let context = extras.webContext || extras.guideContext || "";
+  if (!context) {
+    try {
+      const { webBrief } = await import("./web.js");
+      emit("WEB…");
+      context = await webBrief(text);
+    } catch {
+      /* optional */
+    }
+  }
+  if (db) {
     try {
       const { mealBrief } = await import("./meals.js");
       if (job === "meal" || /\b(meals?|breakfast|lunch|dinner)\b/i.test(text)) {

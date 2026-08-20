@@ -4,7 +4,7 @@ import { isDenverFallback, validCoord } from "../www/geo.js";
 import { substanceScore } from "../www/memory.js";
 import { isBlank, FALLBACK } from "../www/crew.js";
 import { looksLikeMealRequest } from "../www/meals.js";
-import { extractGuideQuery, guideEntries } from "../www/guide.js";
+import { wantsWeb } from "../www/web.js";
 import { getCodeChat } from "../www/code.js";
 
 function assert(cond, msg) {
@@ -24,6 +24,7 @@ assert(validCoord(30.26, -97.74), "valid coord");
 assert(pickJob("write a cover letter") === "boost", "boost job");
 assert(pickJob("hey") === "life", "life job");
 assert(pickJob("fix this javascript bug") === "code", "code job");
+assert(pickJob("what is the aurora borealis") === "life", "web asks are chat");
 assert(JSON.stringify(orderFor("life", ["groq", "gemini"], { groq: { ok: false }, gemini: { ok: true } })) === JSON.stringify(["gemini", "groq"]), "health order");
 assert(skipLocalModel({ brain_pin: "auto" }) === true, "skip qwen");
 assert(skipLocalModel({ brain_pin: "local" }) === false, "allow qwen pin");
@@ -35,9 +36,9 @@ assert(substanceScore("I want to build Holowatts because live rooms saved me") >
 assert(!isBlank("Pip is happy to help."), "voice not blank");
 assert(/happy to help/i.test(FALLBACK), "fallback greeting");
 assert(looksLikeMealRequest("plan my meals today"), "meal detect");
-assert(extractGuideQuery("what is the aurora borealis") === "aurora borealis", "guide query");
+assert(wantsWeb("what is the aurora borealis"), "web want");
+assert(!wantsWeb("apply to this open call"), "web skip apply");
 await import("../www/oppdesk.js");
 await import("../www/morning.js");
 assert(typeof getCodeChat === "function", "code chat");
-assert(Array.isArray(guideEntries()), "guide cache");
-console.log("ok", 24);
+console.log("ok", 25);

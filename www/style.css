@@ -188,12 +188,6 @@ nav.tabs::-webkit-scrollbar { display: none; }
 nav.tabs button { flex: 0 0 auto; min-width: 3rem; border: 0; border-right: 1px solid var(--line); padding: 0.85rem 0.45rem; min-height: var(--tab-h); font-size: 10px; letter-spacing: 0.1em; }
 nav.tabs button:last-child { border-right: 0; }
 .meal-ings { margin: 0.15rem 0 0.5rem; font-size: 11px; }
-.guide-entry { border: 1px solid var(--line); background: var(--panel); padding: 0.75rem; margin: 0 0 0.65rem; }
-.guide-entry h4 { margin: 0 0 0.35rem; color: var(--phos); font-size: 12px; letter-spacing: 0.12em; }
-.guide-entry p { margin: 0; font-size: 13px; line-height: 1.5; }
-.guide-entry a { color: var(--amber); }
-.guide-search { display: flex; gap: 0.35rem; margin-bottom: 0.65rem; }
-.guide-search input { flex: 1; }
 .row { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
 .row .tiny { font-size: 10px; padding: 0.1rem 0.35rem; }
 footer.status {
