@@ -240,23 +240,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   pendingTheme = null;
   const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
 
-  if (desktopConfigured(settings)) {
-    try {
-      emit("DESKTOP GPU");
-      const user = [...messages].reverse().find((m) => m.role === "user");
-      const out = await desktopChat(settings, String((user && user.content) || ""));
-      const cleaned = sanitizeReply(out.text);
-      if (cleaned && !isBlank(cleaned)) {
-        setBrain("desktop", out.model);
-        if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
-        return cleaned;
-      }
-      errors.push("desktop: blank reply");
-    } catch (e) {
-      errors.push(`desktop: ${String(e.message || e).slice(0, 80)}`);
-    }
-  }
-
+  /* Prefer phone-local keys → hit clouds directly. Desktop GPU only when no cloud key answers. */
   const cloudOk = isChat ? chatCloudEnabled(settings) : cloud.leaky && cloud.keyed.length;
   if (cloudOk) {
     try {
@@ -278,6 +262,23 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     }
   }
 
+  if (desktopConfigured(settings)) {
+    try {
+      emit("DESKTOP GPU");
+      const user = [...messages].reverse().find((m) => m.role === "user");
+      const out = await desktopChat(settings, String((user && user.content) || ""));
+      const cleaned = sanitizeReply(out.text);
+      if (cleaned && !isBlank(cleaned)) {
+        setBrain("desktop", out.model);
+        if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
+        return cleaned;
+      }
+      errors.push("desktop: blank reply");
+    } catch (e) {
+      errors.push(`desktop: ${String(e.message || e).slice(0, 80)}`);
+    }
+  }
+
   if (!skipLocalModel(settings)) {
     try {
       emit("QWEN");
@@ -287,7 +288,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     }
   }
 
-  throw new Error(errors.join(" · ") || "no keyed API answered — paste Groq/Gemini/OpenRouter on DATA");
+  throw new Error(errors.join(" · ") || "no keyed API answered — pair desktop to sync keys, or paste keys in DATA");
 }
 
 export async function sparkLine(recent = [], stanceLabel = "PIP") {

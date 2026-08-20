@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme } from "./brain.js";
-import { probeProvider, probeKeyed, providerHealth, PROVIDERS } from "./cloud.js";
-import { desktopConfigured, desktopLogin, desktopStatus, findAndPair, pairAtUrl } from "./desktop.js";
+import { probeKeyed, providerHealth } from "./cloud.js";
+import { desktopConfigured, desktopLogin, desktopStatus, findAndPair } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets } from "./biometric.js";
 import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
@@ -51,7 +51,6 @@ import {
   setOppStage,
   tryOppCommand,
 } from "./oppdesk.js";
-import { openProtonVpn, vpnSystemActive, setKeepAlive } from "./proton.js";
 import { startBackground, toggleKeepAlive } from "./background.js";
 import {
   morningStatus,
@@ -62,6 +61,7 @@ import {
   getBriefing,
   pingPresence,
 } from "./morning.js";
+import { pullCloudKeys, keyedSummary } from "./keysync.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -959,12 +959,13 @@ async function renderCode() {
 
 function renderData() {
   const s = db.settings;
-  const cloud = cloudStatus(s);
   const paired = desktopConfigured(s);
   const securePosture = privacyOn(s);
+  const keyed = keyedSummary(s);
+  const synced = s.keys_synced_at ? ` · synced ${String(s.keys_synced_at).slice(0, 16).replace("T", " ")}` : "";
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">Crew in your pocket. KIT is you. OPP is the job. CHAT routes: desktop GPU → all keyed clouds → on-device Qwen. Same Pip voice on every brain.</p>
+    <p class="muted">Pair once → keys copy onto this phone → CHAT hits the clouds directly. Desktop stays for morning/opps/GPU fallback.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -972,33 +973,22 @@ function renderData() {
     <div class="field"><span>HONESTY ${esc(s.honesty)}</span>
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
-    <h3>REMOTE DESKTOP</h3>
-    <p class="muted">Pair to your PC for GPU/Ollama. Same Wi‑Fi, or off-network via Tailscale / WireGuard. Desktop Pip DATA → password + Phone LAN + VPN mode → copy a URL here.</p>
+    <h3>DESKTOP</h3>
+    <p class="muted">Same Wi‑Fi: Desktop Pip → DATA → set password → TURN ON LAN → FIND + PAIR here. Or paste the LAN URL and PAIR.</p>
     <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="from desktop DATA → PHONE" autocomplete="off" /></div>
-    <h3>PROTON VPN</h3>
-    <p class="muted">Not built inside Pip — connect the Proton VPN app, keep it running in background. Pip detects the system VPN and routes hunt/scrape/chat through it automatically. Pair desktop via VPN URL below (Tailscale/WG still best for reaching home PC).</p>
-    <div class="actions">
-      <button type="button" id="proton-open">OPEN PROTON VPN</button>
-      <button type="button" id="proton-check">CHECK VPN</button>
-    </div>
-    <p class="muted" id="proton-msg">${s.keepalive ? "Keepalive on — Pip stays ready while VPN runs." : "Enable keepalive to sync opps in background."}</p>
-    <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> KEEP PIP ALIVE (background sync)</label>
-    <div class="field"><span>PROTON / VPN DESKTOP URL</span><input id="set-proton-url" value="${esc(s.proton_url || s.vpn_url || "")}" placeholder="http://your-pc:7420 when on VPN" /></div>
-    <div class="field"><span>VPN URL</span><input id="set-vurl" value="${esc(s.vpn_url || "")}" placeholder="http://100.x.x.x:7420 or http://10.8.0.1:7420" /></div>
-    <div class="field"><span>TAILSCALE HOST</span><input id="set-vhost" value="${esc(s.vpn_host || "")}" placeholder="optional · mypc.tail-scale.ts.net" /></div>
+    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.x.x:7420" /></div>
     <div class="actions">
       <button type="button" id="desk-find" class="primary">FIND + PAIR</button>
-      <button type="button" id="desk-vpn">PAIR VPN URL</button>
       <button type="button" id="desk-pair">${paired ? "RE-PAIR" : "PAIR"}</button>
+      <button type="button" id="desk-keys">SYNC KEYS</button>
       <button type="button" id="desk-test">TEST</button>
       <button type="button" id="desk-clear">FORGET</button>
     </div>
-    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="auto-filled by FIND" /></div>
-    <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}` : "Not paired."}</p>
-    <div class="field"><span>VPN NOTES</span><input id="set-vpn" value="${esc(s.vpn_note || "")}" placeholder="WireGuard profile name, backup URLs…" /></div>
+    <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}${synced}` : "Not paired."}</p>
+    <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> BACKGROUND SYNC (opps + keys when paired)</label>
     <h3>BRAIN</h3>
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
-    <p class="muted">Green = live · amber = keyed · red = down. CHAT uses every keyed API even in SECURE. Pin LOCAL only if you want on-device Qwen — that model can crash the phone.</p>
+    <p class="muted">${keyed.length ? `On this phone: ${keyed.join(" · ").toUpperCase()}.` : "No keys yet — pair desktop and tap SYNC KEYS."} CHAT uses these APIs from the phone. Pin LOCAL only for on-device Qwen.</p>
     <div class="field"><span>PIN</span>
       <select id="brain-pin">
         ${["auto", "local", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
@@ -1008,22 +998,18 @@ function renderData() {
         }).join("")}
       </select>
     </div>
-    ${securePosture ? `<p class="muted">OPP/CODE stay on-device while SECURE. CHAT still hits keyed clouds shown in the strip.</p>` : `<p class="muted">LEAKY is on. PIN can lock one cloud brain. Chat prefers desktop when paired.</p>`}
-    <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="optional" autocomplete="off" /></div>
-    <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="optional" autocomplete="off" /></div>
-    <div class="field"><span>CEREBRAS</span><input id="set-cerebras" type="password" value="${esc(s.cerebras)}" placeholder="optional" autocomplete="off" /></div>
-    <div class="field"><span>MISTRAL</span><input id="set-mistral" type="password" value="${esc(s.mistral)}" placeholder="optional" autocomplete="off" /></div>
-    <div class="field"><span>GEMINI</span><input id="set-gemini" type="password" value="${esc(s.gemini)}" placeholder="pin-only · optional" autocomplete="off" /></div>
-    <div class="field"><span>GROK / XAI</span><input id="set-xai" type="password" value="${esc(s.xai)}" placeholder="pin-only · grok-3-mini" autocomplete="off" /></div>
-    <div class="actions">
-      <button type="button" id="probe-grok">PROBE GROK</button>
-      <button type="button" id="probe-groq">PROBE GROQ</button>
-    </div>
+    ${securePosture ? `<p class="muted">SECURE: OPP/CODE stay on-device. CHAT still uses keyed clouds on this phone.</p>` : `<p class="muted">LEAKY: cloud unlocked for OPP/CODE too.</p>`}
+    <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="synced from desktop" autocomplete="off" /></div>
+    <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="synced from desktop" autocomplete="off" /></div>
+    <div class="field"><span>CEREBRAS</span><input id="set-cerebras" type="password" value="${esc(s.cerebras)}" placeholder="synced from desktop" autocomplete="off" /></div>
+    <div class="field"><span>MISTRAL</span><input id="set-mistral" type="password" value="${esc(s.mistral)}" placeholder="synced from desktop" autocomplete="off" /></div>
+    <div class="field"><span>GEMINI</span><input id="set-gemini" type="password" value="${esc(s.gemini)}" placeholder="synced from desktop" autocomplete="off" /></div>
+    <div class="field"><span>GROK / XAI</span><input id="set-xai" type="password" value="${esc(s.xai)}" placeholder="synced from desktop" autocomplete="off" /></div>
     <h3>LOCK</h3>
     <p class="muted">Require biometric unlock before opening keys or pairing. ${biometricAvailable() ? "Sensor available on this device." : "No sensor — lock is a soft gate."}</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
     <h3>UI THEME</h3>
-    <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. CHAT: "phthalo green" or "reset ui theme". Phone does not edit code files — only CSS variables.</p>
+    <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. CHAT: "phthalo green" or "reset ui theme".</p>
     <div class="actions">
       <button type="button" id="theme-reset" class="primary">RESET THEME</button>
     </div>
@@ -1047,32 +1033,31 @@ function renderData() {
     db.settings.gemini = $("#set-gemini").value.trim();
     db.settings.xai = $("#set-xai").value.trim();
     db.settings.desktop_url = $("#set-durl").value.trim();
-    db.settings.vpn_url = ($("#set-vurl") && $("#set-vurl").value.trim()) || "";
-    db.settings.proton_url = ($("#set-proton-url") && $("#set-proton-url").value.trim()) || "";
-    db.settings.vpn_host = ($("#set-vhost") && $("#set-vhost").value.trim()) || "";
     db.settings.biometric_lock = Boolean($("#set-bio").checked);
-    db.settings.vpn_note = $("#set-vpn").value.trim();
     db.settings.keepalive = Boolean($("#set-keepalive")?.checked);
     persist();
   };
 
-  const protonOpen = $("#proton-open");
-  if (protonOpen) protonOpen.onclick = async () => {
-    await openProtonVpn();
-    setStatus("PROTON VPN");
+  const afterPair = async () => {
+    setStatus("SYNCING KEYS…");
+    try {
+      const out = await pullCloudKeys(db.settings);
+      persist();
+      setStatus(out.applied ? `KEYS · ${out.keyed.join(" · ").toUpperCase()}` : "PAIRED · NO KEYS ON DESKTOP");
+      renderPrivacy();
+      paintBrainStrip();
+      if (tab === "data") renderData();
+    } catch (e) {
+      setStatus(`PAIRED · KEY SYNC FAILED · ${String(e.message || e).slice(0, 40)}`);
+      renderPrivacy();
+    }
   };
-  const protonCheck = $("#proton-check");
-  if (protonCheck) protonCheck.onclick = async () => {
-    const on = await vpnSystemActive();
-    const el = $("#proton-msg");
-    if (el) el.textContent = on ? "VPN active — hunt and sync use the tunnel." : "No system VPN detected. Open Proton and connect.";
-    setStatus(on ? "VPN ON" : "VPN OFF");
-  };
+
   const keepEl = $("#set-keepalive");
   if (keepEl) keepEl.onchange = async () => {
     await toggleKeepAlive(db, keepEl.checked, persist);
     startBackground(db, { persist, setStatus, softRefresh });
-    setStatus(keepEl.checked ? "KEEPALIVE ON" : "KEEPALIVE OFF");
+    setStatus(keepEl.checked ? "BACKGROUND ON" : "BACKGROUND OFF");
   };
 
   $("#data-save").onclick = () => {
@@ -1100,7 +1085,7 @@ function renderData() {
       grabSettings();
       const pass = ($("#set-dpass").value || "").trim();
       if (!db.settings.desktop_url) {
-        setStatus("FIND DESKTOP OR SET URL");
+        setStatus("SET DESKTOP URL OR FIND");
         return;
       }
       setStatus("PAIRING…");
@@ -1109,9 +1094,7 @@ function renderData() {
         db.settings.desktop_token = out.token || "loopback";
         db.settings.desktop_paired = true;
         persist();
-        $("#desk-msg").textContent = `Paired · ${db.settings.desktop_url}`;
-        setStatus("DESKTOP PAIRED");
-        renderPrivacy();
+        await afterPair();
       } catch (e) {
         setStatus(String(e.message || e));
       }
@@ -1131,47 +1114,33 @@ function renderData() {
         db.settings.desktop_url = out.url;
         db.settings.desktop_token = out.token || "loopback";
         db.settings.desktop_paired = true;
-        if (!db.settings.vpn_url && out.via && out.via !== out.url) db.settings.vpn_url = out.via;
         persist();
         $("#set-durl").value = out.url;
-        $("#desk-msg").textContent = `Paired · ${out.url}${out.vpn ? " · VPN" : ""}`;
-        setStatus("DESKTOP FOUND + PAIRED");
-        renderPrivacy();
+        await afterPair();
       } catch (e) {
         setStatus(String(e.message || e));
       }
     }).catch((e) => setStatus(String(e.message || e)));
   };
 
-  const deskVpn = $("#desk-vpn");
-  if (deskVpn) {
-    deskVpn.onclick = () => {
-      guardSecrets(db.settings, async () => {
-        grabSettings();
-        const pass = ($("#set-dpass").value || "").trim();
-        const url = ($("#set-vurl").value || "").trim();
-        if (!pass || !url) {
-          setStatus("NEED PASSWORD + VPN URL");
-          return;
-        }
-        setStatus("PAIRING VPN…");
-        try {
-          const out = await pairAtUrl(db.settings, pass, url, (msg) => setStatus(msg));
-          db.settings.desktop_url = out.url;
-          db.settings.desktop_token = out.token || "loopback";
-          db.settings.desktop_paired = true;
-          db.settings.vpn_url = url;
-          persist();
-          $("#set-durl").value = out.url;
-          $("#desk-msg").textContent = `Paired via VPN · ${out.url}`;
-          setStatus("VPN PAIRED");
-          renderPrivacy();
-        } catch (e) {
-          setStatus(String(e.message || e));
-        }
-      }).catch((e) => setStatus(String(e.message || e)));
-    };
-  }
+  $("#desk-keys").onclick = () => {
+    guardSecrets(db.settings, async () => {
+      grabSettings();
+      if (!desktopConfigured(db.settings)) {
+        setStatus("PAIR DESKTOP FIRST");
+        return;
+      }
+      setStatus("SYNCING KEYS…");
+      try {
+        const out = await pullCloudKeys(db.settings);
+        persist();
+        setStatus(out.applied ? `KEYS · ${out.keyed.join(" · ").toUpperCase()}` : "NO KEYS ON DESKTOP");
+        renderData();
+      } catch (e) {
+        setStatus(String(e.message || e).toUpperCase());
+      }
+    }).catch((e) => setStatus(String(e.message || e)));
+  };
 
   $("#desk-test").onclick = () => {
     grabSettings();
@@ -1182,9 +1151,8 @@ function renderData() {
         return;
       }
       const model = (st.ollama && st.ollama.using) || "ollama";
-      const vpn = st.phone_vpn ? ` · VPN ${st.vpn_mode || "on"}` : "";
-      setStatus(`DESKTOP OK · ${model}${vpn}`);
-      $("#desk-msg").textContent = `Online · auth ${st.auth ? "yes" : "no"} · ${model}${vpn}`;
+      setStatus(`DESKTOP OK · ${model}`);
+      $("#desk-msg").textContent = `Online · auth ${st.auth ? "yes" : "no"} · ${model}${synced}`;
     });
   };
 
@@ -1196,16 +1164,6 @@ function renderData() {
     updateBrainChip();
     render();
   };
-
-  const runProbe = (id) => {
-    grabSettings();
-    setStatus(`PROBING ${id.toUpperCase()}…`);
-    probeProvider(db.settings, id).then((r) => {
-      setStatus(r.ok ? `${id.toUpperCase()} OK` : (r.error || "PROBE FAILED"));
-    });
-  };
-  $("#probe-grok").onclick = () => runProbe("xai");
-  $("#probe-groq").onclick = () => runProbe("groq");
 
   const upd = $("#pip-update");
   if (upd) {

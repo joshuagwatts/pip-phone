@@ -52,6 +52,8 @@ function blank() {
       vpn_note: "",
       proton_url: "",
       keepalive: false,
+      keys_synced_at: "",
+      keys_synced_count: 0,
       ui_theme: null,
       ui_theme_name: "",
       brain_health: {},

@@ -40,5 +40,6 @@ assert(wantsWeb("what is the aurora borealis"), "web want");
 assert(!wantsWeb("apply to this open call"), "web skip apply");
 await import("../www/oppdesk.js");
 await import("../www/morning.js");
+await import("../www/keysync.js");
 assert(typeof getCodeChat === "function", "code chat");
-console.log("ok", 25);
+console.log("ok", 26);

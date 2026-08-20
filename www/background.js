@@ -1,8 +1,9 @@
-/** Background sync while Proton (or any VPN) runs. */
+/** Background sync — opps, morning, and cloud keys from desktop. */
 import { desktopConfigured } from "./desktop.js";
 import { fullOppSync, fetchOppDigest } from "./oppdesk.js";
 import { fullMorningSync } from "./morning.js";
-import { vpnSystemActive, setKeepAlive } from "./proton.js";
+import { pullCloudKeys } from "./keysync.js";
+import { setKeepAlive } from "./proton.js";
 
 let timer = null;
 let watching = false;
@@ -13,8 +14,13 @@ export function startBackground(db, { persist, render, setStatus, softRefresh })
     if (!db?.settings) return;
     try {
       await fullMorningSync(db.settings).catch(() => {});
-      softRefresh?.();
       if (desktopConfigured(db.settings)) {
+        try {
+          const keys = await pullCloudKeys(db.settings);
+          if (keys.applied) persist?.();
+        } catch {
+          /* keys optional if offline */
+        }
         const out = await fullOppSync(db.settings, db);
         if (out.pushed || out.pulled) {
           persist?.();
@@ -24,6 +30,7 @@ export function startBackground(db, { persist, render, setStatus, softRefresh })
         }
         await fetchOppDigest(db.settings, db);
       }
+      softRefresh?.();
     } catch {
       /* keep watching */
     }
