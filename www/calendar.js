@@ -93,7 +93,7 @@ export function renderCalendar(root, db, state, { esc, onChange, persist }) {
             <span class="cal-ev-title">${esc(e.title)}</span>
             ${e.note ? `<p class="muted cal-note">${esc(e.note)}</p>` : ""}
             <button type="button" class="cal-del" data-del="${esc(e.id)}">×</button>
-          </div>`).join("") : `<p class="muted">Nothing on the books. Add one below or tell Pip in COMM.</p>`}
+          </div>`).join("") : `<p class="muted">Nothing on the books. Add one below or tell Pip in CHAT.</p>`}
       </div>
       <form class="cal-add" id="cal-add">
         <input name="title" placeholder="Event title" required />

@@ -19,6 +19,8 @@ export const SHOTS = [
   { role: "assistant", content: "Then rest like it counts. After that, one small thing. The days compound." },
   { role: "user", content: "motivate me" },
   { role: "assistant", content: "You already opened the phone. Hunt or draft. That's the whole religion." },
+  { role: "user", content: "refresh the ui color" },
+  { role: "assistant", content: "Re-applied your saved palette. Name a color if you wanted a change." },
   { role: "user", content: "you sound like a chatbot" },
   { role: "assistant", content: "Then I slipped. Ask it again — I'll stay Pip." },
 ];
@@ -40,7 +42,7 @@ export function talkSystem(operator, humor, honesty, kit) {
     `Humor ${n}/100 (${humorBand(n)}). Honesty ${Number(honesty) || 90}/100.`,
     `Operator: ${name}.${one ? " " + String(one).slice(0, 180) : ""}`,
     "This turn is conversation, not a ticket. Stay Pip. Inspire without a speech.",
-    "UI color tweaks: theme engine in COMM (phthalo green, reset ui theme). Source edits: CODE tab — read/write www files. Never claim you edited files unless CODE tools ran.",
+    "UI colors run through the theme engine — not you. Never claim you changed colors unless the engine already applied them. Refresh/repaint requests: re-apply saved palette or ask for a color name. No motivational filler on theme turns.",
     CREW_LOCK,
   ].join("\n");
 }

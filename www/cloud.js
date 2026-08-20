@@ -89,7 +89,32 @@ function modelFor(prov, lane) {
   return lane === "boost" ? prov.boost : prov.life;
 }
 
-/** Phone COMM can use cloud when LEAKY — unlike desktop, Grok is allowed for talk if pinned. */
+/** CHAT uses every keyed provider — including Gemini/Grok — best model first. */
+const CHAT_ORDER = ["gemini", "groq", "openrouter", "xai", "cerebras", "mistral"];
+
+export function chatCloudEnabled(settings) {
+  return keyedProviders(settings).length > 0;
+}
+
+export function chatChain(settings) {
+  const pin = brainPin(settings);
+  const out = [];
+
+  if (pin !== "auto" && pin !== "local") {
+    const picked = PROVIDERS.find((p) => p.id === pin);
+    if (picked && providerKey(settings, picked)) out.push(picked);
+    return out;
+  }
+
+  for (const id of CHAT_ORDER) {
+    const prov = PROVIDERS.find((p) => p.id === id);
+    if (!prov || !providerKey(settings, prov)) continue;
+    out.push(prov);
+  }
+  return out;
+}
+
+/** Phone CHAT can use cloud whenever keys exist — OPP/CODE still respect LEAKY via chain(). */
 export function chain(settings, lane = "life") {
   if (privacyOn(settings)) return [];
   const pin = brainPin(settings);
@@ -149,6 +174,20 @@ export async function cloudCompleteTools(settings, messages, tools, lane = "boos
     }
   }
   throw new Error(errors.join(" · ") || "CODE needs LEAKY + a cloud key, or pair desktop for GPU code edits");
+}
+
+export async function chatComplete(settings, messages, temperature = 0.7, maxTokens = 1024) {
+  const errors = [];
+  for (const prov of chatChain(settings)) {
+    const key = providerKey(settings, prov);
+    if (!key) continue;
+    try {
+      return await openaiOnce(prov, key, modelFor(prov, "life"), messages, temperature, maxTokens);
+    } catch (e) {
+      errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
+    }
+  }
+  throw new Error(errors.join(" · ") || "no cloud brain keyed");
 }
 
 export async function cloudComplete(settings, messages, lane = "life", temperature = 0.7, maxTokens = 400) {

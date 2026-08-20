@@ -70,7 +70,9 @@ const NAMED = {
 };
 
 const THEME_CMD =
-  /\b(change|make|set|paint|turn|switch|go|shift|recolor|recolour|theme)\b.{0,40}\b(ui|theme|color|colour|colors|colours|background|bg|accent|phos|phosphor|palette|look|aesthetic|app|interface|screen)\b|\b(ui|theme|palette|interface|app)\b.{0,20}\b(to|as|→)\b|\b(phthalo|phalo|phosphor|terminal|matrix)\b.{0,12}\b(green|blue)\b|\bmake (it|everything|the app|this)\b.{0,24}\b(green|blue|phthalo|phalo|phosphor|cobalt|rose|teal|amber|red)\b/i;
+  /\b(change|make|set|paint|turn|switch|go|shift|recolor|recolour|theme|refresh|reload|reapply|update|fix|sync)\b.{0,40}\b(ui|theme|color|colour|colors|colours|background|bg|accent|phos|phosphor|palette|look|aesthetic|app|interface|screen)\b|\b(ui|theme|palette|interface|app)\b.{0,20}\b(to|as|→)\b|\b(phthalo|phalo|phosphor|terminal|matrix)\b.{0,12}\b(green|blue)\b|\bmake (it|everything|the app|this)\b.{0,24}\b(green|blue|phthalo|phalo|phosphor|cobalt|rose|teal|amber|red)\b/i;
+const REFRESH_CMD =
+  /\b(refresh|reload|reapply|update|fix|sync)\b.{0,32}\b(ui|theme|color|colour|colors|colours|palette|look|accent|phos|phosphor|interface|screen|app)\b|\b(ui|theme|color|palette|colours|colors)\b.{0,16}\b(refresh|reload|reapply|fix)\b/i;
 const RESET_CMD =
   /\b(reset|default|restore|undo|fix)\b.{0,24}\b(ui|theme|color|colour|palette|colors|green|phosphor)\b|\b(back to|return to)\b.{0,16}\b(default|green|phosphor)\b/i;
 
@@ -225,10 +227,32 @@ function labelHint(text) {
 export function looksLikeThemeRequest(text) {
   const t = String(text || "").trim();
   if (!t) return false;
-  if (RESET_CMD.test(t) || THEME_CMD.test(t)) return true;
+  if (RESET_CMD.test(t) || REFRESH_CMD.test(t) || THEME_CMD.test(t)) return true;
   if (/\b(phthalo|phalo)\s+(green|blue)\b/i.test(t)) return true;
   if (/\b(color|colour|theme|ui)\b/i.test(t) && resolveColor(t)) return true;
   return false;
+}
+
+function refreshStoredTheme(settings) {
+  const name = settings.ui_theme_name || "default";
+  const stored = settings?.ui_theme;
+  if (!stored || typeof stored !== "object" || !stored.phos) {
+    resetTheme(settings);
+    return {
+      ok: true,
+      theme: DEFAULT_THEME,
+      name: "default",
+      reply: "No custom theme saved — phosphor green default is on.",
+    };
+  }
+  const theme = getStoredTheme(settings);
+  applyTheme(theme);
+  return {
+    ok: true,
+    theme,
+    name,
+    reply: `Re-applied ${name} (${theme.phos}). Name a color to change it.`,
+  };
 }
 
 /** Returns { ok, reply, theme, name } or null if not a theme command. */
@@ -239,23 +263,26 @@ export function tryThemeCommand(text, settings) {
     const theme = resetTheme(settings);
     return { ok: true, theme, name: "default", reply: "Back to phosphor green default. Cleared the bad palette." };
   }
-  if (!looksLikeThemeRequest(t)) return null;
-  const color = resolveColor(t);
-  if (!color) {
+  if (looksLikeThemeRequest(t) && resolveColor(t)) {
+    const color = resolveColor(t);
+    const theme = deriveFromAccent(color);
+    const label = labelHint(t) || color;
+    saveTheme(settings, theme, label);
+    applyTheme(theme);
     return {
-      ok: false,
-      reply: "Name a color — phthalo green, cobalt, rose, or #0d4f3c. Say reset ui theme to undo.",
+      ok: true,
+      theme,
+      name: label,
+      reply: `Theme applied: ${label} (${theme.phos}). Tap DATA → RESET THEME if it looks wrong.`,
     };
   }
-  const theme = deriveFromAccent(color);
-  const label = labelHint(t) || color;
-  saveTheme(settings, theme, label);
-  applyTheme(theme);
+  if (REFRESH_CMD.test(t)) {
+    return refreshStoredTheme(settings);
+  }
+  if (!looksLikeThemeRequest(t)) return null;
   return {
-    ok: true,
-    theme,
-    name: label,
-    reply: `Theme applied: ${label} (${theme.phos}). Tap DATA → RESET THEME if it looks wrong.`,
+    ok: false,
+    reply: "Name a color — phthalo green, cobalt, rose, or #0d4f3c. Say reset ui theme to undo.",
   };
 }
 

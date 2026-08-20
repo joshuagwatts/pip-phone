@@ -418,7 +418,7 @@ function renderToday() {
     if (moments.length) {
       strip.innerHTML = `<h3>YOUR STORY</h3>${moments.map((m) => `<p class="story-line">${esc(m.content)}</p>`).join("")}`;
     } else {
-      strip.innerHTML = `<p class="muted">Substantive COMM lines stick here — goals, origin, why you make things. Not "bug again."</p>`;
+      strip.innerHTML = `<p class="muted">Substantive CHAT lines stick here — goals, origin, why you make things. Not "bug again."</p>`;
     }
   }
   paintCalendar();
@@ -669,7 +669,7 @@ function renderData() {
   const securePosture = privacyOn(s);
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">Crew in your pocket. KIT is you. OPP is the job. COMM routes: desktop GPU → cloud (LEAKY) → on-device Qwen.</p>
+    <p class="muted">Crew in your pocket. KIT is you. OPP is the job. CHAT routes: desktop GPU → all keyed clouds → on-device Qwen. Same Pip voice on every brain.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -718,7 +718,7 @@ function renderData() {
     <p class="muted">Require biometric unlock before opening keys or pairing. ${biometricAvailable() ? "Sensor available on this device." : "No sensor — lock is a soft gate."}</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
     <h3>UI THEME</h3>
-    <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. COMM: "phthalo green" or "reset ui theme". Phone does not edit code files — only CSS variables.</p>
+    <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. CHAT: "phthalo green" or "reset ui theme". Phone does not edit code files — only CSS variables.</p>
     <div class="actions">
       <button type="button" id="theme-reset" class="primary">RESET THEME</button>
     </div>
@@ -1082,7 +1082,7 @@ async function sendChat() {
   }
 
   if (looksLikeThemeRequest(text)) {
-    addLog("pip", "Name the color clearly — e.g. phthalo green. Or say reset ui theme.");
+    addLog("pip", "Name the color clearly — e.g. phthalo green. Or say refresh ui color / reset ui theme.");
     setStatus("THEME · NEED COLOR NAME");
     return;
   }

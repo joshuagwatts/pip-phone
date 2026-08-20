@@ -1,5 +1,5 @@
 import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS } from "./crew.js";
-import { cloudComplete, cloudStatus } from "./cloud.js";
+import { chatChain, chatComplete, chatCloudEnabled, cloudComplete, cloudStatus } from "./cloud.js";
 import { desktopChat, desktopConfigured } from "./desktop.js";
 import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
@@ -235,22 +235,8 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   track(onProgress);
   const errors = [];
   const cloud = cloudStatus(settings);
+  const isChat = lane === "life";
   pendingTheme = null;
-
-  if (cloud.leaky && cloud.pin === "xai" && cloud.grok) {
-    try {
-      emit("GROK");
-      const out = await cloudComplete(settings, messages, lane, temperature, maxTokens);
-      const cleaned = sanitizeReply(out.text);
-      if (cleaned && !isBlank(cleaned)) {
-        setBrain(out.provider, out.model);
-        return cleaned;
-      }
-      errors.push(`${out.provider}: blank reply`);
-    } catch (e) {
-      errors.push(String(e.message || e).slice(0, 100));
-    }
-  }
 
   if (desktopConfigured(settings)) {
     try {
@@ -269,10 +255,14 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     }
   }
 
-  if (cloud.leaky && cloud.keyed.length) {
+  const cloudOk = isChat ? chatCloudEnabled(settings) : cloud.leaky && cloud.keyed.length;
+  if (cloudOk) {
     try {
-      emit(cloud.pin === "xai" ? "GROK" : "CLOUD");
-      const out = await cloudComplete(settings, messages, lane, temperature, maxTokens);
+      const first = isChat ? chatChain(settings)[0] : null;
+      emit(isChat && first ? String(first.label || first.id).toUpperCase() : cloud.pin === "xai" ? "GROK" : "CLOUD");
+      const out = isChat
+        ? await chatComplete(settings, messages, temperature, maxTokens)
+        : await cloudComplete(settings, messages, lane, temperature, maxTokens);
       const cleaned = sanitizeReply(out.text);
       if (cleaned && !isBlank(cleaned)) {
         setBrain(out.provider, out.model);
@@ -342,7 +332,7 @@ export async function chat(settings, history, text, onProgress, kit, db) {
   const messages = [
     { role: "system", content: system },
     ...SHOTS,
-    ...history.slice(-8).map((m) => ({
+    ...history.slice(-16).map((m) => ({
       role: m.role === "user" ? "user" : "assistant",
       content: m.content,
     })),
@@ -350,7 +340,7 @@ export async function chat(settings, history, text, onProgress, kit, db) {
   ];
   let out = "";
   try {
-    out = await routedComplete(settings, messages, "life", 0.7, 220, onProgress);
+    out = await routedComplete(settings, messages, "life", 0.7, 1024, onProgress);
   } catch {
     out = "";
   }
@@ -366,7 +356,7 @@ export async function chat(settings, history, text, onProgress, kit, db) {
         ],
         "life",
         0.35,
-        160,
+        512,
         onProgress,
       );
     } catch {

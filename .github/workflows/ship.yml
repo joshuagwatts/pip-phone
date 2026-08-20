@@ -143,13 +143,13 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.19** — WX tap returns property dossier.
+            **Phone Pip v0.1.21** — CHAT theme commands fixed.
 
-            - **Street address** via Nominatim (tap the roof, not the street).
-            - **ZILLOW SEARCH** link, storm dates, hail, news on every tap.
-            - Address shows immediately; storms/hail fill in after.
+            - **Refresh ui color** actually re-applies your saved palette (no LLM hallucination).
+            - Theme engine catches refresh/reload/fix/sync + ui/color phrasing.
+            - Pip won't fake motivational "I repainted it" replies on theme turns.
 
-            Install Pip.apk over your current build. Restart desktop Pip for same geocoding fix.
+            Install Pip.apk over your current build. Restart desktop Pip for matching theme handling.
           files: |
             Pip.apk
             Pip-Windows.exe
