@@ -16,8 +16,8 @@ let backend = null;
 let loading = null;
 let lastProgress = "";
 let lastBrain = { label: "—", provider: "", model: "" };
-/** @type {{ leaked:boolean, provider:string, via:string, reason:string }} */
-let lastTurn = { leaked: false, provider: "", via: "", reason: "" };
+/** @type {{ leaked:boolean, provider:string, via:string, reason:string, tokens:number }} */
+let lastTurn = { leaked: false, provider: "", via: "", reason: "", tokens: 0 };
 let pendingTheme = null;
 const listeners = new Set();
 
@@ -65,12 +65,13 @@ function setBrain(provider, model) {
   lastBrain = { label, provider: provider || "", model: model || "" };
 }
 
-function setTurn({ leaked = false, provider = "", via = "", reason = "" } = {}) {
+function setTurn({ leaked = false, provider = "", via = "", reason = "", tokens = 0 } = {}) {
   lastTurn = {
     leaked: Boolean(leaked),
     provider: String(provider || ""),
     via: String(via || ""),
     reason: String(reason || ""),
+    tokens: Number(tokens) || 0,
   };
   if (provider) setBrain(provider, via);
 }
@@ -298,7 +299,13 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     const cleaned = sanitizeReply(out.text);
     if (!cleaned || isBlank(cleaned)) throw new Error(`${out.provider} blank`);
     markHealth(out.provider, true);
-    return { text: cleaned, provider: out.provider, model: out.model, leaked: true };
+    return {
+      text: cleaned,
+      provider: out.provider,
+      model: out.model,
+      leaked: true,
+      tokens: Number(out.tokens) || 0,
+    };
   };
 
   const tryLocal = async () => {
@@ -339,6 +346,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
           provider: hit.provider,
           via: hit.model || "",
           reason: hit.leaked ? "left this device" : "stayed local",
+          tokens: hit.tokens || 0,
         });
         return hit;
       }
@@ -488,12 +496,14 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     provider: hit.provider,
     via: hit.model || "",
     reason: leaked ? (webUsed && !hit.leaked ? "web lookup left device" : "cloud API") : "local/desktop",
+    tokens: hit.tokens || 0,
   });
   return {
     text: hit.text,
     leaked,
     provider: hit.provider,
     via: hit.model || "",
+    tokens: hit.tokens || 0,
     error: false,
   };
 }

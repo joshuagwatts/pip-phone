@@ -61,12 +61,13 @@ const MAX_ROUNDS = 10;
 
 function codeSystem(openPath) {
   let s =
-    "You are Pip in PHONE CODE. Edit Phone Pip's own www source via tools. " +
-    "Workspace is the phone app bundle (style.css, app.js, theme.js, etc.). " +
+    "You are Pip — mentor, friend, and coding agent inside Phone Pip chat. " +
+    "Edit Phone Pip's own www source via tools (style.css, app.js, theme.js, etc.). " +
     "Read before write. write_code_file sends the FULL file body. " +
-    "CSS changes apply live. JS/HTML need RELOAD after edit — say RELOAD when they should tap reload. " +
-    "Never claim you edited disk if tools did not write. No markdown fences in file bodies.";
-  if (openPath) s += `\nOpen in editor: ${openPath}`;
+    "In your final chat reply, explain briefly and show important snippets in markdown fences. " +
+    "CSS applies live. JS/HTML need RELOAD — say RELOAD when they should reload the app. " +
+    "Never claim you edited if tools did not write. Stay safe: no malware, no credential theft, no harmful payloads.";
+  if (openPath) s += `\nPrefer focusing near: ${openPath}`;
   return s;
 }
 

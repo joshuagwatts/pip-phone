@@ -14,18 +14,10 @@ import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } fr
 import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThemeRequest } from "./theme.js";
 import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
-import { listEntries, applyAllOverlays } from "./codefs.js";
-import {
-  loadFile,
-  saveFile,
-  getCodeChat,
-  resetCodeChat,
-  resetOverlays,
-  streamCodeApply,
-  consumeCodeStream,
-} from "./code.js";
+import { applyAllOverlays } from "./codefs.js";
+import { streamCodeApply, consumeCodeStream } from "./code.js";
 import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier } from "./wx.js";
-import { describeChain } from "./command.js";
+import { describeChain, looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
   mealSnapshot,
   planDay,
@@ -75,7 +67,7 @@ let vibeStem = "sendoff";
 let lastShot = "";
 let radioClock = 0;
 let radioBusy = false;
-let codeState = { openFile: "style.css", body: "", dirty: false, chat: [], busy: false, model: "" };
+let codeBusy = false;
 let wxState = { lat: null, lon: null, address: "", data: null };
 
 function setStatus(msg) {
@@ -109,12 +101,10 @@ function render() {
   else if (tab === "vibe") renderVibe();
   else if (tab === "today") renderToday();
   else if (tab === "code") {
-    $("#view").innerHTML = `<div class="code-wrap"><h3>CODE</h3><p class="muted">Loading…</p></div>`;
-    renderCode().catch((e) => {
-      $("#view").innerHTML = `<div class="code-wrap"><h3>CODE ERROR</h3><p class="muted">${esc(String(e.message || e))}</p></div>`;
-      setStatus("CODE ERROR");
-      console.error(e);
-    });
+    tab = "data";
+    document.body.classList.add("comm");
+    setStatus("CODING LIVES IN CHAT — ASK PIP TO EDIT THE APP");
+    renderData();
   }
   else if (tab === "wx") renderWx();
   else if (tab === "meals") renderMeals();
@@ -549,6 +539,7 @@ function softRefresh() {
   if (tab === "opp") renderOpp();
   else if (tab === "data") renderData();
   else if (tab === "today") renderToday();
+  else if (tab === "meals") renderMeals();
   else if (tab === "vibe" && vibeMode === "motivation") paintMotiv();
   paintBrainStrip();
 }
@@ -638,119 +629,29 @@ function renderToday() {
   }
 }
 
-async function openCodeFile(name) {
-  const f = await loadFile(name);
-  codeState.openFile = f.path;
-  codeState.body = f.body;
-  codeState.dirty = false;
-}
-
-function paintCodeChat(scroll) {
-  const log = $("#code-log");
-  if (!log) return;
-  log.innerHTML = codeState.chat
-    .map(
-      (m) => `<div class="code-msg ${m.role}">
-      <div class="who">${m.role === "user" ? "YOU" : "PIP"}</div>
-      <div>${esc(m.text)}</div>
-      ${(m.tools || []).length ? `<div class="muted tools">${esc(m.tools.join(" · "))}</div>` : ""}
-    </div>`,
-    )
-    .join("");
-  if (scroll) log.scrollTop = log.scrollHeight;
-}
-
-async function sendCodePrompt(phoneUpgrade) {
-  if (codeState.busy) return;
-  const input = $("#code-input");
-  const prompt = (input?.value || "").trim();
-  if (!prompt) {
-    setStatus("SAY WHAT TO CHANGE");
-    return;
-  }
-  if (codeState.dirty) {
-    try {
-      await saveFile(codeState.openFile, $("#code-body").value);
-      codeState.dirty = false;
-    } catch (e) {
-      setStatus(String(e.message || e));
-      return;
-    }
-  }
-  input.value = "";
-  codeState.busy = true;
-  codeState.chat.push({ role: "user", text: prompt, tools: [] });
-  const pipMsg = { role: "pip", text: "", tools: [] };
-  codeState.chat.push(pipMsg);
-  paintCodeChat(true);
-  setStatus(phoneUpgrade ? "PC PHONE WWW…" : "CODE…");
-  try {
-    await consumeCodeStream(
-      streamCodeApply(db.settings, { prompt, openPath: codeState.openFile, phoneUpgrade }),
-      {
-        onStatus: (ev) => {
-          if (ev.model) codeState.model = ev.model;
-        },
-        onDelta: (t) => {
-          pipMsg.text += t;
-          paintCodeChat(true);
-        },
-        onTool: (ev) => {
-          pipMsg.tools.push(`${ev.name}${ev.args?.path ? " " + String(ev.args.path).split(/[\\/]/).pop() : ""}`);
-          paintCodeChat(true);
-        },
-        onWritten: async (path) => {
-          if (path === codeState.openFile || String(path).endsWith(codeState.openFile)) {
-            await openCodeFile(codeState.openFile);
-            const ta = $("#code-body");
-            if (ta) ta.value = codeState.body;
-          }
-        },
-        onError: (t) => {
-          pipMsg.text = pipMsg.text || t;
-          paintCodeChat(true);
-        },
-        onDone: async (ev) => {
-          if (ev.model) codeState.model = ev.model;
-          await openCodeFile(codeState.openFile);
-          const ta = $("#code-body");
-          if (ta) ta.value = codeState.body;
-          setStatus((ev.written || []).length ? `WROTE ${ev.written.length}` : "CODE DONE");
-          if (ev.reload) setStatus("RELOAD APP TO APPLY JS/HTML");
-        },
-      },
-    );
-  } catch (e) {
-    pipMsg.text = pipMsg.text || String(e.message || e);
-    paintCodeChat(true);
-    setStatus("CODE ERROR");
-  }
-  codeState.busy = false;
-}
-
 async function renderMeals() {
   document.body.classList.remove("comm");
-  await syncMealsFromDesktop(db.settings, db).catch(() => {});
-  persist();
-  const m = mealSnapshot(db);
-  const tgt = m.targets || {};
-  const rem = (m.remaining && m.remaining.remaining) || {};
-  const diet = (tgt.notes || "").trim();
-  $("#view").innerHTML = `
+  const paired = desktopConfigured(db.settings);
+  const paint = (m, note = "") => {
+    const tgt = m.targets || {};
+    const rem = (m.remaining && m.remaining.remaining) || {};
+    const diet = (tgt.notes || "").trim();
+    $("#view").innerHTML = `
     <h3>MEALS</h3>
-    <p class="muted">Want-first planning. Tell Pip in CHAT — breakfast: oats · lunch: bowl · dinner: stir fry — or sync from paired desktop.</p>
+    <p class="muted">Want-first planning in CHAT — breakfast: oats · lunch: bowl · dinner: stir fry — or REPLAN. Desktop sync merges; never wipes a good local plan.</p>
+    ${note ? `<p class="muted">${esc(note)}</p>` : ""}
     <h3>TARGETS</h3>
     <p>KCAL ${tgt.kcal || 0} · P ${tgt.protein_g || 0}g · C ${tgt.carbs_g || 0}g · F ${tgt.fat_g || 0}g</p>
-    <p class="muted">Remaining: ${Math.round(rem.kcal || 0)} kcal / ${Math.round(rem.protein_g || 0)}g protein${diet ? ` · ${esc(diet)}` : ""}</p>
+    <p class="muted">Remaining today: ${Math.round(rem.kcal || 0)} kcal / ${Math.round(rem.protein_g || 0)}g protein${diet ? ` · ${esc(diet)}` : ""}</p>
     <h3>WANTED</h3>
     ${(m.wanted || []).map((w) => `
       <div class="row"><span>${esc(w.name)}</span><span class="muted">${w.kcal || 0} kcal <button type="button" class="tiny" data-unwant="${esc(w.id)}">X</button></span></div>
-    `).join("") || `<p class="muted">Tell Pip meals you want.</p>`}
+    `).join("") || `<p class="muted">Tell Pip meals you want in CHAT.</p>`}
     <h3>PLAN ${esc(m.plan_date || "")}</h3>
     ${(m.plan || []).map((p) => `
       <div class="row"><span>${esc(p.slot)} · ${esc(p.meal_name)}</span><span class="muted">${p.kcal || 0}</span></div>
       ${p.ingredients ? `<p class="muted meal-ings">${esc(p.ingredients)}</p>` : ""}
-    `).join("") || `<p class="muted">No plan yet. REPLAN or ask Pip.</p>`}
+    `).join("") || `<p class="muted">No plan for today yet. REPLAN or ask Pip.</p>`}
     <h3>SHOPPING</h3>
     ${(m.shopping || []).map((s) => `
       <label class="check"><input type="checkbox" data-shop="${esc(s.id)}" ${s.checked ? "checked" : ""} /> ${esc(s.name)} ${esc(s.quantity || "")}</label>
@@ -759,38 +660,66 @@ async function renderMeals() {
       <button type="button" id="meal-plan" class="primary">REPLAN TODAY</button>
       <button type="button" id="meal-clear">CLEAR TODAY</button>
       <button type="button" id="meal-wclear">CLEAR WANTED</button>
+      ${paired ? `<button type="button" id="meal-sync">SYNC DESKTOP</button>` : ""}
     </div>`;
-  $("#meal-plan").onclick = () => {
-    const out = planDay(db);
-    persist();
-    renderMeals();
-    setStatus(out.ok ? "MEALS PLANNED" : String(out.error || "PLAN FAILED"));
-  };
-  $("#meal-clear").onclick = () => {
-    clearDayPlan(db);
-    persist();
-    renderMeals();
-    setStatus("TODAY CLEARED");
-  };
-  $("#meal-wclear").onclick = () => {
-    clearWantedMeals(db);
-    persist();
-    renderMeals();
-    setStatus("WANTED CLEARED");
-  };
-  $("#view").querySelectorAll("[data-unwant]").forEach((el) => {
-    el.onclick = () => {
-      deleteWantedMeal(db, el.dataset.unwant);
-      persist();
-      renderMeals();
+    const bind = () => {
+      const planBtn = $("#meal-plan");
+      if (planBtn) planBtn.onclick = () => {
+        const out = planDay(db);
+        persist();
+        paint(mealSnapshot(db));
+        setStatus(out.ok ? "MEALS PLANNED" : String(out.error || "PLAN FAILED"));
+      };
+      const clearBtn = $("#meal-clear");
+      if (clearBtn) clearBtn.onclick = () => {
+        clearDayPlan(db);
+        persist();
+        paint(mealSnapshot(db));
+        setStatus("TODAY CLEARED");
+      };
+      const wclear = $("#meal-wclear");
+      if (wclear) wclear.onclick = () => {
+        clearWantedMeals(db);
+        persist();
+        paint(mealSnapshot(db));
+        setStatus("WANTED CLEARED");
+      };
+      const syncBtn = $("#meal-sync");
+      if (syncBtn) syncBtn.onclick = async () => {
+        setStatus("MEALS SYNC…");
+        paint(mealSnapshot(db), "Syncing from desktop…");
+        await syncMealsFromDesktop(db.settings, db).catch(() => {});
+        persist();
+        paint(mealSnapshot(db));
+        setStatus("MEALS SYNCED");
+      };
+      $("#view").querySelectorAll("[data-unwant]").forEach((el) => {
+        el.onclick = () => {
+          deleteWantedMeal(db, el.dataset.unwant);
+          persist();
+          paint(mealSnapshot(db));
+        };
+      });
+      $("#view").querySelectorAll("[data-shop]").forEach((el) => {
+        el.onchange = () => {
+          setShoppingChecked(db, el.dataset.shop, el.checked);
+          persist();
+        };
+      });
     };
-  });
-  $("#view").querySelectorAll("[data-shop]").forEach((el) => {
-    el.onchange = () => {
-      setShoppingChecked(db, el.dataset.shop, el.checked);
+    bind();
+  };
+
+  paint(mealSnapshot(db), paired ? "Checking desktop…" : "");
+  if (paired) {
+    try {
+      await syncMealsFromDesktop(db.settings, db);
       persist();
-    };
-  });
+      paint(mealSnapshot(db));
+    } catch {
+      paint(mealSnapshot(db), "Desktop sync offline — showing local plan.");
+    }
+  }
 }
 
 async function renderWx() {
@@ -871,92 +800,6 @@ async function onWxTap(lat, lon) {
   }
 }
 
-async function renderCode() {
-  document.body.classList.remove("comm");
-  if (!codeState.body) {
-    try {
-      await openCodeFile(codeState.openFile || "style.css");
-    } catch {
-      codeState.body = "";
-    }
-  }
-  codeState.chat = getCodeChat();
-  const entries = listEntries();
-  const paired = desktopConfigured(db.settings);
-  const leaky = !privacyOn(db.settings);
-  $("#view").innerHTML = `
-    <div class="code-wrap">
-      <h3>CODE</h3>
-      <p class="muted">${leaky ? "LEAKY — cloud coder edits phone www overlay." : "SECURE — flip LEAKY for on-device CODE, or pair desktop for UPGRADE PC."} CSS live · JS/HTML need RELOAD. API keys live in DATA.</p>
-      <div class="code-bar">
-        <select id="code-file">${entries.map((e) => `<option value="${esc(e.name)}" ${e.name === codeState.openFile ? "selected" : ""}>${esc(e.name)}${e.overlay ? " *" : ""}</option>`).join("")}</select>
-        <button type="button" id="code-save">SAVE</button>
-        <button type="button" id="code-reload">RELOAD</button>
-      </div>
-      <textarea id="code-body" spellcheck="false">${esc(codeState.body)}</textarea>
-      <div class="code-chat">
-        <div id="code-log"></div>
-        <textarea id="code-input" rows="2" placeholder="Change the UI, fix a bug, add a tab…"></textarea>
-        <div class="code-actions">
-          <button type="button" id="code-send" class="primary">SEND</button>
-          ${paired ? `<button type="button" id="code-pc">UPGRADE PC</button>` : ""}
-          <button type="button" id="code-reset">RESET OVERLAY</button>
-          <button type="button" id="code-clear">CLEAR CHAT</button>
-        </div>
-        <p class="muted" id="code-model">${esc(codeState.model || "")}</p>
-      </div>
-    </div>`;
-  paintCodeChat(false);
-  $("#code-file").onchange = async (e) => {
-    if (codeState.dirty && !confirm("Discard unsaved edits?")) {
-      e.target.value = codeState.openFile;
-      return;
-    }
-    await openCodeFile(e.target.value);
-    $("#code-body").value = codeState.body;
-    codeState.dirty = false;
-  };
-  $("#code-body").oninput = () => {
-    codeState.dirty = true;
-  };
-  $("#code-save").onclick = async () => {
-    try {
-      await saveFile(codeState.openFile, $("#code-body").value);
-      codeState.body = $("#code-body").value;
-      codeState.dirty = false;
-      setStatus("SAVED · RELOAD IF JS");
-      renderCode();
-    } catch (e) {
-      setStatus(String(e.message || e));
-    }
-  };
-  $("#code-reload").onclick = () => location.reload();
-  $("#code-send").onclick = () => sendCodePrompt(false);
-  const pc = $("#code-pc");
-  if (pc) pc.onclick = () => sendCodePrompt(true);
-  $("#code-reset").onclick = () => {
-    if (!confirm("Clear all local code overlays and restore bundled files?")) return;
-    resetOverlays();
-    resetCodeChat();
-    codeState.chat = [];
-    codeState.dirty = false;
-    setStatus("OVERLAY CLEARED · RELOAD");
-    location.reload();
-  };
-  $("#code-clear").onclick = () => {
-    resetCodeChat();
-    codeState.chat = [];
-    paintCodeChat(false);
-    setStatus("CODE CHAT CLEARED");
-  };
-  $("#code-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendCodePrompt(false);
-    }
-  });
-}
-
 function renderData() {
   const s = db.settings;
   const paired = desktopConfigured(s);
@@ -965,7 +808,7 @@ function renderData() {
   const synced = s.keys_synced_at ? ` · synced ${String(s.keys_synced_at).slice(0, 16).replace("T", " ")}` : "";
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">Pair once → keys copy onto this phone. Chat order: DESKTOP (private) → cloud chain (LEAKED, red) → local Qwen if pinned. Flip LEAKY only when OPP/CODE need cloud scrapes.</p>
+    <p class="muted">Pair once → keys copy onto this phone. Chat: phone keys first (LEAKED) → desktop GPU (private) → local Qwen. Coding lives in CHAT — ask Pip to edit the app. Flip LEAKY for OPP scrapes and in-chat code tools.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -998,7 +841,7 @@ function renderData() {
         }).join("")}
       </select>
     </div>
-    ${securePosture ? `<p class="muted">SECURE: OPP/CODE stay on-device. CHAT still uses keyed clouds on this phone.</p>` : `<p class="muted">LEAKY: cloud unlocked for OPP/CODE too.</p>`}
+    ${securePosture ? `<p class="muted">SECURE: OPP scrapes stay limited. CHAT still uses keyed clouds on this phone. In-chat coding needs LEAKY or desktop upgrade.</p>` : `<p class="muted">LEAKY: cloud unlocked for OPP + in-chat coding tools.</p>`}
     <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="synced from desktop" autocomplete="off" /></div>
     <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="synced from desktop" autocomplete="off" /></div>
     <div class="field"><span>CEREBRAS</span><input id="set-cerebras" type="password" value="${esc(s.cerebras)}" placeholder="synced from desktop" autocomplete="off" /></div>
@@ -1366,6 +1209,30 @@ async function runHunt(allTypes = false) {
   }
 }
 
+function formatChatBody(text) {
+  const raw = String(text || "");
+  const parts = [];
+  const re = /```(\w*)\n?([\s\S]*?)```/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(raw))) {
+    if (m.index > last) parts.push({ type: "text", v: raw.slice(last, m.index) });
+    parts.push({ type: "code", lang: m[1] || "", v: m[2] });
+    last = m.index + m[0].length;
+  }
+  if (last < raw.length) parts.push({ type: "text", v: raw.slice(last) });
+  if (!parts.length) return esc(raw);
+  return parts
+    .map((p) => {
+      if (p.type === "code") {
+        const lang = p.lang ? `<span class="code-lang">${esc(p.lang)}</span>` : "";
+        return `<pre class="chat-code">${lang}<code>${esc(p.v.replace(/\s+$/, ""))}</code></pre>`;
+      }
+      return `<span class="chat-text">${esc(p.v)}</span>`;
+    })
+    .join("");
+}
+
 function addLog(role, text, opts = {}) {
   const div = document.createElement("div");
   const leaked = Boolean(opts.leaked);
@@ -1378,11 +1245,98 @@ function addLog(role, text, opts = {}) {
       : opts.brain
         ? `PIP · ${String(opts.brain).toUpperCase()}`
         : "PIP";
-  div.innerHTML = `<div class="who">${esc(who)}</div><div class="body">${esc(text)}</div>`;
+  const meta = [];
+  if (opts.tokens) meta.push(`~${opts.tokens} TOK`);
+  if (opts.tools && opts.tools.length) meta.push(opts.tools.join(" · "));
+  const metaHtml = meta.length ? `<div class="chat-meta">${esc(meta.join(" · "))}</div>` : "";
+  const toolsHtml =
+    opts.tools && opts.tools.length && !opts.tokens
+      ? ""
+      : opts.toolLine
+        ? `<div class="chat-tools">${esc(opts.toolLine)}</div>`
+        : "";
+  div.innerHTML = `<div class="who">${esc(who)}</div><div class="body">${formatChatBody(text)}</div>${toolsHtml}${metaHtml}`;
   $("#log").appendChild(div);
   $("#log").scrollTop = $("#log").scrollHeight;
   return div;
 }
+
+function updateLogBody(el, text, opts = {}) {
+  if (!el) return;
+  const body = el.querySelector(".body");
+  if (body) body.innerHTML = formatChatBody(text);
+  let meta = el.querySelector(".chat-meta");
+  const bits = [];
+  if (opts.tokens) bits.push(`~${opts.tokens} TOK`);
+  if (opts.toolLine) bits.push(opts.toolLine);
+  if (bits.length) {
+    if (!meta) {
+      meta = document.createElement("div");
+      meta.className = "chat-meta";
+      el.appendChild(meta);
+    }
+    meta.textContent = bits.join(" · ");
+  }
+  $("#log").scrollTop = $("#log").scrollHeight;
+}
+
+async function runChatCode(text, userBubble) {
+  if (codeBusy) {
+    addLog("pip", "Still writing the last change — one beat.");
+    return;
+  }
+  codeBusy = true;
+  document.body.classList.add("comm");
+  const upgrade = wantsDesktopCodeUpgrade(text);
+  markBubbleLeaked(userBubble);
+  const last = db.chat.filter((m) => m.role === "user").pop();
+  if (last) last.leaked = true;
+  persist();
+  const pipBubble = addLog("pip", upgrade ? "Upgrading phone www on desktop…" : "Reading the app…", {
+    brain: upgrade ? "DESKTOP" : "CODE",
+  });
+  setStatus(upgrade ? "PC PHONE WWW…" : "CODING…");
+  let reply = "";
+  const tools = [];
+  try {
+    await consumeCodeStream(
+      streamCodeApply(db.settings, { prompt: text, openPath: "", phoneUpgrade: upgrade }),
+      {
+        onStatus: (ev) => {
+          if (ev.model) setStatus(String(ev.model).toUpperCase());
+        },
+        onDelta: (t) => {
+          reply += t;
+          updateLogBody(pipBubble, reply, { toolLine: tools.join(" · ") });
+        },
+        onTool: (ev) => {
+          const bit = `${ev.name}${ev.args?.path ? " " + String(ev.args.path).split(/[\\/]/).pop() : ""}`;
+          tools.push(bit);
+          updateLogBody(pipBubble, reply || "Working…", { toolLine: tools.join(" · ") });
+        },
+        onWritten: () => {},
+        onError: (t) => {
+          reply = reply || t;
+          updateLogBody(pipBubble, reply, { toolLine: tools.join(" · ") });
+        },
+        onDone: async (ev) => {
+          if (!reply) reply = (ev.written || []).length ? `Wrote ${(ev.written || []).join(", ")}.` : "Done.";
+          if (ev.reload) reply += "\n\nRELOAD the app to apply JS/HTML.";
+          updateLogBody(pipBubble, reply, { toolLine: tools.join(" · ") });
+          setStatus((ev.written || []).length ? `WROTE ${ev.written.length}` : "CODE DONE");
+        },
+      },
+    );
+  } catch (e) {
+    reply = reply || String(e.message || e);
+    updateLogBody(pipBubble, reply, { toolLine: tools.join(" · ") });
+    setStatus("CODE ERROR");
+  }
+  db.chat.push({ role: "pip", content: reply, brain: upgrade ? "desktop" : "code", leaked: true });
+  persist();
+  codeBusy = false;
+}
+
 
 function markBubbleLeaked(el, reason) {
   if (!el) return;
@@ -1436,6 +1390,11 @@ async function sendChat() {
       render();
     }
     setStatus(mealHit.ok ? "MEALS UPDATED" : "MEALS");
+    return;
+  }
+
+  if (looksLikeCodeRequest(text)) {
+    await runChatCode(text, userBubble);
     return;
   }
 
@@ -1495,10 +1454,16 @@ async function sendChat() {
     });
     rememberReply(db, reply);
     persist();
-    addLog("pip", reply, { brain: provider || activeBrain().label, leaked: false });
+    const tokens = typeof out === "object" ? Number(out.tokens) || 0 : 0;
+    addLog("pip", reply, {
+      brain: provider || activeBrain().label,
+      leaked: false,
+      tokens,
+    });
     updateBrainChip();
     const label = (provider || activeBrain().label || "PIP").toUpperCase();
-    setStatus(leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`);
+    const tokBit = tokens ? ` · ~${tokens} TOK` : "";
+    setStatus((leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`) + tokBit);
   } catch (e) {
     addLog("pip", String(e.message || e));
     setStatus("CHAT ERROR");
@@ -1524,7 +1489,7 @@ function boot() {
       if (!db.chat.length) {
         addLog(
           "pip",
-          "Pip is happy to help. Pair desktop in DATA → SYNC KEYS. Chat uses keys on this phone first.",
+          "Pip is happy to help — mentor, friend, agent. Pair desktop in DATA → SYNC KEYS. Ask in chat to plan meals or edit the app.",
         );
       }
       try {
@@ -1552,7 +1517,7 @@ function boot() {
           db.settings.privacy_mode = secure ? "leaky" : "secure";
           persist();
           renderPrivacy();
-          setStatus(secure ? "LEAKY // CLOUD OK FOR OPP/CODE" : "SECURE // PREFER LOCAL · CLOUD = LEAKED");
+          setStatus(secure ? "LEAKY // CLOUD OK FOR OPP + CHAT CODE" : "SECURE // PREFER LOCAL · CLOUD = LEAKED");
         };
       }
       $("#send").onclick = sendChat;

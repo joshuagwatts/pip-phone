@@ -207,7 +207,20 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
   const msg = (((data.choices || [])[0] || {}).message || {});
   const text = String(msg.content || "").trim();
   if (!text && !(msg.tool_calls || []).length) throw new Error(`${prov.id} empty reply`);
-  return { text, message: msg, tool_calls: msg.tool_calls || [], provider: prov.id, model };
+  const usage = data.usage || {};
+  const tokens =
+    (Number(usage.prompt_tokens) || 0) + (Number(usage.completion_tokens) || 0) ||
+    Number(usage.total_tokens) ||
+    0;
+  return {
+    text,
+    message: msg,
+    tool_calls: msg.tool_calls || [],
+    provider: prov.id,
+    model,
+    tokens,
+    usage,
+  };
 }
 
 export async function cloudCompleteTools(settings, messages, tools, lane = "boost", temperature = 0.2, maxTokens = 8000) {

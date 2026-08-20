@@ -11,7 +11,11 @@ const SLOT_INLINE =
   /\b(breakfast|lunch|dinner|snack)\s*[:\-–—]\s*(.+?)(?=(?:\s*[;,]\s*)?\b(?:breakfast|lunch|dinner|snack)\s*[:\-–—]|$)/gi;
 
 export function today() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function blankMeals() {
@@ -41,9 +45,26 @@ function planTotals(rows) {
   };
 }
 
+function planRowsToday(state) {
+  const day = today();
+  const rows = state.plan || [];
+  if ((state.plan_date || day) !== day) {
+    return rows.filter((r) => (r.plan_date || r.date) === day);
+  }
+  return rows.filter((r) => {
+    const pd = r.plan_date || r.date;
+    return !pd || pd === day;
+  });
+}
+
+function shoppingToday(state) {
+  const day = today();
+  return (state.shopping || []).filter((s) => !s.for_date || s.for_date === day);
+}
+
 function remainingMacros(state) {
   const targets = state.targets || blankMeals().targets;
-  const planned = planTotals(state.plan);
+  const planned = planTotals(planRowsToday(state));
   return {
     targets,
     planned,
@@ -125,12 +146,13 @@ export function mealSnapshot(db) {
   const m = ensureMeals(db);
   m.remaining = remainingMacros(m);
   return {
-    plan_date: m.plan_date || today(),
+    plan_date: today(),
     targets: m.targets,
     wanted: m.wanted,
-    plan: m.plan,
-    shopping: m.shopping,
+    plan: planRowsToday(m),
+    shopping: shoppingToday(m),
     remaining: m.remaining,
+    stored_plan_date: m.plan_date || today(),
   };
 }
 
@@ -321,12 +343,8 @@ export function tryMealCommand(text, db) {
     return { ok: true, reply: `Saved ${name} to wanted meals. Say replan today or name all four slots.`, switchTab: "meals" };
   }
 
-  return {
-    ok: false,
-    reply:
-      "Name slots like breakfast: oats · lunch: rice bowl · dinner: stir fry — or say replan today.",
-    switchTab: "meals",
-  };
+  // Open-ended meal talk → brain chat (with mealBrief context).
+  return null;
 }
 
 export async function syncMealsFromDesktop(settings, db) {
@@ -334,17 +352,38 @@ export async function syncMealsFromDesktop(settings, db) {
   try {
     const tok = String(settings.desktop_token || "").trim();
     const base = String(settings.desktop_url || "").replace(/\/+$/, "");
-    const headers = tok ? { Cookie: `pip_gate=${tok}` } : {};
-    const remote = await httpLanGet(`${base}/api/meals`, 12000, headers);
-    if (remote && remote.targets) {
+    const headers =
+      tok && tok !== "loopback"
+        ? {
+            Cookie: `pip_gate=${tok}`,
+            "X-Pip-Token": tok,
+            Authorization: `Bearer ${tok}`,
+          }
+        : {};
+    const remote = await httpLanGet(`${base}/api/meals`, 8000, headers);
+    if (!remote || !remote.targets) return mealSnapshot(db);
+
+    const local = ensureMeals(db);
+    const remotePlan = remote.plan || [];
+    const remoteWanted = remote.wanted || [];
+    const remoteHasPlan = remotePlan.length > 0;
+    const localHasPlan = planRowsToday(local).length > 0;
+
+    // Never wipe a good local plan with an empty desktop day.
+    if (remoteHasPlan || !localHasPlan) {
       db.meals = {
         targets: remote.targets,
-        wanted: remote.wanted || [],
-        plan: remote.plan || [],
+        wanted: remoteWanted.length ? remoteWanted : local.wanted,
+        plan: remotePlan,
         shopping: remote.shopping || [],
         plan_date: remote.plan_date || today(),
-        remaining: remote.remaining || remainingMacros({ targets: remote.targets, plan: remote.plan || [] }),
+        remaining: remote.remaining || remainingMacros({ targets: remote.targets, plan: remotePlan }),
       };
+    } else {
+      local.targets = remote.targets || local.targets;
+      if (remoteWanted.length > (local.wanted || []).length) local.wanted = remoteWanted;
+      local.remaining = remainingMacros(local);
+      db.meals = local;
     }
   } catch {
     /* local meals stay */

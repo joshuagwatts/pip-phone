@@ -43,6 +43,19 @@ export function pickJob(text) {
   return "life";
 }
 
+/** Coding work now lives in main CHAT (Cursor-style), not a CODE tab. */
+export function looksLikeCodeRequest(text) {
+  const t = String(text || "");
+  if (/\b(upgrade\s+(on\s+)?pc|phone\s+www|edit\s+(the\s+)?(app|ui|css|js)|reload\s+overlay)\b/i.test(t)) {
+    return true;
+  }
+  return CODE_HINT.test(t) && !DRAFT_HINT.test(t) && !MEAL_HINT.test(t);
+}
+
+export function wantsDesktopCodeUpgrade(text) {
+  return /\b(upgrade\s+(on\s+)?pc|desktop\s+upgrade|phone\s+www\s+on\s+(pc|desktop))\b/i.test(String(text || ""));
+}
+
 export function orderFor(job, keyedIds, health = {}, pin = "auto") {
   const spec = JOBS[job] || JOBS.life;
   if (pin && pin !== "auto" && pin !== "local") {

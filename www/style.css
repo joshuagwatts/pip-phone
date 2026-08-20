@@ -234,6 +234,41 @@ body.comm #comm { display: flex; }
 .brain-chip.skip { opacity: 0.45; }
 #log { flex: 1; overflow: auto; padding: 0.8rem; }
 .bubble .who { color: var(--phos); font-size: 10px; letter-spacing: 0.2em; margin-bottom: 0.25rem; }
+.bubble .body { white-space: pre-wrap; word-break: break-word; }
+.bubble .chat-text { white-space: pre-wrap; }
+.bubble .chat-code {
+  margin: 0.55rem 0;
+  padding: 0.65rem 0.75rem;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(125, 255, 90, 0.22);
+  border-left: 2px solid var(--phos);
+  overflow-x: auto;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+}
+.bubble .chat-code .code-lang {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-family: inherit;
+}
+.bubble .chat-tools {
+  margin-top: 0.4rem;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+.bubble .chat-meta {
+  margin-top: 0.35rem;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
 .bubble.user.leaked {
   border-color: var(--leak);
   box-shadow: inset 3px 0 0 var(--leak);
