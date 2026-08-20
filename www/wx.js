@@ -6,14 +6,29 @@ let map = null;
 let pin = null;
 let hailLayer = null;
 let layers = {};
-let activeLayer = "osm";
+let activeLayer = "dark";
 
 const WMO = {
-  95: "Thunderstorm",
-  82: "Violent rain",
+  0: "Clear",
+  1: "Mostly clear",
+  2: "Partly cloudy",
+  3: "Overcast",
+  45: "Fog",
+  61: "Light rain",
+  63: "Rain",
   65: "Heavy rain",
   75: "Heavy snow",
+  82: "Violent rain",
+  95: "Thunderstorm",
+  96: "Thunder + hail",
+  99: "Severe thunder + hail",
 };
+
+export const DEFAULT_FILTERS = { km: 15, hailIn: 0.75, windMph: 38, days: 180 };
+let wxFilters = { ...DEFAULT_FILTERS };
+let overlays = {};
+let activeOverlays = new Set(["radar"]);
+let windLayer = null;
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   const r = 6371;
@@ -127,8 +142,16 @@ async function historicalStorms(lat, lon, days = 540) {
         score += 2;
         reasons.push(`precip ${precip.toFixed(0)} mm`);
       }
-      if (score >= 2) {
-        out.push({ date: times[i], score, label: WMO[code] || "Weather", reasons, source: "open-meteo-archive" });
+      if (score >= 3) {
+        out.push({
+          date: times[i],
+          score,
+          label: WMO[code] || "Weather",
+          reasons,
+          wind_mph: Math.round(Math.max(wind, gust) * 10) / 10,
+          precip_mm: Math.round(precip * 10) / 10,
+          source: "open-meteo-archive",
+        });
       }
     }
     return out.sort((a, b) => b.score - a.score || b.date.localeCompare(a.date)).slice(0, 80);
@@ -137,29 +160,28 @@ async function historicalStorms(lat, lon, days = 540) {
   }
 }
 
-function parseSpcHailCsv(text, reportDay) {
+function parseSpcSection(text, reportDay, header, kind, measureKey) {
   const rows = [];
-  let inHail = false;
+  let inSec = false;
   for (const line of text.split("\n")) {
-    if (line.startsWith("Time,Size,")) {
-      inHail = true;
+    if (line.startsWith(header)) {
+      inSec = true;
       continue;
     }
     if (line.startsWith("Time,")) {
-      inHail = false;
+      inSec = false;
       continue;
     }
-    if (!inHail || !line.trim()) continue;
+    if (!inSec || !line.trim()) continue;
     const parts = line.split(",", 8);
     if (parts.length < 7) continue;
     const rlat = parseFloat(parts[5]);
     const rlon = parseFloat(parts[6]);
     if (Number.isNaN(rlat) || Number.isNaN(rlon)) continue;
-    const sizeIn = hailSizeIn(parts[1]);
-    rows.push({
+    const row = {
+      kind,
       date: reportDay,
       time: parts[0].trim(),
-      size_in: sizeIn,
       location: parts[2].trim(),
       county: parts[3].trim(),
       state: parts[4].trim(),
@@ -167,14 +189,26 @@ function parseSpcHailCsv(text, reportDay) {
       lon: rlon,
       comments: (parts[7] || "").trim(),
       source: "noaa-spc",
-    });
+    };
+    if (kind === "hail") {
+      row.size_in = hailSizeIn(parts[1]);
+    } else {
+      const n = parseFloat(parts[1]);
+      row[measureKey] = Number.isNaN(n) ? 0 : n;
+    }
+    rows.push(row);
   }
   return rows;
 }
 
-async function fetchHailReports(lat, lon, radiusKm = 80, daysBack = 45) {
+function parseSpcHailCsv(text, reportDay) {
+  return parseSpcSection(text, reportDay, "Time,Size,", "hail", "size_in");
+}
+
+async function fetchSpcReports(lat, lon, radiusKm = 15, daysBack = 60) {
   const today = new Date();
-  const days = Math.min(Math.max(daysBack, 7), 180);
+  const days = Math.min(Math.max(daysBack, 7), 90);
+  const km = Math.min(Math.max(radiusKm, 3), 50);
   const stamps = [];
   for (let d = 0; d < days; d++) {
     const day = new Date(today);
@@ -184,7 +218,8 @@ async function fetchHailReports(lat, lon, radiusKm = 80, daysBack = 45) {
       iso: day.toISOString().slice(0, 10),
     });
   }
-  const hits = [];
+  const hailHits = [];
+  const windHits = [];
   const batch = 12;
   for (let i = 0; i < stamps.length; i += batch) {
     const chunk = stamps.slice(i, i + batch);
@@ -192,36 +227,48 @@ async function fetchHailReports(lat, lon, radiusKm = 80, daysBack = 45) {
       chunk.map(async ({ stamp, iso }) => {
         try {
           const { body, status } = await httpGet(`https://www.spc.noaa.gov/climo/reports/${stamp}_rpts_filtered.csv`, 5500);
-          if (status === 404) return [];
-          return parseSpcHailCsv(body, iso);
+          if (status === 404) return { hail: [], wind: [] };
+          return {
+            hail: parseSpcHailCsv(body, iso),
+            wind: parseSpcSection(body, iso, "Time,Speed,", "wind", "wind_mph"),
+          };
         } catch {
-          return [];
+          return { hail: [], wind: [] };
         }
       }),
     );
     for (const dayRows of parts) {
-      for (const row of dayRows) {
+      for (const row of dayRows.hail) {
         const dist = haversineKm(lat, lon, row.lat, row.lon);
-        if (dist <= radiusKm) {
+        if (dist <= km) {
           const sz = parseFloat(row.size_in);
-          hits.push({
-            ...row,
-            distance_km: Math.round(dist * 10) / 10,
-            score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3,
-          });
+          hailHits.push({ ...row, distance_km: Math.round(dist * 10) / 10, score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3 });
+        }
+      }
+      for (const row of dayRows.wind) {
+        const dist = haversineKm(lat, lon, row.lat, row.lon);
+        if (dist <= km) {
+          windHits.push({ ...row, distance_km: Math.round(dist * 10) / 10, score: (row.wind_mph || 0) >= 58 ? 4 : 2 });
         }
       }
     }
   }
-  return hits.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 120);
+  hailHits.sort((a, b) => b.date.localeCompare(a.date));
+  windHits.sort((a, b) => b.date.localeCompare(a.date));
+  return { hail: hailHits.slice(0, 80), wind: windHits.slice(0, 80) };
+}
+
+async function fetchHailReports(lat, lon, radiusKm = 15, daysBack = 60) {
+  return (await fetchSpcReports(lat, lon, radiusKm, daysBack)).hail;
 }
 
 let mapConfigCache = null;
 let geoCenterCache = null;
 
 const BASE_LAYERS = [
-  { id: "osm", label: "Street", url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
-  { id: "sat", label: "Satellite", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
+  { id: "osm", label: "Street", kind: "base", url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
+  { id: "dark", label: "Night", kind: "base", url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", attribution: "© CARTO" },
+  { id: "sat", label: "Sat", kind: "base", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
 ];
 
 export function resolveMapCenter(settings) {
@@ -254,7 +301,7 @@ async function currentWeather(lat, lon) {
   const params = new URLSearchParams({
     latitude: lat,
     longitude: lon,
-    current: "temperature_2m,weather_code,wind_speed_10m",
+    current: "temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m",
     temperature_unit: "fahrenheit",
     wind_speed_unit: "mph",
     timezone: "auto",
@@ -268,6 +315,8 @@ async function currentWeather(lat, lon) {
       ok: true,
       temp_f: cur.temperature_2m,
       wind_mph: cur.wind_speed_10m,
+      gust_mph: cur.wind_gusts_10m,
+      code,
       label: WMO[code] || "Weather",
     };
   } catch {
@@ -318,6 +367,7 @@ function normalizeDossier(raw) {
   if (!d.zillow_url && d.address) d.zillow_url = zillowUrl(d.address);
   d.storms = d.storms || d.recent_storms || [];
   d.hail = d.hail || [];
+  d.wind = d.wind || [];
   d.news = d.news || [];
   return d;
 }
@@ -330,37 +380,60 @@ function usableRemote(d) {
 async function localMapConfig(settings, center) {
   const c = center || (await resolveMapCenter(settings));
   const layerList = [...BASE_LAYERS];
-  httpGet("https://api.rainviewer.com/public/weather-maps.json", 1800)
-    .then(({ body }) => {
-      const rv = JSON.parse(body || "{}");
-      const ts = ((rv.radar || {}).past || []).slice(-1)[0]?.time;
-      if (!ts || !map) return;
-      const url = `https://tilecache.rainviewer.com/v2/radar/${ts}/256/{z}/{x}/{y}/6/1_1.png`;
-      layers.radar = window.L.tileLayer(url, { attribution: "© RainViewer", opacity: 0.55, maxZoom: 19 });
-    })
-    .catch(() => {});
+  try {
+    const { body } = await httpGet("https://api.rainviewer.com/public/weather-maps.json", 2500);
+    const rv = JSON.parse(body || "{}");
+    const past = ((rv.radar || {}).past || []).slice(-1)[0];
+    const ir = ((rv.satellite || {}).infrared || []).slice(-1)[0];
+    const vis = ((rv.satellite || {}).visible || []).slice(-1)[0];
+    if (past?.path) {
+      layerList.push({
+        id: "radar",
+        label: "Radar",
+        kind: "overlay",
+        url: `https://tilecache.rainviewer.com${past.path}/256/{z}/{x}/{y}/6/1_1.png`,
+        attribution: "© RainViewer",
+        opacity: 0.65,
+      });
+    }
+    if (ir?.path) {
+      layerList.push({
+        id: "clouds",
+        label: "Clouds",
+        kind: "overlay",
+        url: `https://tilecache.rainviewer.com${ir.path}/256/{z}/{x}/{y}/0/0_0.png`,
+        attribution: "© RainViewer",
+        opacity: 0.55,
+      });
+    }
+    if (vis?.path) {
+      layerList.push({
+        id: "vis",
+        label: "Vis",
+        kind: "overlay",
+        url: `https://tilecache.rainviewer.com${vis.path}/256/{z}/{x}/{y}/0/0_0.png`,
+        attribution: "© RainViewer",
+        opacity: 0.45,
+      });
+    }
+  } catch {
+    /* overlays optional */
+  }
   return { center: { lat: c.lat, lon: c.lon, city: c.city || settings?.city || "" }, layers: layerList };
 }
 
 async function localResearch(lat, lon, address = "", { deep = true } = {}) {
   const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
-  const [geo, wxNow, storms, hail] = await Promise.all([
+  const [geo, wxNow, storms, spc] = await Promise.all([
     geoP,
     currentWeather(lat, lon).catch(() => ({ ok: false })),
-    historicalStorms(lat, lon, deep ? 540 : 180),
-    fetchHailReports(lat, lon, 80, deep ? 90 : 45),
+    historicalStorms(lat, lon, deep ? 180 : 90),
+    fetchSpcReports(lat, lon, 15, deep ? 90 : 45),
   ]);
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const city = geo.city || addr.split(",")[0];
-  for (const h of hail.slice(0, 40)) {
-    storms.unshift({
-      date: h.date,
-      score: h.score || 5,
-      label: `Hail ${h.size_in} in`,
-      reasons: [`hail ${h.size_in} in`, `${h.distance_km} km`, h.location],
-      source: "noaa-spc",
-    });
-  }
+  const hail = spc.hail || [];
+  const wind = spc.wind || [];
   const news = [];
   if (deep) {
     for (const q of [`hail damage "${city}"`, `hail storm "${city}"`, `severe weather "${addr}"`, `wind damage "${city}"`]) {
@@ -377,6 +450,7 @@ async function localResearch(lat, lon, address = "", { deep = true } = {}) {
     weather: wxNow,
     storms,
     hail,
+    wind,
     news,
     zillow_url: zillowUrl(addr),
     owner_name: "",
@@ -440,29 +514,53 @@ export async function quickPin(settings, lat, lon) {
   const [geo, wx, hail] = await Promise.all([
     reverseGeocode(lat, lon),
     currentWeather(lat, lon),
-    fetchHailReports(lat, lon, 80, 21),
+    fetchHailReports(lat, lon, 15, 21),
   ]);
   return { ok: true, geo, weather: wx, hail, recent_storms: hail.slice(0, 5) };
 }
 
-export function drawHailMarkers(hailRows) {
+export function drawHailMarkers(hailRows, windRows) {
   if (!map || !window.L) return;
   if (hailLayer) hailLayer.remove();
+  if (windLayer) windLayer.remove();
   hailLayer = window.L.layerGroup();
+  windLayer = window.L.layerGroup();
   for (const h of (hailRows || []).slice(0, 40)) {
     const sz = parseFloat(h.size_in);
     const r = Number.isNaN(sz) ? 6 : Math.min(18, 4 + sz * 4);
+    const color = Number.isNaN(sz) ? "#7dff5a" : sz >= 2 ? "#ff3a3a" : sz >= 1 ? "#d4a84b" : "#7dff5a";
     window.L.circleMarker([h.lat, h.lon], {
       radius: r,
-      color: "#7dff5a",
-      fillColor: "#0d4f3c",
-      fillOpacity: 0.75,
+      color,
+      fillColor: color,
+      fillOpacity: 0.7,
       weight: 1,
     })
       .bindPopup(`${h.date} · ${h.size_in} in hail<br>${h.location}, ${h.state}<br>${h.distance_km} km from pin`)
       .addTo(hailLayer);
   }
+  for (const w of (windRows || []).slice(0, 40)) {
+    const mph = Number(w.wind_mph) || 0;
+    window.L.circleMarker([w.lat, w.lon], {
+      radius: Math.min(16, 4 + mph / 12),
+      color: "#4a9eff",
+      fillColor: "#4a9eff",
+      fillOpacity: 0.55,
+      weight: 1,
+    })
+      .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location}, ${w.state}<br>${w.distance_km} km from pin`)
+      .addTo(windLayer);
+  }
   hailLayer.addTo(map);
+  windLayer.addTo(map);
+}
+
+function applyOverlays() {
+  if (!map) return;
+  Object.keys(overlays).forEach((id) => {
+    if (activeOverlays.has(id)) overlays[id].addTo(map);
+    else map.removeLayer(overlays[id]);
+  });
 }
 
 export function mountMap(container, config, { onTap, center }) {
@@ -472,18 +570,25 @@ export function mountMap(container, config, { onTap, center }) {
     map = null;
     pin = null;
     hailLayer = null;
+    windLayer = null;
     layers = {};
+    overlays = {};
   }
   const c = center || config.center || { lat: 39.74, lon: -104.99 };
-  map = window.L.map(container, { zoomControl: true, preferCanvas: true }).setView([c.lat, c.lon], 10);
-  for (const layer of config.layers || []) {
-    layers[layer.id] = window.L.tileLayer(layer.url, {
+  map = window.L.map(container, { zoomControl: true, preferCanvas: true }).setView([c.lat, c.lon], 12);
+  const all = config.layers || [];
+  for (const layer of all) {
+    const tile = window.L.tileLayer(layer.url, {
       attribution: layer.attribution || "",
       opacity: layer.opacity ?? 1,
       maxZoom: 19,
     });
+    if (layer.kind === "overlay") overlays[layer.id] = tile;
+    else layers[layer.id] = tile;
   }
-  (layers[activeLayer] || layers.osm || Object.values(layers)[0])?.addTo(map);
+  (layers.dark || layers[activeLayer] || layers.osm || Object.values(layers)[0])?.addTo(map);
+  if (layers.dark) activeLayer = "dark";
+  applyOverlays();
   map.on("click", (e) => {
     const { lat, lng } = e.latlng;
     if (pin) pin.setLatLng(e.latlng);
@@ -494,53 +599,202 @@ export function mountMap(container, config, { onTap, center }) {
 }
 
 export function setMapLayer(id) {
-  if (!map || !layers[id]) return;
+  if (!map) return;
+  if (overlays[id]) {
+    if (activeOverlays.has(id)) activeOverlays.delete(id);
+    else activeOverlays.add(id);
+    applyOverlays();
+    return;
+  }
+  if (!layers[id]) return;
   Object.values(layers).forEach((l) => map.removeLayer(l));
   layers[id].addTo(map);
+  applyOverlays();
   activeLayer = id;
 }
 
+function cutoffDate(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - Number(days || 180));
+  return d.toISOString().slice(0, 10);
+}
+
+export function filterDossier(data, filters = wxFilters) {
+  const since = cutoffDate(filters.days);
+  const km = Number(filters.km) || 15;
+  const hailMin = Number(filters.hailIn) || 0;
+  const windMin = Number(filters.windMph) || 0;
+  const hail = (data.hail || []).filter((h) => {
+    if (h.date && h.date < since) return false;
+    if (h.distance_km != null && h.distance_km > km) return false;
+    const sz = parseFloat(h.size_in);
+    return Number.isNaN(sz) || sz >= hailMin;
+  });
+  const wind = (data.wind || []).filter((w) => {
+    if (w.date && w.date < since) return false;
+    if (w.distance_km != null && w.distance_km > km) return false;
+    return (Number(w.wind_mph) || 0) >= windMin;
+  });
+  const storms = (data.storms || []).filter((s) => {
+    if (s.date && s.date < since) return false;
+    if ((Number(s.wind_mph) || 0) < windMin && !(s.reasons || []).some((r) => /hail|thunder/i.test(r))) {
+      return (Number(s.wind_mph) || 0) >= windMin || (Number(s.precip_mm) || 0) >= 25;
+    }
+    return true;
+  });
+  return { hail, wind, storms };
+}
+
 export function renderDossier(root, data, esc, onResearch) {
-  const storms = data.storms || [];
-  const hail = data.hail || [];
   const news = data.news || [];
   const addr = data.address || "";
   const zurl = data.zillow_url || (addr ? zillowUrl(addr) : "");
+  const { hail, wind, storms } = filterDossier(data, wxFilters);
   const wxLine =
     data.weather && data.weather.ok
-      ? `${Math.round(data.weather.temp_f)}°F · ${esc(data.weather.label || "Weather")}`
+      ? `${Math.round(data.weather.temp_f)}°F · ${esc(data.weather.label || "Weather")}${data.weather.wind_mph ? ` · ${Math.round(data.weather.wind_mph)} mph` : ""}`
       : "";
+  const alert = data.weather && data.weather.severity && data.weather.severity.line
+    ? `<div class="wx-alert ${esc(data.weather.severity.level || "")}">${esc(data.weather.severity.line)}</div>`
+    : "";
   root.innerHTML = `
     <div class="wx-dossier">
       <div class="wx-addr">${esc(addr)}</div>
       ${wxLine ? `<div class="wx-now">${wxLine}</div>` : ""}
+      ${alert}
       <div class="wx-links">
         ${zurl ? `<a href="${esc(zurl)}" target="_blank" rel="noopener">ZILLOW SEARCH</a>` : ""}
         ${onResearch ? `<button type="button" id="wx-deep" class="primary">DEEP RESEARCH</button>` : ""}
+      </div>
+      <div class="wx-filters">
+        <label>NEAR <select id="wx-f-km">
+          <option value="8"${wxFilters.km == 8 ? " selected" : ""}>8 km</option>
+          <option value="15"${wxFilters.km == 15 ? " selected" : ""}>15 km</option>
+          <option value="25"${wxFilters.km == 25 ? " selected" : ""}>25 km</option>
+        </select></label>
+        <label>HAIL ≥ <select id="wx-f-hail">
+          <option value="0"${wxFilters.hailIn == 0 ? " selected" : ""}>any</option>
+          <option value="0.75"${wxFilters.hailIn == 0.75 ? " selected" : ""}>0.75"</option>
+          <option value="1"${wxFilters.hailIn == 1 ? " selected" : ""}>1"</option>
+          <option value="2"${wxFilters.hailIn == 2 ? " selected" : ""}>2"</option>
+        </select></label>
+        <label>WIND ≥ <select id="wx-f-wind">
+          <option value="0"${wxFilters.windMph == 0 ? " selected" : ""}>any</option>
+          <option value="38"${wxFilters.windMph == 38 ? " selected" : ""}>38 mph</option>
+          <option value="50"${wxFilters.windMph == 50 ? " selected" : ""}>50 mph</option>
+          <option value="58"${wxFilters.windMph == 58 ? " selected" : ""}>58 mph</option>
+        </select></label>
+        <label>DATES <select id="wx-f-days">
+          <option value="30"${wxFilters.days == 30 ? " selected" : ""}>30d</option>
+          <option value="90"${wxFilters.days == 90 ? " selected" : ""}>90d</option>
+          <option value="180"${wxFilters.days == 180 ? " selected" : ""}>180d</option>
+          <option value="365"${wxFilters.days == 365 ? " selected" : ""}>1y</option>
+        </select></label>
       </div>
       <div class="wx-contacts">
         ${data.owner_name ? `<div>Owner: ${esc(data.owner_name)}</div>` : ""}
         ${data.owner_phone ? `<div>Phone: ${esc(data.owner_phone)}</div>` : ""}
         ${data.owner_email ? `<div>Email: ${esc(data.owner_email)}</div>` : ""}
       </div>
-      <h4>HAIL REPORTS (NOAA SPC)</h4>
-      <div class="wx-hail">${hail.length ? hail.slice(0, 14).map((h) => `
+      <h4>HAIL NEAR PIN</h4>
+      <div class="wx-hail">${hail.length ? hail.slice(0, 16).map((h) => `
         <div class="wx-hail-row"><span class="date">${esc(h.date)}</span>
         <span class="size">${esc(h.size_in)} in</span>
         <span class="dist">${esc(String(h.distance_km))} km</span>
-        ${esc(h.location)}, ${esc(h.state)}</div>`).join("") : `<p class="muted">No SPC hail reports within 80 km in the last ~6 months. Try DEEP RESEARCH or widen search area.</p>`}</div>
-      <h4>STORM DATES</h4>
-      <div class="wx-storms">${storms.length ? storms.slice(0, 12).map((s) => `
-        <div class="wx-storm"><span class="date">${esc(s.date)}</span> <span class="score">${esc(String(s.score))}</span> ${esc((s.reasons || []).join(" · ") || s.label)}</div>`).join("") : `<p class="muted">No scored storm days yet.</p>`}</div>
+        ${esc(h.location)}, ${esc(h.state)}</div>`).join("") : `<p class="muted">No hail this close after filters. Widen NEAR or drop HAIL ≥.</p>`}</div>
+      <h4>WIND NEAR PIN</h4>
+      <div class="wx-wind">${wind.length ? wind.slice(0, 12).map((w) => `
+        <div class="wx-hail-row"><span class="date">${esc(w.date)}</span>
+        <span class="size">${esc(String(w.wind_mph))} mph</span>
+        <span class="dist">${esc(String(w.distance_km))} km</span>
+        ${esc(w.location)}, ${esc(w.state)}</div>`).join("") : `<p class="muted">No wind reports this close after filters.</p>`}</div>
+      <h4>STORM DATES (THIS PIN)</h4>
+      <div class="wx-storms">${storms.length ? storms.slice(0, 16).map((s) => `
+        <div class="wx-storm"><span class="date">${esc(s.date)}</span> <span class="score">${esc(String(s.wind_mph || s.score))}${s.wind_mph ? " mph" : ""}</span> ${esc((s.reasons || []).join(" · ") || s.label)}</div>`).join("") : `<p class="muted">No storm days at this pin after filters.</p>`}</div>
       <h4>NEWS</h4>
       <div class="wx-news">${news.length ? news.slice(0, 8).map((n) => `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>`).join("") : `<p class="muted">News pulls on deep research.</p>`}</div>
     </div>`;
   const btn = root.querySelector("#wx-deep");
   if (btn && onResearch) btn.onclick = onResearch;
+  const bind = (id, key, cast) => {
+    const el = root.querySelector(id);
+    if (!el) return;
+    el.onchange = () => {
+      wxFilters[key] = cast(el.value);
+      renderDossier(root, data, esc, onResearch);
+      const f = filterDossier(data, wxFilters);
+      drawHailMarkers(f.hail, f.wind);
+    };
+  };
+  bind("#wx-f-km", "km", Number);
+  bind("#wx-f-hail", "hailIn", Number);
+  bind("#wx-f-wind", "windMph", Number);
+  bind("#wx-f-days", "days", Number);
 }
 
 export function layerButtons(config, esc) {
-  return (config.layers || [])
-    .map((l) => `<button type="button" data-layer="${esc(l.id)}" class="${l.id === activeLayer ? "on" : ""}">${esc(l.label)}</button>`)
+  const bases = (config.layers || []).filter((l) => l.kind !== "overlay");
+  const over = (config.layers || []).filter((l) => l.kind === "overlay");
+  const baseBtns = (bases.length ? bases : config.layers || [])
+    .map((l) => `<button type="button" data-layer="${esc(l.id)}" class="${l.id === activeLayer || (!bases.length && l.id === activeLayer) ? "on" : ""}">${esc(l.label)}</button>`)
     .join("");
+  const overBtns = over
+    .map((l) => `<button type="button" data-layer="${esc(l.id)}" class="overlay ${activeOverlays.has(l.id) ? "on" : ""}">${esc(l.label)}</button>`)
+    .join("");
+  return overBtns ? `${baseBtns}<span class="wx-split"></span>${overBtns}` : baseBtns;
+}
+
+export async function fetchLiveWeather(lat, lon) {
+  const wx = await currentWeather(lat, lon);
+  let alerts = [];
+  try {
+    const { body } = await httpGet(`https://api.weather.gov/alerts/active?point=${lat},${lon}`, 6000, {
+      "User-Agent": "PipWeather/1.0 (joshuagwatts)",
+      Accept: "application/geo+json",
+    });
+    const data = JSON.parse(body || "{}");
+    alerts = (data.features || []).slice(0, 8).map((f) => {
+      const p = f.properties || {};
+      return { id: p.id || f.id || p.event, event: p.event || "", severity: p.severity || "", headline: String(p.headline || p.event || "").slice(0, 220) };
+    });
+  } catch {
+    alerts = [];
+  }
+  const code = wx.code || 0;
+  const gust = wx.gust_mph || wx.wind_mph || 0;
+  const warning = alerts.some((a) => /warning/i.test(a.event) || /extreme|severe/i.test(a.severity));
+  const crummy = warning || [82, 95, 96, 99, 65].includes(code) || gust >= 50;
+  let level = "ok";
+  let line = "";
+  if (warning || code === 96 || code === 99) {
+    level = "severe";
+    line = "Weather is getting seriously crummy. Stay in or get cover.";
+  } else if (alerts.some((a) => /watch/i.test(a.event)) || code === 95 || gust >= 45) {
+    level = "watch";
+    line = "Storms nearby. Keep an eye on it.";
+  } else if (crummy) {
+    level = "rough";
+    line = "It's turning ugly out. Plan around it.";
+  }
+  return { ...wx, alerts, severity: { level, crummy, line, warning } };
+}
+
+export function startWeatherWatch(getCenter, onAlert, everyMs = 8 * 60 * 1000) {
+  let lastId = "";
+  const tick = async () => {
+    try {
+      const c = await getCenter();
+      if (!c?.lat) return;
+      const live = await fetchLiveWeather(c.lat, c.lon);
+      if (!live.severity?.crummy) return;
+      const id = (live.alerts[0] && live.alerts[0].id) || `${live.severity.level}:${live.label}`;
+      if (id === lastId) return;
+      lastId = id;
+      onAlert(live);
+    } catch {
+      /* keep watching */
+    }
+  };
+  tick();
+  return setInterval(tick, everyMs);
 }

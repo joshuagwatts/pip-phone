@@ -42,9 +42,11 @@ export function talkSystem(operator, humor, honesty, kit) {
     `Humor ${n}/100 (${humorBand(n)}). Honesty ${Number(honesty) || 90}/100.`,
     `Operator: ${name}.${one ? " " + String(one).slice(0, 180) : ""}`,
     "This turn is conversation, not a ticket. Stay Pip. Inspire without a speech.",
+    "If live weather is severe, warn them. Do not invent storms.",
+    typeof window !== "undefined" && window.__pipWxLine ? `Live weather: ${window.__pipWxLine}` : "",
     "UI colors run through the theme engine — not you. Never claim you changed colors unless the engine already applied them. Refresh/repaint requests: re-apply saved palette or ask for a color name. No motivational filler on theme turns.",
     CREW_LOCK,
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 export function isBlank(text) {

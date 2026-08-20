@@ -145,17 +145,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.HOLOWATTS_GH_TOKEN || github.token }}
         with:
           tag_name: ${{ steps.gate.outputs.tag }}
-          name: Holowatts Pip ${{ steps.gate.outputs.tag }}
+          name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Holowatts · Phone Pip v0.1.21** — CHAT theme commands fixed.
+            **Phone Pip v0.1.22** — Nearby storms, weather overlays, live alerts.
 
-            - **Refresh ui color** actually re-applies your saved palette (no LLM hallucination).
-            - Theme engine catches refresh/reload/fix/sync + ui/color phrasing.
-            - Pip won't fake motivational "I repainted it" replies on theme turns.
+            - Map layers: Night / Street / Sat plus Radar, Clouds, Vis overlays.
+            - House tap uses ~15 km of the pin (not every storm in the metro). Filter by date, hail size, wind.
+            - Weather refresh every 8 minutes. CHAT warns if NWS/Open-Meteo says it is getting seriously crummy.
 
-            Install Pip.apk over your current build. Restart desktop Pip for matching theme handling.
-
-            — Holowatts
+            Install Pip.apk over your current build. Restart desktop Pip for the same WX behavior.
           files: |
             Pip.apk
             Pip-Windows.exe

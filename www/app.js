@@ -15,7 +15,7 @@ import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThe
 import { captureMoment, topMoments } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { listEntries, applyAllOverlays } from "./codefs.js";
-import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier } from "./wx.js";
+import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, startWeatherWatch, filterDossier } from "./wx.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -560,12 +560,13 @@ async function onWxTap(lat, lon) {
     });
     wxState.address = data.address || "";
     wxState.data = data;
-    drawHailMarkers(data.hail);
+    drawHailMarkers(data.hail, data.wind);
     renderDossier(panel, data, esc, async () => {
       setStatus("DEEP RESEARCH…");
       const deep = await researchPin(db.settings, lat, lon, wxState.address, true);
       wxState.data = deep;
-      drawHailMarkers(deep.hail);
+      const f = filterDossier(deep);
+      drawHailMarkers(f.hail, f.wind);
       renderDossier(panel, deep, esc, null);
       setStatus("DOSSIER UPDATED");
     });
@@ -1136,6 +1137,20 @@ function boot() {
   render();
   renderPrivacy();
   setStatus("PIP // WAKING");
+  startWeatherWatch(
+    () => resolveMapCenter(db.settings),
+    (live) => {
+      const line = (live.severity && live.severity.line) || "";
+      if (!line) return;
+      const nws = (live.alerts || []).slice(0, 2).map((a) => a.event).filter(Boolean);
+      const msg = nws.length ? `${line} ${nws.join(". ")}.` : line;
+      window.__pipWxLine = msg;
+      db.chat.push({ role: "pip", content: msg });
+      persist();
+      addLog("pip", msg);
+      setStatus("WX ALERT");
+    },
+  );
   ensurePip((msg) => setStatus(msg))
     .then(async () => {
       if (desktopConfigured(db.settings)) {
