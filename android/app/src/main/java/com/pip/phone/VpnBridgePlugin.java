@@ -13,10 +13,18 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+/**
+ * Proton companion: detect system VPN, open Proton, and briefly bind Pip to Wi‑Fi
+ * so desktop LAN (192.168.x.x:7420) works while Proton is connected.
+ */
 @CapacitorPlugin(name = "VpnBridge")
 public class VpnBridgePlugin extends Plugin {
+    private ConnectivityManager cm() {
+        return (ConnectivityManager) getContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+    }
+
     private boolean vpnActive() {
-        ConnectivityManager cm = (ConnectivityManager) getContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+        ConnectivityManager cm = cm();
         if (cm == null) return false;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Network net = cm.getActiveNetwork();
@@ -27,10 +35,66 @@ public class VpnBridgePlugin extends Plugin {
         return false;
     }
 
+    /** Prefer Wi‑Fi so LAN HTTP can bypass the VPN tunnel. */
+    private Network findWifi(ConnectivityManager cm) {
+        if (cm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return null;
+        Network[] nets = cm.getAllNetworks();
+        if (nets == null) return null;
+        Network fallback = null;
+        for (Network n : nets) {
+            NetworkCapabilities caps = cm.getNetworkCapabilities(n);
+            if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue;
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    || caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) {
+                return n;
+            }
+            if (fallback == null) fallback = n;
+        }
+        return fallback;
+    }
+
     @PluginMethod
     public void isActive(PluginCall call) {
         JSObject ret = new JSObject();
         ret.put("active", vpnActive());
+        call.resolve(ret);
+    }
+
+    /**
+     * Bind this process to Wi‑Fi so CapacitorHttp / fetch can reach LAN
+     * while Proton (or another VPN) is the default route.
+     */
+    @PluginMethod
+    public void bindWifi(PluginCall call) {
+        JSObject ret = new JSObject();
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            ret.put("ok", false);
+            ret.put("reason", "unsupported");
+            call.resolve(ret);
+            return;
+        }
+        ConnectivityManager cm = cm();
+        Network wifi = findWifi(cm);
+        if (wifi == null) {
+            ret.put("ok", false);
+            ret.put("reason", "no_wifi");
+            call.resolve(ret);
+            return;
+        }
+        boolean ok = cm.bindProcessToNetwork(wifi);
+        ret.put("ok", ok);
+        ret.put("reason", ok ? "wifi" : "bind_failed");
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void unbindNetwork(PluginCall call) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            ConnectivityManager cm = cm();
+            if (cm != null) cm.bindProcessToNetwork(null);
+        }
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
         call.resolve(ret);
     }
 

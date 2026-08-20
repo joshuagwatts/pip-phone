@@ -1,4 +1,5 @@
 import { httpLanGet, httpLanPostJson } from "./net.js";
+import { vpnSystemActive, openProtonVpn } from "./proton.js";
 
 const PORT = 7420;
 const FALLBACK_SUBNETS = ["192.168.1", "192.168.0", "10.0.0", "192.168.50", "192.168.2", "10.0.1"];
@@ -282,12 +283,27 @@ async function scanLan(onProgress) {
   return null;
 }
 
+async function protonBlockHint() {
+  try {
+    if (await vpnSystemActive()) {
+      return (
+        "Proton VPN is ON and blocking LAN. Proton → Settings → Features → Allow LAN connections (ON), " +
+        "then CONNECT again. Same Wi‑Fi as the PC."
+      );
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
 /**
  * One-shot connect: use typed URL if present, else scan full Wi‑Fi subnet.
  */
 export async function connectDesktop(settings, onProgress) {
   const typed = normalizeUrl(settings.desktop_url);
   let hit = null;
+  const protonHint = await protonBlockHint();
 
   if (typed) {
     if (onProgress) onProgress(`CONNECTING ${typed}…`);
@@ -295,18 +311,21 @@ export async function connectDesktop(settings, onProgress) {
       hit = await probeDesktop(typed, 8000);
     } catch (e) {
       const msg = String(e.message || e);
+      if (protonHint) throw new Error(protonHint);
       throw new Error(
-        `${msg} — OFF phone VPN · same Wi‑Fi as PC · run Open-Firewall.bat as Admin · test in phone Chrome: ${typed}/api/ready`,
+        `${msg} — OFF phone VPN or enable Proton Allow LAN · same Wi‑Fi · Open-Firewall.bat · Chrome: ${typed}/api/ready`,
       );
     }
     if (!hit) {
-      throw new Error(`can't reach ${typed} — OFF phone VPN, run Open-Firewall.bat as Admin`);
+      if (protonHint) throw new Error(protonHint);
+      throw new Error(`can't reach ${typed} — enable Proton Allow LAN, or turn VPN off briefly`);
     }
   } else {
     hit = await scanLan(onProgress);
     if (!hit) {
+      if (protonHint) throw new Error(protonHint);
       throw new Error(
-        "scan found nothing — desktop DATA → COPY URL → paste into DESKTOP URL → CONNECT. Or run Open-Firewall.bat as Admin.",
+        "scan found nothing — desktop DATA → COPY URL → paste → CONNECT. Or Proton → Allow LAN connections.",
       );
     }
   }

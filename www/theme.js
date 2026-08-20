@@ -8,6 +8,7 @@ export const DEFAULT_THEME = {
   line_bright: "#4a7a3a",
   phos: "#7dff5a",
   phos_dim: "#3f8f32",
+  you: "#7dff5a",
   amber: "#d4a84b",
   warn: "#e07050",
   leak: "#ff3a3a",
@@ -126,13 +127,16 @@ function hslToHex(h, s, l) {
   return `#${hx(r)}${hx(g)}${hx(b)}`;
 }
 
-function deriveFromAccent(accent) {
+function deriveFromAccent(accent, keepYou) {
   const [r, g, b] = hexToRgb(accent);
   const [h, s] = rgbToHsl(r, g, b);
   const sat = Math.min(Math.max(s * 0.55, 0.12), 0.45);
+  const you =
+    keepYou && String(keepYou).startsWith("#") ? keepYou : DEFAULT_THEME.you;
   return {
     phos: accent,
     phos_dim: hslToHex(h, sat * 0.7, 0.28),
+    you,
     bg: hslToHex(h, sat * 0.35, 0.04),
     panel: hslToHex(h, sat * 0.28, 0.06),
     inset: hslToHex(h, sat * 0.22, 0.05),
@@ -145,6 +149,31 @@ function deriveFromAccent(accent) {
     leak: DEFAULT_THEME.leak,
     black: hslToHex(h, sat * 0.2, 0.02),
   };
+}
+
+function parseDualColors(text) {
+  const t = String(text || "");
+  let youC = null;
+  let uiC = null;
+  const uiM = t.match(
+    /\b(?:ui|hud|app|interface)\b(?:\s+\w+){0,6}\s+(?:in|to|as|be)?\s*(cyan|aqua|phosphor|phos|teal|green|amber|orange|#[0-9a-fA-F]{6}|[a-z][a-z\s-]{2,20})/i,
+  );
+  if (uiM) uiC = resolveColor(uiM[1]) || resolveColor(uiM[0]);
+  const shortYou = t.match(/^\s*you\s+(phosphor|phos|cyan|amber|orange|green|#[0-9a-fA-F]{6})\s*$/i);
+  if (shortYou) youC = resolveColor(shortYou[1]);
+  const shortUi = t.match(/^\s*ui\s+(cyan|aqua|phosphor|phos|teal|green|#[0-9a-fA-F]{6})\s*$/i);
+  if (shortUi) uiC = resolveColor(shortUi[1]) || uiC;
+  if (!youC) {
+    const youM =
+      t.match(/\bi want (?:it|them|you|my responses?)\s+to\s+be\s+(phosphor|phos|cyan|green|#[0-9a-fA-F]{6})/i) ||
+      t.match(/\b(?:make|set)\s+(?:it|them|you|my responses?)\s+(phosphor|phos|cyan|green|#[0-9a-fA-F]{6})/i) ||
+      t.match(/\byou\s+(phosphor|phos|cyan|amber|orange|green|#[0-9a-fA-F]{6})\b/i) ||
+      t.match(
+        /\b(?:my\s+responses?|responses?)\b.{0,60}?\b(?:to\s+be)\s+(phosphor|phos|cyan|green|#[0-9a-fA-F]{6})/i,
+      );
+    if (youM) youC = resolveColor(youM[1]);
+  }
+  return { youC, uiC };
 }
 
 function searchBlob(text) {
@@ -293,11 +322,33 @@ export function tryThemeCommand(text, settings) {
     const theme = resetTheme(settings);
     return { ok: true, theme, name: "default", reply: "Back to phosphor green default. Cleared the bad palette." };
   }
+  const { youC, uiC } = parseDualColors(t);
+  if (youC || uiC) {
+    const cur = getStoredTheme(settings);
+    let theme = { ...cur };
+    const bits = [];
+    if (uiC) {
+      theme = deriveFromAccent(uiC, youC || cur.you);
+      bits.push(`HUD ${labelHint(t) || uiC} (${theme.phos})`);
+    }
+    if (youC) {
+      theme = { ...theme, you: youC };
+      bits.push(`YOU ${youC}`);
+    }
+    saveTheme(settings, theme, bits.join(" · ") || "custom");
+    applyTheme(theme);
+    return {
+      ok: true,
+      theme,
+      name: settings.ui_theme_name || "custom",
+      reply: `${bits.join(" · ")}. Say “you phosphor” / “ui cyan” anytime.`,
+    };
+  }
   const explicitPaint = Boolean(resolveColor(t) && /\b(make|paint|set|go|turn|want)\b/i.test(t) && COLOR_WORD.test(t) && !SHIFT_CMD.test(t));
   if (SHIFT_CMD.test(t) && !explicitPaint) {
     const current = getStoredTheme(settings);
     const color = shiftAccent(current.phos, t);
-    const theme = deriveFromAccent(color);
+    const theme = deriveFromAccent(color, current.you);
     const label = (t.match(SHIFT_CMD) || ["shifted"])[0];
     saveTheme(settings, theme, label);
     applyTheme(theme);
@@ -305,12 +356,15 @@ export function tryThemeCommand(text, settings) {
       ok: true,
       theme,
       name: label,
-      reply: `Shifted the HUD ${label} (${theme.phos}). Say a color name if you want a full repaint.`,
+      reply: `Shifted the HUD ${label} (${theme.phos}). YOU stays ${theme.you}.`,
     };
   }
   if (looksLikeThemeRequest(t) && resolveColor(t)) {
     const color = resolveColor(t);
-    const theme = deriveFromAccent(color);
+    const cur = getStoredTheme(settings);
+    const keep = /\b(everything|whole|all)\b/i.test(t) ? color : cur.you;
+    const theme = deriveFromAccent(color, keep);
+    if (/\b(everything|whole|all)\b/i.test(t)) theme.you = color;
     const label = labelHint(t) || color;
     saveTheme(settings, theme, label);
     applyTheme(theme);
@@ -318,7 +372,7 @@ export function tryThemeCommand(text, settings) {
       ok: true,
       theme,
       name: label,
-      reply: `Theme applied: ${label} (${theme.phos}). Tap DATA → RESET THEME if it looks wrong.`,
+      reply: `Painted the HUD in ${label} (${theme.phos}). YOU stays ${theme.you} — say “you phosphor” to change.`,
     };
   }
   if (REFRESH_CMD.test(t)) {
@@ -327,7 +381,7 @@ export function tryThemeCommand(text, settings) {
   if (!looksLikeThemeRequest(t)) return null;
   return {
     ok: false,
-    reply: "Name a color — phthalo green, cobalt, rose, or #0d4f3c. Say reset ui theme to undo.",
+    reply: "Chat colors: “you phosphor” · “ui cyan” · “you green ui cyan”. Or reset ui theme.",
   };
 }
 

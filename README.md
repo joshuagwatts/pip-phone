@@ -39,7 +39,9 @@ On **Phone Pip** (DATA tab):
 3. **TEST** — should say desktop online with your Ollama model
 4. COMM now prefers your PC's GPU
 
-**VPN (v0.1.17+):** Desktop DATA → password + Phone LAN + VPN mode (Tailscale / WireGuard). Copy a URL into Phone Pip DATA → **VPN URL** → **PAIR VPN URL**, or use **FIND + PAIR** (tries VPN URLs before Wi‑Fi scan). WireGuard: desktop DATA → COPY PHONE WG → import in WireGuard app on phone.
+**Proton VPN:** Keep Proton on for outbound privacy. Phone Pip binds LAN calls to Wi‑Fi when a VPN is active, so CONNECT can reach desktop Pip without turning Proton off. If it still fails: Proton → Settings → Features → **Allow LAN connections**. Desktop DATA also shows this tip. Same Wi‑Fi as the PC; run `Open-Firewall.bat` once if Windows blocks port 7420.
+
+**Chat colors (desktop + phone):** YOU bubbles and HUD accent are separate — say `you phosphor` and `ui cyan`.
 
 ## Android
 

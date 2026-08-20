@@ -8,6 +8,7 @@ import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } fro
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
 import { hasNativeHttp, openUrl, httpLanGet, httpLanPostJson } from "./net.js";
+import { openProtonVpn } from "./proton.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
 import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
@@ -856,6 +857,11 @@ function renderData() {
       <button type="button" id="desk-clear">FORGET</button>
     </div>
     <p class="muted" id="desk-msg">${esc(deskLine)}</p>
+    <h3>PROTON VPN</h3>
+    <p class="muted">Keep Proton on. Enable <strong>Allow LAN connections</strong> in Proton (Settings → Features). Then CONNECT works without turning VPN off.</p>
+    <div class="actions">
+      <button type="button" id="proton-open">OPEN PROTON</button>
+    </div>
     <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> BACKGROUND OPP SYNC</label>
 
     <h3>BRAIN KEYS</h3>
@@ -948,6 +954,15 @@ function renderData() {
   if (deskConnect) {
     deskConnect.onclick = () => {
       guardSecrets(db.settings, runConnect).catch((e) => setStatus(String(e.message || e)));
+    };
+  }
+
+  const protonOpen = $("#proton-open");
+  if (protonOpen) {
+    protonOpen.onclick = async () => {
+      setStatus("OPENING PROTON…");
+      const ok = await openProtonVpn();
+      setStatus(ok ? "PROTON · TURN ON ALLOW LAN CONNECTIONS" : "INSTALL PROTON VPN FROM PLAY STORE");
     };
   }
 

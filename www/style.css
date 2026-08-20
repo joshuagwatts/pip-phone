@@ -4,6 +4,7 @@
   --inset: #0c120c;
   --line: #2f4a2a;
   --phos: #7dff5a;
+  --you: #7dff5a;
   --amber: #d4a84b;
   --leak: #ff3a3a;
   --text: #c5e0b4;
@@ -264,6 +265,8 @@ body.comm #comm { display: flex; }
 .probe-out .row { display: flex; justify-content: space-between; padding: 0.15rem 0; border-bottom: 1px solid var(--line); }
 #log { flex: 1; overflow: auto; padding: 0.8rem; }
 .bubble .who { color: var(--phos); font-size: 10px; letter-spacing: 0.2em; margin-bottom: 0.25rem; }
+.bubble.user .who { color: var(--you); }
+.bubble.user { border-left-color: var(--you); color: var(--you); }
 .bubble .body { white-space: pre-wrap; word-break: break-word; }
 .bubble .chat-text { white-space: pre-wrap; }
 .bubble .chat-code {

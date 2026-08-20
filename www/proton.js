@@ -1,4 +1,4 @@
-/** Proton VPN companion — system VPN detect, open Proton app, background keepalive. */
+/** Proton VPN companion — system VPN detect, open Proton, Wi‑Fi bind for LAN, keepalive. */
 
 function bridge() {
   return window.Capacitor?.Plugins?.VpnBridge || null;
@@ -12,6 +12,41 @@ export async function vpnSystemActive() {
     return Boolean(hit && hit.active);
   } catch {
     return false;
+  }
+}
+
+/** Bind process to Wi‑Fi so LAN reaches desktop while Proton is up. */
+export async function bindLanWifi() {
+  const b = bridge();
+  if (!b?.bindWifi) return false;
+  try {
+    const hit = await b.bindWifi();
+    return Boolean(hit && hit.ok);
+  } catch {
+    return false;
+  }
+}
+
+export async function unbindLanNetwork() {
+  const b = bridge();
+  if (!b?.unbindNetwork) return;
+  try {
+    await b.unbindNetwork();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Run fn with Wi‑Fi preferred when a VPN is active (Proton-friendly LAN). */
+export async function withLanBypass(fn) {
+  let bound = false;
+  try {
+    if (await vpnSystemActive()) {
+      bound = await bindLanWifi();
+    }
+    return await fn();
+  } finally {
+    if (bound) await unbindLanNetwork();
   }
 }
 

@@ -1,3 +1,5 @@
+import { withLanBypass } from "./proton.js";
+
 const UA =
   "Mozilla/5.0 (Linux; Android 14; Pixel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36";
 
@@ -100,7 +102,9 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
     }
     if (cookie) data._cookie = cookie;
     if (!status) {
-      const err = new Error("network failed — turn OFF phone VPN, same Wi‑Fi, run Open-Firewall.bat as Admin");
+      const err = new Error(
+        "network failed — Proton: Allow LAN connections · or same Wi‑Fi · Open-Firewall.bat as Admin",
+      );
       err.status = 0;
       throw err;
     }
@@ -166,8 +170,7 @@ export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
 }
 
 export async function httpLanGet(url, timeoutMs = 10000, extraHeaders = {}) {
-  const data = await request("GET", url, extraHeaders, undefined, timeoutMs, assertLan);
-  return data;
+  return withLanBypass(() => request("GET", url, extraHeaders, undefined, timeoutMs, assertLan));
 }
 
 export async function httpPostJson(url, headers, payload, timeoutMs = 60000) {
@@ -175,12 +178,20 @@ export async function httpPostJson(url, headers, payload, timeoutMs = 60000) {
 }
 
 export async function httpLanPostJson(url, headers, payload, timeoutMs = 60000) {
-  return request("POST", url, headers, payload, timeoutMs, assertLan);
+  return withLanBypass(() => request("POST", url, headers, payload, timeoutMs, assertLan));
 }
 
 /** SSE stream from desktop Pip (CODE apply). Uses fetch ReadableStream — works in Capacitor WebView. */
 export async function* httpLanSSE(url, headers, payload, timeoutMs = 300000) {
   const target = assertLan(url);
+  // Hold Wi‑Fi bind for the whole stream so Proton doesn't steal the route mid-apply.
+  let bound = false;
+  try {
+    const { vpnSystemActive, bindLanWifi, unbindLanNetwork } = await import("./proton.js");
+    if (await vpnSystemActive()) bound = await bindLanWifi();
+  } catch {
+    /* browser preview */
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -225,6 +236,14 @@ export async function* httpLanSSE(url, headers, payload, timeoutMs = 300000) {
     }
   } finally {
     clearTimeout(t);
+    if (bound) {
+      try {
+        const { unbindLanNetwork } = await import("./proton.js");
+        await unbindLanNetwork();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
