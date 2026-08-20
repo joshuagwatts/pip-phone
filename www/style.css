@@ -232,6 +232,36 @@ body.comm #comm { display: flex; }
 .brain-chip.key { color: var(--amber); border-color: var(--amber); }
 .brain-chip.bad { color: var(--leak); border-color: var(--leak); }
 .brain-chip.skip { opacity: 0.45; }
+.desk-status {
+  margin: 0.4rem 0 0.7rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.desk-status.on { border-color: var(--phos); color: var(--phos); }
+.desk-status.key { border-color: var(--amber); color: var(--amber); }
+.desk-status.bad { border-color: var(--leak); color: var(--leak); }
+.desk-status.off { color: var(--muted); }
+.key-list { display: flex; flex-direction: column; gap: 0.75rem; margin: 0.6rem 0 1rem; }
+.key-row {
+  border: 1px solid var(--line);
+  padding: 0.55rem 0.65rem;
+}
+.key-row.on { border-color: var(--phos); }
+.key-row.key { border-color: var(--amber); }
+.key-row.bad { border-color: var(--leak); }
+.key-meta { display: flex; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.25rem; }
+.key-name { letter-spacing: 0.14em; font-size: 11px; }
+.key-tag { font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
+.key-row.on .key-tag { color: var(--phos); }
+.key-row.key .key-tag { color: var(--amber); }
+.key-row.bad .key-tag { color: var(--leak); }
+.key-tip { margin: 0 0 0.4rem; font-size: 11px; }
+.key-get { color: var(--phos); text-decoration: underline; margin-left: 0.35rem; }
+.key-row input { width: 100%; }
+.probe-out { margin: 0.4rem 0 0.8rem; font-size: 11px; }
+.probe-out .row { display: flex; justify-content: space-between; padding: 0.15rem 0; border-bottom: 1px solid var(--line); }
 #log { flex: 1; overflow: auto; padding: 0.8rem; }
 .bubble .who { color: var(--phos); font-size: 10px; letter-spacing: 0.2em; margin-bottom: 0.25rem; }
 .bubble .body { white-space: pre-wrap; word-break: break-word; }

@@ -1,10 +1,10 @@
 /** Phone brain — privacy-first chain, cloud only when needed, leak tags for the UI. */
 import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS } from "./crew.js";
 import { chatChain, chatComplete, chatCloudEnabled, cloudComplete, cloudStatus, markHealth, privacyOn } from "./cloud.js";
-import { desktopChat, desktopConfigured } from "./desktop.js";
+import { desktopChat, desktopConfigured, desktopReachable } from "./desktop.js";
 import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
-import { pickJob, skipLocalModel } from "./command.js";
+import { pickJob } from "./command.js";
 
 const QWEN_MLC = [
   "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
@@ -276,8 +276,10 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const tryDesktop = async () => {
     if (!desktopConfigured(settings)) throw new Error("desktop not paired");
     emit("DESKTOP GPU");
+    const reach = await desktopReachable(settings, 2500);
+    if (!reach.ok) throw new Error(`desktop offline (${reach.error || "no route"})`);
     const user = [...messages].reverse().find((m) => m.role === "user");
-    const out = await desktopChat(settings, String((user && user.content) || ""), 90000);
+    const out = await desktopChat(settings, String((user && user.content) || ""), 60000);
     const cleaned = sanitizeReply(out.text);
     if (!cleaned || isBlank(cleaned)) throw new Error("desktop blank");
     if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
@@ -310,7 +312,6 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   };
 
   const tryLocal = async () => {
-    if (skipLocalModel(settings)) throw new Error("local qwen skipped (pin AUTO)");
     emit("QWEN");
     return localComplete(messages, temperature, maxTokens);
   };
@@ -326,7 +327,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       steps.push(["desktop", tryDesktop]);
       steps.push(["local", tryLocal]);
     } else {
-      // auto / desktop pin → GPU first
+      // auto / desktop pin → GPU first, then cloud keys, then Qwen
       steps.push(["desktop", tryDesktop]);
       steps.push(["cloud", tryCloud]);
       steps.push(["local", tryLocal]);
@@ -334,9 +335,11 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   } else if (secure) {
     steps.push(["desktop", tryDesktop]);
     steps.push(["cloud", tryCloud]);
+    steps.push(["local", tryLocal]);
   } else {
     steps.push(["cloud", tryCloud]);
     steps.push(["desktop", tryDesktop]);
+    steps.push(["local", tryLocal]);
   }
 
   const seen = new Set();
@@ -489,7 +492,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
 
   if (!hit?.text || isBlank(hit.text)) {
     const tip = errMsg
-      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: DATA → RE-PAIR → TEST GPU, or paste cloud keys, then ask again.`
+      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: DATA → PROBE KEYS (green = live) or FIND + PAIR desktop, then ask again.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "pip", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true };

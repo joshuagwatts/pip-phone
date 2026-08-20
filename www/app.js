@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
-import { probeKeyed, providerHealth, hydrateHealth } from "./cloud.js";
-import { desktopConfigured, desktopLogin, desktopStatus, findAndPair, desktopGpuPing } from "./desktop.js";
+import { probeKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint } from "./cloud.js";
+import { desktopConfigured, desktopLogin, desktopStatus, findAndPair, desktopGpuPing, desktopReachable } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets, requireAppUnlock } from "./biometric.js";
 import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
@@ -520,7 +520,14 @@ function updateBrainChip() {
 
 function chainChipsHtml() {
   const keyed = cloudStatus(db.settings).keyed || [];
-  const rows = describeChain(keyed, providerHealth(), desktopConfigured(db.settings), db.settings.brain_pin);
+  const live = db.settings.desktop_live;
+  const rows = describeChain(
+    keyed,
+    providerHealth(),
+    desktopConfigured(db.settings),
+    db.settings.brain_pin,
+    live === true ? true : live === false ? false : null,
+  );
   return rows
     .map((r) => `<span class="brain-chip ${esc(r.state)}" data-brain="${esc(r.id)}">${esc(r.label)}</span>`)
     .join("");
@@ -803,9 +810,35 @@ function renderData() {
   const s = db.settings;
   const paired = desktopConfigured(s);
   const securePosture = privacyOn(s);
+  const health = providerHealth();
+  const deskLive = s.desktop_live;
+  const deskLine = !paired
+    ? "Not paired — FIND + PAIR (no password)."
+    : deskLive === true
+      ? `ONLINE · ${s.desktop_url || ""}`
+      : deskLive === false
+        ? `OFFLINE · ${s.desktop_url || ""}`
+        : `Paired · ${s.desktop_url || ""} · tap CHECK`;
+
+  const keyRows = PROVIDERS.map((p) => {
+    const info = keyTag(s, p, health[p.id]);
+    const hint = keyHint(s, p);
+    const get = p.keyUrl
+      ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener noreferrer">GET KEY</a>`
+      : "";
+    return `<div class="key-row ${esc(info.state)}">
+      <div class="key-meta">
+        <span class="key-name">${esc(p.label.toUpperCase())}</span>
+        <span class="key-tag">${esc(info.tag)}${hint ? ` · ${esc(hint)}` : ""}</span>
+      </div>
+      <p class="muted key-tip">${esc(p.tip || "")} ${get}</p>
+      <input id="set-${esc(p.field)}" type="password" value="${esc(s[p.field] || "")}" placeholder="paste key" autocomplete="off" />
+    </div>`;
+  }).join("");
+
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">Pair desktop for private GPU chat over Wi‑Fi/VPN. Paste cloud keys yourself if you want LEAKED brains. Coding lives in CHAT.</p>
+    <p class="muted">Pair desktop for private GPU. Paste cloud keys below — PROBE shows LIVE vs KEY BAD. Coding lives in CHAT.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -813,21 +846,29 @@ function renderData() {
     <div class="field"><span>HONESTY ${esc(s.honesty)}</span>
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
+
     <h3>DESKTOP GPU</h3>
-    <p class="muted">Desktop Pip → DATA → password + TURN ON LAN. Same Wi‑Fi (or VPN). FIND + PAIR, then TEST GPU. Chat prefers desktop first.</p>
-    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="from desktop DATA → PHONE" autocomplete="off" /></div>
-    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.x.x:7420" /></div>
+    <p class="muted">Desktop Pip → DATA → TURN ON LAN → restart if it says so. Same Wi‑Fi. No password needed. Then FIND + PAIR.</p>
+    <div class="desk-status ${paired ? (deskLive === false ? "bad" : deskLive === true ? "on" : "key") : "off"}" id="desk-status">${esc(deskLine)}</div>
+    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.x.x:7420 or paste COPY URL" /></div>
+    <div class="field"><span>VPN / PASTE URL (optional)</span><input id="set-vpn" value="${esc(s.vpn_url || "")}" placeholder="Tailscale / WireGuard URL" /></div>
     <div class="actions">
       <button type="button" id="desk-find" class="primary">FIND + PAIR</button>
-      <button type="button" id="desk-pair">${paired ? "RE-PAIR" : "PAIR"}</button>
+      <button type="button" id="desk-pair">${paired ? "RE-PAIR" : "PAIR URL"}</button>
+      <button type="button" id="desk-check">CHECK</button>
       <button type="button" id="desk-test">TEST GPU</button>
       <button type="button" id="desk-clear">FORGET</button>
     </div>
-    <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}` : "Not paired."}</p>
+    <p class="muted" id="desk-msg">${esc(deskLine)}</p>
     <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> BACKGROUND OPP SYNC</label>
-    <h3>BRAIN</h3>
+
+    <h3>BRAIN KEYS</h3>
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
-    <p class="muted">Chat order: DESKTOP GPU (private) → your pasted cloud keys (LEAKED) → Qwen if pinned LOCAL. Paste keys below — no sync.</p>
+    <p class="muted">Green LIVE = API accepted the key. Amber KEY SET = pasted but not probed. Red KEY BAD = rejected. Chat order: DESKTOP → cloud → Qwen.</p>
+    <div class="actions">
+      <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
+    </div>
+    <div id="brain-probe-out" class="probe-out muted">Tap PROBE KEYS after pasting.</div>
     <div class="field"><span>PIN</span>
       <select id="brain-pin">
         ${["auto", "desktop", "local", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
@@ -837,15 +878,11 @@ function renderData() {
         }).join("")}
       </select>
     </div>
-    ${securePosture ? `<p class="muted">SECURE: OPP scrapes stay limited. CHAT cloud keys still work when pasted.</p>` : `<p class="muted">LEAKY: cloud unlocked for OPP + in-chat coding tools.</p>`}
-    <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="paste key" autocomplete="off" /></div>
-    <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="paste key" autocomplete="off" /></div>
-    <div class="field"><span>CEREBRAS</span><input id="set-cerebras" type="password" value="${esc(s.cerebras)}" placeholder="paste key" autocomplete="off" /></div>
-    <div class="field"><span>MISTRAL</span><input id="set-mistral" type="password" value="${esc(s.mistral)}" placeholder="paste key" autocomplete="off" /></div>
-    <div class="field"><span>GEMINI</span><input id="set-gemini" type="password" value="${esc(s.gemini)}" placeholder="paste key" autocomplete="off" /></div>
-    <div class="field"><span>GROK / XAI</span><input id="set-xai" type="password" value="${esc(s.xai)}" placeholder="paste key" autocomplete="off" /></div>
+    ${securePosture ? `<p class="muted">SECURE: OPP scrapes stay limited. CHAT cloud keys still work when LIVE.</p>` : `<p class="muted">LEAKY: cloud unlocked for OPP + in-chat coding tools.</p>`}
+    <div class="key-list">${keyRows}</div>
+
     <h3>LOCK</h3>
-    <p class="muted">Press & hold the thumbprint until the ring fills. Haptic buzz while scanning. No Android popup.</p>
+    <p class="muted" id="bio-help">Uses your phone fingerprint / face unlock when available. Hold-to-scan only in browser preview.</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
     <h3>UI THEME</h3>
     <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. CHAT: "phthalo green" or "reset ui theme".</p>
@@ -865,28 +902,50 @@ function renderData() {
     db.settings.humor = Number($("#set-humor").value);
     db.settings.honesty = Number($("#set-honesty").value);
     db.settings.brain_pin = ($("#brain-pin") && $("#brain-pin").value) || db.settings.brain_pin;
-    db.settings.groq = $("#set-groq").value.trim();
-    db.settings.openrouter = $("#set-or").value.trim();
-    db.settings.cerebras = $("#set-cerebras").value.trim();
-    db.settings.mistral = $("#set-mistral").value.trim();
-    db.settings.gemini = $("#set-gemini").value.trim();
-    db.settings.xai = $("#set-xai").value.trim();
+    for (const p of PROVIDERS) {
+      const el = $(`#set-${p.field}`);
+      if (el) db.settings[p.field] = el.value.trim();
+    }
     db.settings.desktop_url = $("#set-durl").value.trim();
+    db.settings.vpn_url = ($("#set-vpn") && $("#set-vpn").value.trim()) || "";
     db.settings.biometric_lock = Boolean($("#set-bio").checked);
     db.settings.keepalive = Boolean($("#set-keepalive")?.checked);
     persist();
   };
 
+  const setDeskMsg = (text, cls) => {
+    const msg = $("#desk-msg");
+    const st = $("#desk-status");
+    if (msg) msg.textContent = text;
+    if (st) {
+      st.textContent = text;
+      st.className = `desk-status ${cls || ""}`;
+    }
+  };
+
   const afterPair = async () => {
-    setStatus("TESTING GPU…");
+    setStatus("CHECKING DESKTOP…");
     try {
+      const st = await desktopStatus(db.settings);
+      db.settings.desktop_live = Boolean(st.ok);
+      persist();
+      if (!st.ok) {
+        setDeskMsg(`OFFLINE · ${st.error || "no route"}`, "bad");
+        setStatus("PAIRED · DESKTOP OFFLINE");
+        paintBrainStrip();
+        return;
+      }
+      setStatus("TESTING GPU…");
       const ping = await desktopGpuPing(db.settings);
       persist();
-      setStatus(ping.ok ? `GPU OK · ${String(ping.model || "ollama").toUpperCase()}` : `GPU REPLY · ${String(ping.text || "").slice(0, 40)}`);
+      const model = String(ping.model || "ollama").toUpperCase();
+      setDeskMsg(ping.ok ? `ONLINE · GPU OK · ${model}` : `ONLINE · GPU WEAK · ${model}`, "on");
+      setStatus(ping.ok ? `GPU OK · ${model}` : `GPU REPLY · ${String(ping.text || "").slice(0, 40)}`);
       paintBrainStrip();
-      if (tab === "data") renderData();
     } catch (e) {
+      db.settings.desktop_live = false;
       persist();
+      setDeskMsg(`PAIR WEAK · ${String(e.message || e).slice(0, 48)}`, "bad");
       setStatus(`PAIRED · GPU TEST FAILED · ${String(e.message || e).slice(0, 48)}`);
       paintBrainStrip();
     }
@@ -919,20 +978,48 @@ function renderData() {
     };
   }
 
+  const probeBtn = $("#brain-probe");
+  if (probeBtn) {
+    probeBtn.onclick = async () => {
+      grabSettings();
+      const box = $("#brain-probe-out");
+      if (box) box.textContent = "PROBING HOSTS…";
+      setStatus("PROBING KEYS…");
+      try {
+        const hits = await probeKeyed(db.settings);
+        db.settings.brain_health = providerHealth();
+        persist();
+        paintBrainStrip();
+        const lines = PROVIDERS.map((p) => {
+          const info = keyTag(db.settings, p, providerHealth()[p.id]);
+          const hit = (hits || []).find((h) => h.id === p.id);
+          const err = hit && !hit.ok ? ` · ${hit.error || ""}` : "";
+          return `${p.label.toUpperCase()} // ${info.tag}${err}`;
+        });
+        if (box) box.innerHTML = lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join("");
+        const live = (hits || []).filter((h) => h.ok).map((h) => h.id.toUpperCase());
+        setStatus(live.length ? `LIVE · ${live.join(" · ")}` : "NO LIVE KEYS — check paste / GET KEY");
+        if (tab === "data") renderData();
+      } catch (e) {
+        if (box) box.textContent = String(e.message || e);
+        setStatus(String(e.message || e).toUpperCase());
+      }
+    };
+  }
+
   $("#desk-pair").onclick = () => {
     guardSecrets(db.settings, async () => {
       grabSettings();
-      const pass = ($("#set-dpass").value || "").trim();
       if (!db.settings.desktop_url) {
         setStatus("SET DESKTOP URL OR FIND");
         return;
       }
       setStatus("PAIRING…");
       try {
-        const out = await desktopLogin(db.settings, pass);
-        db.settings.desktop_token = out.token || "loopback";
+        const out = await desktopLogin(db.settings, "");
+        db.settings.desktop_token = out.token || "";
         db.settings.desktop_paired = true;
-        if (pass) db.settings.desktop_password = pass;
+        db.settings.desktop_password = "";
         persist();
         await afterPair();
       } catch (e) {
@@ -944,19 +1031,14 @@ function renderData() {
   $("#desk-find").onclick = () => {
     guardSecrets(db.settings, async () => {
       grabSettings();
-      const pass = ($("#set-dpass").value || "").trim();
-      if (!pass) {
-        setStatus("SET DESKTOP PASSWORD FIRST");
-        return;
-      }
       try {
-        const out = await findAndPair(db.settings, pass, (msg) => setStatus(msg));
+        const out = await findAndPair(db.settings, "", (msg) => setStatus(msg));
         db.settings.desktop_url = out.url;
-        db.settings.desktop_token = out.token || "loopback";
+        db.settings.desktop_token = out.token || "";
         db.settings.desktop_paired = true;
-        if (pass) db.settings.desktop_password = pass;
+        db.settings.desktop_password = "";
         persist();
-        $("#set-durl").value = out.url;
+        if ($("#set-durl")) $("#set-durl").value = out.url;
         await afterPair();
       } catch (e) {
         setStatus(String(e.message || e));
@@ -964,25 +1046,66 @@ function renderData() {
     }).catch((e) => setStatus(String(e.message || e)));
   };
 
+  const deskCheck = $("#desk-check");
+  if (deskCheck) {
+    deskCheck.onclick = async () => {
+      grabSettings();
+      setStatus("CHECKING DESKTOP…");
+      try {
+        const reach = await desktopReachable(db.settings, 2500);
+        if (!reach.ok) {
+          db.settings.desktop_live = false;
+          persist();
+          setDeskMsg(`OFFLINE · ${reach.error || "no route"}`, "bad");
+          setStatus("DESKTOP OFFLINE");
+          paintBrainStrip();
+          return;
+        }
+        const st = await desktopStatus(db.settings);
+        db.settings.desktop_live = Boolean(st.ok);
+        persist();
+        if (!st.ok) {
+          setDeskMsg(`OFFLINE · ${st.error || "auth"}`, "bad");
+          setStatus("DESKTOP OFFLINE");
+        } else {
+          const model = (st.ollama && st.ollama.using) || "ollama";
+          setDeskMsg(`ONLINE · auth ${st.auth ? "yes" : "no"} · ${model}`, "on");
+          setStatus(`DESKTOP ONLINE · ${String(model).toUpperCase()}`);
+        }
+        paintBrainStrip();
+      } catch (e) {
+        db.settings.desktop_live = false;
+        persist();
+        setStatus(String(e.message || e).toUpperCase());
+        paintBrainStrip();
+      }
+    };
+  }
+
   $("#desk-test").onclick = async () => {
     grabSettings();
-    const pass = ($("#set-dpass").value || "").trim();
-    if (pass) db.settings.desktop_password = pass;
     setStatus("TESTING DESKTOP GPU…");
     try {
       const st = await desktopStatus(db.settings);
+      db.settings.desktop_live = Boolean(st.ok);
       if (!st.ok) {
+        persist();
+        setDeskMsg(st.error || "DESKTOP OFFLINE", "bad");
         setStatus(st.error || "DESKTOP OFFLINE");
+        paintBrainStrip();
         return;
       }
       const ping = await desktopGpuPing(db.settings);
       persist();
       const model = ping.model || (st.ollama && st.ollama.using) || "ollama";
+      setDeskMsg(ping.ok ? `ONLINE · GPU OK · ${model}` : `ONLINE · GPU WEAK`, "on");
       setStatus(ping.ok ? `GPU OK · ${String(model).toUpperCase()}` : `GPU WEAK · ${String(ping.text || "").slice(0, 36)}`);
-      $("#desk-msg").textContent = `Online · auth ${st.auth ? "yes" : "no"} · ${model}`;
       paintBrainStrip();
     } catch (e) {
+      db.settings.desktop_live = false;
+      persist();
       setStatus(String(e.message || e).toUpperCase());
+      paintBrainStrip();
     }
   };
 
@@ -990,6 +1113,7 @@ function renderData() {
     db.settings.desktop_token = "";
     db.settings.desktop_password = "";
     db.settings.desktop_paired = false;
+    db.settings.desktop_live = null;
     persist();
     setStatus("DESKTOP FORGOTTEN");
     updateBrainChip();
@@ -1015,7 +1139,23 @@ function renderData() {
       if (el && info && info.version) el.textContent = `This build ${info.version}. Opens GitHub. Download Pip.apk. Install over this app.`;
     }).catch(() => {});
   }
+
+  biometricAvailable().then((ok) => {
+    const lockP = $("#bio-help");
+    if (lockP && !ok && window.Capacitor?.isNativePlatform?.()) {
+      lockP.textContent = "No biometric enrolled — enable fingerprint in Android settings, or turn lock off.";
+    }
+  }).catch(() => {});
+
+  document.querySelectorAll(".key-get").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      const href = a.getAttribute("href");
+      if (href) openUrl(href, { system: true }).catch(() => window.open(href, "_blank"));
+    });
+  });
 }
+
 
 async function saveNew() {
   const title = $("#new-title").value.trim();
@@ -1333,10 +1473,15 @@ function markBubbleLeaked(el, reason) {
   if (who) who.textContent = reason ? `YOU · LEAKED` : "YOU · LEAKED";
 }
 
+let chatBusy = false;
+
 async function sendChat() {
   const box = $("#input");
   const text = (box.value || "").trim();
-  if (!text) return;
+  if (!text || chatBusy) return;
+  chatBusy = true;
+  const sendBtn = $("#send");
+  if (sendBtn) sendBtn.disabled = true;
   box.value = "";
   db.chat.push({ role: "user", content: text });
   const userBubble = addLog("user", text);
@@ -1344,6 +1489,7 @@ async function sendChat() {
   persist();
   setStatus(pipStatus());
 
+  try {
   const themeHit = tryThemeCommand(text, db.settings);
   if (themeHit) {
     persist();
@@ -1455,6 +1601,10 @@ async function sendChat() {
   } catch (e) {
     addLog("pip", String(e.message || e));
     setStatus("CHAT ERROR");
+  }
+  } finally {
+    chatBusy = false;
+    if (sendBtn) sendBtn.disabled = false;
   }
 }
 
@@ -1568,12 +1718,18 @@ function boot() {
           if (desktopConfigured(db.settings)) {
             try {
               const st = await desktopStatus(db.settings);
+              db.settings.desktop_live = Boolean(st.ok);
+              persist();
+              paintBrainStrip();
               if (st.ok) {
                 const model = (st.ollama && st.ollama.using) || "ollama";
                 setStatus(`DESKTOP GPU · ${String(model).toUpperCase()}`);
+              } else {
+                setStatus(`DESKTOP OFFLINE · ${String(st.error || "CHECK").slice(0, 40)}`);
               }
             } catch {
-              /* offline */
+              db.settings.desktop_live = false;
+              persist();
             }
           }
           const hits = await probeKeyed(db.settings);
@@ -1582,11 +1738,11 @@ function boot() {
           paintBrainStrip();
           const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
           const keyed = cloudStatus(db.settings).keyed;
-          if (desktopConfigured(db.settings) && !keyed.length) setStatus("DESKTOP PAIRED · PASTE KEYS OPTIONAL");
-          else if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
-          else if (keyed.length) setStatus("KEYS ON PHONE · PROBE WEAK");
-          else if (desktopConfigured(db.settings)) setStatus("DESKTOP PAIRED · READY");
-          else setStatus("PIP ON DECK · PAIR DESKTOP GPU");
+          if (keyed.length && live.length) setStatus(`LIVE · ${live.join(" · ").toUpperCase()}`);
+          else if (keyed.length) setStatus("KEYS SET · TAP DATA → PROBE KEYS");
+          else if (db.settings.desktop_live) setStatus("DESKTOP ONLINE · CLOUD KEYS OPTIONAL");
+          else if (desktopConfigured(db.settings)) setStatus("DESKTOP PAIRED · OFFLINE — CHECK / FIND");
+          else setStatus("PIP ON DECK · PAIR DESKTOP OR PASTE KEYS");
           if (desktopConfigured(db.settings)) {
             await syncEventsFromDesktop(db.settings, db);
             await syncMealsFromDesktop(db.settings, db);

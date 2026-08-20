@@ -1,7 +1,7 @@
 import { httpLanGet, httpLanPostJson } from "./net.js";
 
 const PORT = 7420;
-const SUBNETS = ["192.168.1", "192.168.0", "10.0.0", "192.168.50", "192.168.2"];
+const SUBNETS = ["192.168.1", "192.168.0", "10.0.0", "192.168.50", "192.168.2", "10.0.1"];
 const PRIORITY_HOSTS = [
   ...Array.from({ length: 40 }, (_, i) => i + 2),
   100, 101, 102, 103, 104, 105, 106, 107, 108,
@@ -26,7 +26,8 @@ function token(settings) {
 }
 
 export function desktopConfigured(settings) {
-  return Boolean(baseUrl(settings) && token(settings));
+  const tok = token(settings);
+  return Boolean(baseUrl(settings) && tok && tok !== "loopback");
 }
 
 /** Build candidate desktop URLs — saved, VPN paste, note, Tailscale host, WireGuard default. */
@@ -61,7 +62,8 @@ async function probeDesktop(url, password, timeoutMs = 2200) {
   if (!base) return null;
   try {
     const st = await httpLanGet(`${base}/api/auth/status`, timeoutMs);
-    if (!st.password_set && !st.phone_lan && !st.phone_vpn) return null;
+    if (!st.phone_lan && !st.phone_vpn && !st.password_set) return null;
+    if (!st.phone_lan && !st.phone_vpn) return null;
     const login = await httpLanPostJson(`${base}/api/auth/login`, {}, { password: password || "" }, timeoutMs);
     const tok = String(login.token || login._cookie || "").trim();
     if (!tok && !login.ok && !login.loopback) return null;
@@ -69,12 +71,13 @@ async function probeDesktop(url, password, timeoutMs = 2200) {
     const pick = urls[0] || base;
     return {
       url: pick,
-      token: tok || "loopback",
+      token: tok || (login.loopback ? "loopback" : ""),
       urls: urls.length ? urls : [pick],
       via: base,
       vpn: Boolean(st.phone_vpn),
       tailscale: st.tailscale || {},
       wireguard: st.wireguard || {},
+      open_lan: Boolean(login.open_lan),
     };
   } catch {
     return null;
@@ -87,7 +90,7 @@ export async function pairAtUrl(settings, password, url, onProgress) {
   if (!target) throw new Error("need a desktop URL");
   if (onProgress) onProgress(`TRYING ${target}…`);
   const hit = await probeDesktop(target, pass, 6000);
-  if (!hit) throw new Error(`no Pip at ${target} — check password, LAN/VPN on desktop DATA`);
+  if (!hit) throw new Error(`no Pip at ${target} — turn ON LAN on desktop DATA, same Wi‑Fi`);
   return hit;
 }
 
@@ -113,16 +116,16 @@ export async function findDesktop(settings, password, onProgress) {
     }
   }
 
-  const batch = 20;
+  const batch = 24;
   for (let i = 0; i < targets.length; i += batch) {
     const chunk = targets.slice(i, i + batch);
     if (onProgress) onProgress(`SCAN ${i + 1}–${Math.min(i + batch, targets.length)}…`);
-    const hits = await Promise.all(chunk.map((url) => probeDesktop(url, pass, 1400)));
+    const hits = await Promise.all(chunk.map((url) => probeDesktop(url, pass, 1200)));
     const found = hits.find(Boolean);
     if (found) return found;
   }
 
-  throw new Error("no desktop Pip — set VPN URL from PC DATA or use same Wi‑Fi + Phone LAN");
+  throw new Error("no desktop Pip — desktop DATA → TURN ON LAN, same Wi‑Fi, then FIND again");
 }
 
 export async function desktopLogin(settings, password) {
@@ -130,8 +133,8 @@ export async function desktopLogin(settings, password) {
   if (!url) throw new Error("set desktop URL first");
   const res = await httpLanPostJson(`${url}/api/auth/login`, {}, { password: password || "" }, 10000);
   const cookie = String(res.token || res._cookie || "").trim();
-  if (!cookie && !res.loopback) throw new Error("login failed — check password and Phone LAN on desktop");
-  return { token: cookie || "loopback", loopback: Boolean(res.loopback) };
+  if (!cookie && !res.loopback) throw new Error("login failed — TURN ON LAN on desktop, same Wi‑Fi");
+  return { token: cookie || "loopback", loopback: Boolean(res.loopback), open_lan: Boolean(res.open_lan) };
 }
 
 export async function findAndPair(settings, password, onProgress) {
@@ -142,6 +145,7 @@ export async function findAndPair(settings, password, onProgress) {
     urls: hit.urls || [hit.url],
     via: hit.via,
     vpn: hit.vpn,
+    open_lan: hit.open_lan,
   };
 }
 
@@ -158,21 +162,35 @@ function authHeaders(settings) {
 export async function ensureDesktopSession(settings) {
   if (!baseUrl(settings)) throw new Error("set desktop URL first");
   const pass = String(settings.desktop_password || "").trim();
-  let tok = token(settings);
+  const tok = token(settings);
   if (tok && tok !== "loopback") return tok;
-  if (!pass) throw new Error("RE-PAIR desktop — need password for GPU chat");
   const out = await desktopLogin(settings, pass);
   const next = String(out.token || "").trim();
-  if (!next || next === "loopback") throw new Error("desktop login returned no token");
+  if (!next || next === "loopback") throw new Error("desktop login returned no token — check LAN");
   settings.desktop_token = next;
   settings.desktop_paired = true;
   return next;
+}
+
+/** Fast reachability check — do not burn chat on a dead pair. */
+export async function desktopReachable(settings, timeoutMs = 2500) {
+  const url = baseUrl(settings);
+  if (!url) return { ok: false, error: "no url" };
+  try {
+    const ready = await httpLanGet(`${url}/api/ready`, timeoutMs);
+    if (!ready || ready.ok === false) return { ok: false, error: "not ready" };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
 }
 
 export async function desktopStatus(settings) {
   const url = baseUrl(settings);
   if (!url) return { ok: false, error: "no url" };
   try {
+    const reach = await desktopReachable(settings, 2500);
+    if (!reach.ok) return { ok: false, error: reach.error || "offline", offline: true };
     await ensureDesktopSession(settings).catch(() => {});
     const hdr = authHeaders(settings);
     const data = await httpLanGet(`${url}/api/auth/status`, 5000, hdr);
@@ -200,9 +218,11 @@ async function postChat(settings, text, timeoutMs) {
 }
 
 /** Chat through desktop Pip GPU / Ollama. Re-auths once on 401. */
-export async function desktopChat(settings, text, timeoutMs = 90000) {
+export async function desktopChat(settings, text, timeoutMs = 60000) {
   const url = baseUrl(settings);
   if (!url) throw new Error("desktop not paired");
+  const reach = await desktopReachable(settings, 2500);
+  if (!reach.ok) throw new Error(`desktop offline (${reach.error || "no route"})`);
   await ensureDesktopSession(settings);
 
   let raw;
@@ -213,11 +233,10 @@ export async function desktopChat(settings, text, timeoutMs = 90000) {
     const status = e.status || 0;
     if (status === 401 || /401|login required/i.test(msg)) {
       const pass = String(settings.desktop_password || "").trim();
-      if (!pass) throw new Error("session expired — RE-PAIR desktop");
       const out = await desktopLogin(settings, pass);
       settings.desktop_token = String(out.token || "").trim();
       if (!settings.desktop_token || settings.desktop_token === "loopback") {
-        throw new Error("re-login failed — check Phone LAN + password");
+        throw new Error("re-login failed — FIND + PAIR again");
       }
       raw = await postChat(settings, text, timeoutMs);
     } else {

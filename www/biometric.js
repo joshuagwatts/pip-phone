@@ -1,4 +1,4 @@
-/** Pip phosphor lock — hold the thumbprint. No Android BiometricPrompt. */
+/** Pip lock — real device fingerprint/Face ID when available; hold fallback in browser. */
 
 let unlocked = false;
 let unlocking = null;
@@ -14,8 +14,23 @@ function isNativeApp() {
   }
 }
 
-export function biometricAvailable() {
-  return true;
+function nativeBiometric() {
+  try {
+    return window.Capacitor?.Plugins?.NativeBiometric || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function biometricAvailable() {
+  const plugin = nativeBiometric();
+  if (!plugin?.isAvailable) return !isNativeApp();
+  try {
+    const out = await plugin.isAvailable();
+    return Boolean(out?.isAvailable);
+  } catch {
+    return false;
+  }
 }
 
 export function isUnlocked() {
@@ -71,14 +86,13 @@ function ensureScanDom() {
   el.hidden = true;
   el.innerHTML = `
     <div class="bio-scan-inner">
-      <div class="bio-ring" id="bio-ring" role="button" tabindex="0" aria-label="Hold to unlock Pip">
+      <div class="bio-ring" id="bio-ring" role="button" tabindex="0" aria-label="Unlock Pip">
         <svg class="bio-progress" viewBox="0 0 100 100" aria-hidden="true">
           <circle class="bio-progress-track" cx="50" cy="50" r="46" />
           <circle class="bio-progress-fill" id="bio-progress" cx="50" cy="50" r="46" />
         </svg>
         <div class="bio-ring-glow"></div>
         <svg class="bio-print" viewBox="0 0 64 64" aria-hidden="true">
-          <!-- Realistic thumbprint ridges -->
           <path d="M32 8c-9.5 0-17 7-17 16.5 0 2.2.4 4.3 1.1 6.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
           <path d="M48.2 30.2c.6-1.8.9-3.7.9-5.7C49.1 15 41.6 8 32 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
           <path d="M20.2 34.5c-1.2 3.4-1.2 7.2.2 10.8 2.8 7.2 9.4 12.2 16.6 12.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -97,7 +111,7 @@ function ensureScanDom() {
         <div class="bio-scanline"></div>
       </div>
       <p class="bio-title">PIP</p>
-      <p class="bio-sub" id="bio-sub">Press & hold the print</p>
+      <p class="bio-sub" id="bio-sub">Fingerprint unlock</p>
       <button type="button" class="bio-btn" id="bio-retry" hidden>TRY AGAIN</button>
     </div>`;
   document.body.appendChild(el);
@@ -123,7 +137,7 @@ export function showScanUI(msg) {
   el.hidden = false;
   el.classList.remove("ok", "bad", "holding");
   el.classList.add("on");
-  setSub(msg || "Press & hold the print");
+  setSub(msg || "Fingerprint unlock");
   setProgress(0);
   const retry = el.querySelector("#bio-retry");
   if (retry) retry.hidden = true;
@@ -149,10 +163,6 @@ export function hideScanUI(ok) {
   else finish();
 }
 
-/**
- * Hold-to-scan gate. Continuous press fills the ring; release early resets.
- * Haptics tick while holding. No Android system biometric sheet.
- */
 function waitForHoldScan() {
   const el = ensureScanDom();
   const ring = el.querySelector("#bio-ring");
@@ -247,15 +257,12 @@ function waitForHoldScan() {
       }
     };
 
-    // Pointer events cover touch + mouse; prevent click-to-open cheat.
     ring.style.touchAction = "none";
     ring.onpointerdown = startHold;
     ring.onpointerup = endHold;
     ring.onpointerleave = endHold;
     ring.onpointercancel = endHold;
     ring.oncontextmenu = (e) => e.preventDefault();
-
-    // Block accidental keyboard Enter instant unlock
     ring.onkeydown = (e) => {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
@@ -268,7 +275,66 @@ function waitForHoldScan() {
   });
 }
 
+async function waitForNativeScan() {
+  const plugin = nativeBiometric();
+  const el = ensureScanDom();
+  const retry = el.querySelector("#bio-retry");
+  showScanUI("Use fingerprint sensor");
+  el.classList.add("holding");
+  setProgress(0.35);
+  await haptic("start");
+
+  const run = async () => {
+    await plugin.verifyIdentity({
+      reason: "Unlock Phone Pip",
+      title: "Pip",
+      subtitle: "Confirm it's you",
+      description: "Fingerprint or face unlock",
+      negativeButtonText: "Cancel",
+      maxAttempts: 5,
+      useFallback: true,
+    });
+    setProgress(1);
+    setSub("Identity confirmed");
+    await haptic("ok");
+    unlocked = true;
+    hideScanUI(true);
+    return true;
+  };
+
+  try {
+    return await run();
+  } catch (e) {
+    el.classList.remove("holding");
+    el.classList.add("bad");
+    setProgress(0);
+    setSub(String(e?.message || e || "Biometric failed").slice(0, 80));
+    await haptic("bad");
+    if (retry) {
+      retry.hidden = false;
+      return new Promise((resolve, reject) => {
+        retry.onclick = async () => {
+          retry.hidden = true;
+          el.classList.remove("bad");
+          try {
+            resolve(await waitForNativeScan());
+          } catch (err) {
+            reject(err);
+          }
+        };
+      });
+    }
+    throw e;
+  }
+}
+
 export async function biometricUnlock() {
+  if (isNativeApp() && (await biometricAvailable())) {
+    showScanUI("Use fingerprint sensor");
+    await waitForNativeScan();
+    unlocked = true;
+    return true;
+  }
   showScanUI("Press & hold the print");
   await waitForHoldScan();
   unlocked = true;
@@ -281,17 +347,18 @@ export async function requireAppUnlock(settings, { force = false } = {}) {
     unlocked = true;
     return true;
   }
-  // Browser preview: still require hold so we don't ship a tap-cheat.
-  if (!isNativeApp() && typeof window !== "undefined" && !window.Capacitor) {
-    /* keep hold gate in browser too */
-  }
   if (unlocked && !force) return true;
   if (unlocking) return unlocking;
 
   unlocking = (async () => {
     try {
-      showScanUI("Press & hold the print");
-      await waitForHoldScan();
+      if (isNativeApp() && (await biometricAvailable())) {
+        showScanUI("Use fingerprint sensor");
+        await waitForNativeScan();
+      } else {
+        showScanUI("Press & hold the print");
+        await waitForHoldScan();
+      }
       unlocked = true;
       return true;
     } finally {

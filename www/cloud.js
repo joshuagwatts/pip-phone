@@ -12,6 +12,8 @@ export const PROVIDERS = [
     base: "https://api.groq.com/openai/v1",
     life: "llama-3.3-70b-versatile",
     boost: "llama-3.3-70b-versatile",
+    keyUrl: "https://console.groq.com/keys",
+    tip: "No card. Fast Llama 3.3 70B.",
   },
   {
     id: "openrouter",
@@ -21,6 +23,8 @@ export const PROVIDERS = [
     life: "meta-llama/llama-3.3-70b-instruct:free",
     boost: "qwen/qwen3-coder:free",
     headers: { "HTTP-Referer": "https://pip.phone", "X-Title": "Phone Pip" },
+    keyUrl: "https://openrouter.ai/keys",
+    tip: "One key · :free models.",
   },
   {
     id: "cerebras",
@@ -29,6 +33,8 @@ export const PROVIDERS = [
     base: "https://api.cerebras.ai/v1",
     life: "gpt-oss-120b",
     boost: "gpt-oss-120b",
+    keyUrl: "https://cloud.cerebras.ai",
+    tip: "High speed · ~1M tok/day.",
   },
   {
     id: "mistral",
@@ -37,6 +43,8 @@ export const PROVIDERS = [
     base: "https://api.mistral.ai/v1",
     life: "mistral-small-latest",
     boost: "mistral-small-latest",
+    keyUrl: "https://console.mistral.ai/api-keys/",
+    tip: "Paste API key from console.",
   },
   {
     id: "gemini",
@@ -46,6 +54,8 @@ export const PROVIDERS = [
     life: "gemini-2.5-flash",
     boost: "gemini-2.5-flash",
     fishy: true,
+    keyUrl: "https://aistudio.google.com/apikey",
+    tip: "Google AI Studio key.",
   },
   {
     id: "xai",
@@ -55,9 +65,26 @@ export const PROVIDERS = [
     life: "grok-3-mini",
     boost: "grok-3-mini",
     fishy: true,
+    keyUrl: "https://console.x.ai/",
+    tip: "xAI console key.",
   },
 ];
 
+export function keyTag(settings, prov, health = null) {
+  const key = providerKey(settings, prov);
+  if (!key) return { tag: "NO KEY", state: "off" };
+  const h = health || liveHealth[prov.id];
+  if (h?.ok === true) return { tag: "LIVE", state: "on" };
+  if (h?.ok === false) return { tag: "KEY BAD", state: "bad" };
+  return { tag: "KEY SET", state: "key" };
+}
+
+export function keyHint(settings, prov) {
+  const key = providerKey(settings, prov);
+  if (!key) return "";
+  if (key.length < 10) return "••••";
+  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+}
 export function privacyOn(settings) {
   return String(settings.privacy_mode || "secure").toLowerCase() !== "leaky";
 }
@@ -205,7 +232,7 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
         ...(prov.headers || {}),
       },
       payload,
-      14000,
+      22000,
     );
   } catch (e) {
     throw new Error(`${prov.id}: ${String(e.message || e).slice(0, 140)}`);

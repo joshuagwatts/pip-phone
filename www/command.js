@@ -73,13 +73,17 @@ export function orderFor(job, keyedIds, health = {}, pin = "auto") {
   return [...live, ...down];
 }
 
-export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto") {
+export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto", desktopLive = null) {
   const rows = [];
   if (desktop) {
+    let state = "key";
+    if (desktopLive === true) state = "on";
+    else if (desktopLive === false) state = "bad";
+    else if (pin === "desktop" || pin === "auto") state = "key";
     rows.push({
       id: "desktop",
       label: "DESKTOP",
-      state: pin === "desktop" || pin === "auto" ? "on" : "key",
+      state,
     });
   }
   for (const id of ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"]) {
@@ -95,13 +99,17 @@ export function describeChain(keyedIds, health = {}, desktop = false, pin = "aut
       state,
     });
   }
-  rows.push({ id: "local", label: "QWEN", state: pin === "local" ? "on" : "skip" });
+  rows.push({
+    id: "local",
+    label: "QWEN",
+    state: pin === "local" || pin === "auto" || pin === "desktop" ? "key" : "skip",
+  });
   return rows;
 }
 
 export function skipLocalModel(settings) {
-  const pin = String(settings?.brain_pin || "auto").toLowerCase();
-  return pin !== "local";
+  // Always allow on-device Qwen as last hop so chat never goes mute.
+  return false;
 }
 
 export { NOT_CHAT_JOB };
