@@ -44,4 +44,13 @@ if (files["style.css"]) {
   el.textContent = files["style.css"];
 }
 
-await import("./app.js");
+await import("./app.js").catch((err) => {
+  const root = document.getElementById("view");
+  const msg = String(err?.message || err || "boot failed");
+  if (root) {
+    root.innerHTML = `<h3>PIP BOOT ERROR</h3><p class="muted">${msg.replace(/</g, "&lt;")}</p><p class="muted">Try UPDATE PIP from GitHub, or clear app storage.</p>`;
+  }
+  const st = document.getElementById("status");
+  if (st) st.textContent = "BOOT FAILED";
+  console.error(err);
+});

@@ -16,6 +16,8 @@ export const APP_STAGES = [
 export function stageLabel(id) {
   return APP_STAGES.find((s) => s.id === id)?.label || id || "New";
 }
+
+export const OPP_TYPES = [
   { id: "all", label: "All" },
   { id: "festival_install", label: "Install" },
   { id: "festival_artist", label: "Mural" },

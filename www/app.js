@@ -1481,14 +1481,19 @@ async function sendChat() {
 }
 
 function boot() {
-  bootTheme(db.settings);
-  applyAllOverlays();
-  db.chat.slice(-20).forEach((m) => addLog(m.role === "user" ? "user" : "pip", m.content));
-  if (!db.chat.length) addLog("pip", "Pip is happy to help! Hunt opps in CHAT — or connect Proton VPN in DATA for private search.");
-  startBackground(db, { persist, render, setStatus });
-  if (desktopConfigured(db.settings)) {
-    fetchOppDigest(db.settings, db).then(() => { if (tab === "opp") render(); }).catch(() => {});
-  }
+  try {
+    bootTheme(db.settings);
+    applyAllOverlays();
+    db.chat.slice(-20).forEach((m) => addLog(m.role === "user" ? "user" : "pip", m.content));
+    if (!db.chat.length) addLog("pip", "Pip is happy to help! Hunt opps in CHAT — or connect Proton VPN in DATA for private search.");
+    try {
+      startBackground(db, { persist, render, setStatus });
+    } catch {
+      /* background sync optional */
+    }
+    if (desktopConfigured(db.settings)) {
+      fetchOppDigest(db.settings, db).then(() => { if (tab === "opp") render(); }).catch(() => {});
+    }
   $("#tabs").onclick = (e) => {
     const b = e.target.closest("[data-tab]");
     if (!b) return;
@@ -1551,6 +1556,12 @@ function boot() {
       }
     })
     .catch((e) => setStatus(String(e.message || e).toUpperCase()));
+  } catch (e) {
+    const msg = String(e.message || e);
+    $("#view").innerHTML = `<h3>PIP ERROR</h3><p class="muted">${esc(msg)}</p>`;
+    setStatus("BOOT ERROR");
+    console.error(e);
+  }
 }
 
 boot();
