@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { probeKeyed, providerHealth, hydrateHealth } from "./cloud.js";
-import { desktopConfigured, desktopLogin, desktopStatus, findAndPair } from "./desktop.js";
+import { desktopConfigured, desktopLogin, desktopStatus, findAndPair, desktopGpuPing } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets, requireAppUnlock } from "./biometric.js";
 import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
@@ -53,7 +53,6 @@ import {
   getBriefing,
   pingPresence,
 } from "./morning.js";
-import { pullCloudKeys, keyedSummary } from "./keysync.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -804,11 +803,9 @@ function renderData() {
   const s = db.settings;
   const paired = desktopConfigured(s);
   const securePosture = privacyOn(s);
-  const keyed = keyedSummary(s);
-  const synced = s.keys_synced_at ? ` · synced ${String(s.keys_synced_at).slice(0, 16).replace("T", " ")}` : "";
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">Pair once → keys copy onto this phone. Chat: phone keys first (LEAKED) → desktop GPU (private) → local Qwen. Coding lives in CHAT — ask Pip to edit the app. Flip LEAKY for OPP scrapes and in-chat code tools.</p>
+    <p class="muted">Pair desktop for private GPU chat over Wi‑Fi/VPN. Paste cloud keys yourself if you want LEAKED brains. Coding lives in CHAT.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -816,38 +813,37 @@ function renderData() {
     <div class="field"><span>HONESTY ${esc(s.honesty)}</span>
       <input type="range" id="set-honesty" min="0" max="100" value="${esc(s.honesty)}" />
     </div>
-    <h3>DESKTOP</h3>
-    <p class="muted">Same Wi‑Fi: Desktop Pip → DATA → set password → TURN ON LAN → FIND + PAIR here. Or paste the LAN URL and PAIR.</p>
+    <h3>DESKTOP GPU</h3>
+    <p class="muted">Desktop Pip → DATA → password + TURN ON LAN. Same Wi‑Fi (or VPN). FIND + PAIR, then TEST GPU. Chat prefers desktop first.</p>
     <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" placeholder="from desktop DATA → PHONE" autocomplete="off" /></div>
     <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.x.x:7420" /></div>
     <div class="actions">
       <button type="button" id="desk-find" class="primary">FIND + PAIR</button>
       <button type="button" id="desk-pair">${paired ? "RE-PAIR" : "PAIR"}</button>
-      <button type="button" id="desk-keys">SYNC KEYS</button>
-      <button type="button" id="desk-test">TEST</button>
+      <button type="button" id="desk-test">TEST GPU</button>
       <button type="button" id="desk-clear">FORGET</button>
     </div>
-    <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}${synced}` : "Not paired."}</p>
-    <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> BACKGROUND SYNC (opps + keys when paired)</label>
+    <p class="muted" id="desk-msg">${paired ? `Paired · ${esc(s.desktop_url || "")}` : "Not paired."}</p>
+    <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> BACKGROUND OPP SYNC</label>
     <h3>BRAIN</h3>
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
-    <p class="muted">${keyed.length ? `On this phone: ${keyed.join(" · ").toUpperCase()}.` : "No keys yet — pair desktop and tap SYNC KEYS."} CHAT uses these APIs from the phone. Pin LOCAL only for on-device Qwen.</p>
+    <p class="muted">Chat order: DESKTOP GPU (private) → your pasted cloud keys (LEAKED) → Qwen if pinned LOCAL. Paste keys below — no sync.</p>
     <div class="field"><span>PIN</span>
       <select id="brain-pin">
-        ${["auto", "local", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
+        ${["auto", "desktop", "local", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
           const on = (s.brain_pin || "auto") === id;
-          const label = id === "xai" ? "xai (Grok)" : id;
+          const label = id === "xai" ? "xai (Grok)" : id === "desktop" ? "desktop GPU" : id;
           return `<option value="${id}" ${on ? "selected" : ""}>${label}</option>`;
         }).join("")}
       </select>
     </div>
-    ${securePosture ? `<p class="muted">SECURE: OPP scrapes stay limited. CHAT still uses keyed clouds on this phone. In-chat coding needs LEAKY or desktop upgrade.</p>` : `<p class="muted">LEAKY: cloud unlocked for OPP + in-chat coding tools.</p>`}
-    <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="synced from desktop" autocomplete="off" /></div>
-    <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="synced from desktop" autocomplete="off" /></div>
-    <div class="field"><span>CEREBRAS</span><input id="set-cerebras" type="password" value="${esc(s.cerebras)}" placeholder="synced from desktop" autocomplete="off" /></div>
-    <div class="field"><span>MISTRAL</span><input id="set-mistral" type="password" value="${esc(s.mistral)}" placeholder="synced from desktop" autocomplete="off" /></div>
-    <div class="field"><span>GEMINI</span><input id="set-gemini" type="password" value="${esc(s.gemini)}" placeholder="synced from desktop" autocomplete="off" /></div>
-    <div class="field"><span>GROK / XAI</span><input id="set-xai" type="password" value="${esc(s.xai)}" placeholder="synced from desktop" autocomplete="off" /></div>
+    ${securePosture ? `<p class="muted">SECURE: OPP scrapes stay limited. CHAT cloud keys still work when pasted.</p>` : `<p class="muted">LEAKY: cloud unlocked for OPP + in-chat coding tools.</p>`}
+    <div class="field"><span>GROQ</span><input id="set-groq" type="password" value="${esc(s.groq)}" placeholder="paste key" autocomplete="off" /></div>
+    <div class="field"><span>OPENROUTER</span><input id="set-or" type="password" value="${esc(s.openrouter)}" placeholder="paste key" autocomplete="off" /></div>
+    <div class="field"><span>CEREBRAS</span><input id="set-cerebras" type="password" value="${esc(s.cerebras)}" placeholder="paste key" autocomplete="off" /></div>
+    <div class="field"><span>MISTRAL</span><input id="set-mistral" type="password" value="${esc(s.mistral)}" placeholder="paste key" autocomplete="off" /></div>
+    <div class="field"><span>GEMINI</span><input id="set-gemini" type="password" value="${esc(s.gemini)}" placeholder="paste key" autocomplete="off" /></div>
+    <div class="field"><span>GROK / XAI</span><input id="set-xai" type="password" value="${esc(s.xai)}" placeholder="paste key" autocomplete="off" /></div>
     <h3>LOCK</h3>
     <p class="muted">Press & hold the thumbprint until the ring fills. Haptic buzz while scanning. No Android popup.</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
@@ -882,17 +878,17 @@ function renderData() {
   };
 
   const afterPair = async () => {
-    setStatus("SYNCING KEYS…");
+    setStatus("TESTING GPU…");
     try {
-      const out = await pullCloudKeys(db.settings);
+      const ping = await desktopGpuPing(db.settings);
       persist();
-      setStatus(out.applied ? `KEYS · ${out.keyed.join(" · ").toUpperCase()}` : "PAIRED · NO KEYS ON DESKTOP");
-      renderPrivacy();
+      setStatus(ping.ok ? `GPU OK · ${String(ping.model || "ollama").toUpperCase()}` : `GPU REPLY · ${String(ping.text || "").slice(0, 40)}`);
       paintBrainStrip();
       if (tab === "data") renderData();
     } catch (e) {
-      setStatus(`PAIRED · KEY SYNC FAILED · ${String(e.message || e).slice(0, 40)}`);
-      renderPrivacy();
+      persist();
+      setStatus(`PAIRED · GPU TEST FAILED · ${String(e.message || e).slice(0, 48)}`);
+      paintBrainStrip();
     }
   };
 
@@ -968,41 +964,31 @@ function renderData() {
     }).catch((e) => setStatus(String(e.message || e)));
   };
 
-  $("#desk-keys").onclick = () => {
-    guardSecrets(db.settings, async () => {
-      grabSettings();
-      if (!desktopConfigured(db.settings)) {
-        setStatus("PAIR DESKTOP FIRST");
-        return;
-      }
-      setStatus("SYNCING KEYS…");
-      try {
-        const out = await pullCloudKeys(db.settings);
-        persist();
-        setStatus(out.applied ? `KEYS · ${out.keyed.join(" · ").toUpperCase()}` : "NO KEYS ON DESKTOP");
-        renderData();
-      } catch (e) {
-        setStatus(String(e.message || e).toUpperCase());
-      }
-    }).catch((e) => setStatus(String(e.message || e)));
-  };
-
-  $("#desk-test").onclick = () => {
+  $("#desk-test").onclick = async () => {
     grabSettings();
-    setStatus("TESTING DESKTOP…");
-    desktopStatus(db.settings).then((st) => {
+    const pass = ($("#set-dpass").value || "").trim();
+    if (pass) db.settings.desktop_password = pass;
+    setStatus("TESTING DESKTOP GPU…");
+    try {
+      const st = await desktopStatus(db.settings);
       if (!st.ok) {
         setStatus(st.error || "DESKTOP OFFLINE");
         return;
       }
-      const model = (st.ollama && st.ollama.using) || "ollama";
-      setStatus(`DESKTOP OK · ${model}`);
-      $("#desk-msg").textContent = `Online · auth ${st.auth ? "yes" : "no"} · ${model}${synced}`;
-    });
+      const ping = await desktopGpuPing(db.settings);
+      persist();
+      const model = ping.model || (st.ollama && st.ollama.using) || "ollama";
+      setStatus(ping.ok ? `GPU OK · ${String(model).toUpperCase()}` : `GPU WEAK · ${String(ping.text || "").slice(0, 36)}`);
+      $("#desk-msg").textContent = `Online · auth ${st.auth ? "yes" : "no"} · ${model}`;
+      paintBrainStrip();
+    } catch (e) {
+      setStatus(String(e.message || e).toUpperCase());
+    }
   };
 
   $("#desk-clear").onclick = () => {
     db.settings.desktop_token = "";
+    db.settings.desktop_password = "";
     db.settings.desktop_paired = false;
     persist();
     setStatus("DESKTOP FORGOTTEN");
@@ -1433,20 +1419,6 @@ async function sendChat() {
   }
 
   try {
-    // Pull keys right before chat if paired but phone store is empty.
-    if (desktopConfigured(db.settings) && !cloudStatus(db.settings).keyed.length) {
-      setStatus("SYNCING KEYS…");
-      try {
-        const keys = await pullCloudKeys(db.settings);
-        if (keys.applied) {
-          persist();
-          paintBrainStrip();
-          setStatus(`KEYS · ${keys.keyed.join(" · ").toUpperCase()}`);
-        }
-      } catch (e) {
-        setStatus(String(e.message || e).toUpperCase());
-      }
-    }
     const out = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit, db);
     const reply = typeof out === "string" ? out : out.text;
     const leaked = typeof out === "object" ? Boolean(out.leaked) : false;
@@ -1505,7 +1477,7 @@ function boot() {
       if (!db.chat.length) {
         addLog(
           "pip",
-          "Pip is happy to help — mentor, friend, agent. Pair desktop in DATA → SYNC KEYS. Ask in chat to plan meals or edit the app.",
+          "Pip is happy to help — mentor, friend, agent. Pair desktop GPU in DATA, or paste cloud keys yourself.",
         );
       }
       try {
@@ -1595,16 +1567,13 @@ function boot() {
         try {
           if (desktopConfigured(db.settings)) {
             try {
-              const keys = await pullCloudKeys(db.settings);
-              if (keys.applied) {
-                persist();
-                setStatus(`KEYS · ${keys.keyed.join(" · ").toUpperCase()}`);
-                paintBrainStrip();
-              } else if (keys.empty) {
-                setStatus("PAIRED · NO KEYS ON DESKTOP YET");
+              const st = await desktopStatus(db.settings);
+              if (st.ok) {
+                const model = (st.ollama && st.ollama.using) || "ollama";
+                setStatus(`DESKTOP GPU · ${String(model).toUpperCase()}`);
               }
-            } catch (e) {
-              setStatus(String(e.message || e).toUpperCase());
+            } catch {
+              /* offline */
             }
           }
           const hits = await probeKeyed(db.settings);
@@ -1613,10 +1582,11 @@ function boot() {
           paintBrainStrip();
           const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
           const keyed = cloudStatus(db.settings).keyed;
-          if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
+          if (desktopConfigured(db.settings) && !keyed.length) setStatus("DESKTOP PAIRED · PASTE KEYS OPTIONAL");
+          else if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
           else if (keyed.length) setStatus("KEYS ON PHONE · PROBE WEAK");
-          else if (desktopConfigured(db.settings)) setStatus("PAIRED · TAP SYNC KEYS");
-          else setStatus("PIP ON DECK · PAIR DESKTOP");
+          else if (desktopConfigured(db.settings)) setStatus("DESKTOP PAIRED · READY");
+          else setStatus("PIP ON DECK · PAIR DESKTOP GPU");
           if (desktopConfigured(db.settings)) {
             await syncEventsFromDesktop(db.settings, db);
             await syncMealsFromDesktop(db.settings, db);

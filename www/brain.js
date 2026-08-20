@@ -275,12 +275,9 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
 
   const tryDesktop = async () => {
     if (!desktopConfigured(settings)) throw new Error("desktop not paired");
-    emit("DESKTOP");
+    emit("DESKTOP GPU");
     const user = [...messages].reverse().find((m) => m.role === "user");
-    const out = await Promise.race([
-      desktopChat(settings, String((user && user.content) || "")),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("desktop timeout")), 15000)),
-    ]);
+    const out = await desktopChat(settings, String((user && user.content) || ""), 90000);
     const cleaned = sanitizeReply(out.text);
     if (!cleaned || isBlank(cleaned)) throw new Error("desktop blank");
     if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
@@ -289,18 +286,17 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
 
   const tryCloud = async () => {
     const keyed = chatCloudEnabled(settings);
-    if (!keyed) throw new Error("no keys on phone — DATA → SYNC KEYS");
+    if (!keyed) throw new Error("no cloud keys on phone — paste them in DATA");
     if (!isChat && !cloud.leaky) throw new Error("SECURE blocks cloud for OPP/CODE — flip LEAKY");
     const chainList = isChat ? chatChain(settings, routeJob) : null;
     if (isChat && !(chainList || []).length) {
-      throw new Error("no keyed chat brains — SYNC KEYS or unpin brain");
+      throw new Error("no keyed chat brains — paste keys in DATA or unpin");
     }
     const first = isChat ? chainList[0] : null;
     emit(isChat && first ? String(first.label || first.id).toUpperCase() : "CLOUD");
     const out = isChat
       ? await chatComplete(settings, messages, temperature, maxTokens, routeJob)
       : await cloudComplete(settings, messages, lane, temperature, maxTokens);
-    // Prefer raw text if sanitize wiped a real answer.
     const cleaned = sanitizeReply(out.text) || String(out.text || "").trim();
     if (!cleaned || isBlank(cleaned)) throw new Error(`${out.provider} blank`);
     markHealth(out.provider, true);
@@ -319,18 +315,22 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     return localComplete(messages, temperature, maxTokens);
   };
 
-  /** Snappy order: if phone has keys, cloud first; else desktop (short timeout); then local. */
-  const hasKeys = chatCloudEnabled(settings);
+  /** Chat: desktop GPU first when paired, then phone cloud keys, then on-device Qwen. */
+  const pin = String(settings?.brain_pin || "auto").toLowerCase();
   const steps = [];
   if (isChat) {
-    if (hasKeys) {
+    if (pin === "local") {
+      steps.push(["local", tryLocal]);
+    } else if (pin !== "auto" && pin !== "desktop") {
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
+      steps.push(["local", tryLocal]);
     } else {
+      // auto / desktop pin → GPU first
       steps.push(["desktop", tryDesktop]);
       steps.push(["cloud", tryCloud]);
+      steps.push(["local", tryLocal]);
     }
-    steps.push(["local", tryLocal]);
   } else if (secure) {
     steps.push(["desktop", tryDesktop]);
     steps.push(["cloud", tryCloud]);
@@ -489,7 +489,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
 
   if (!hit?.text || isBlank(hit.text)) {
     const tip = errMsg
-      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: DATA → RE-PAIR → SYNC KEYS, check the green brain chips, then ask again.`
+      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: DATA → RE-PAIR → TEST GPU, or paste cloud keys, then ask again.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "pip", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true };

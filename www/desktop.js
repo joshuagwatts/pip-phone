@@ -128,7 +128,7 @@ export async function findDesktop(settings, password, onProgress) {
 export async function desktopLogin(settings, password) {
   const url = baseUrl(settings);
   if (!url) throw new Error("set desktop URL first");
-  const res = await httpLanPostJson(`${url}/api/auth/login`, {}, { password: password || "" });
+  const res = await httpLanPostJson(`${url}/api/auth/login`, {}, { password: password || "" }, 10000);
   const cookie = String(res.token || res._cookie || "").trim();
   if (!cookie && !res.loopback) throw new Error("login failed — check password and Phone LAN on desktop");
   return { token: cookie || "loopback", loopback: Boolean(res.loopback) };
@@ -155,13 +155,28 @@ function authHeaders(settings) {
   };
 }
 
+export async function ensureDesktopSession(settings) {
+  if (!baseUrl(settings)) throw new Error("set desktop URL first");
+  const pass = String(settings.desktop_password || "").trim();
+  let tok = token(settings);
+  if (tok && tok !== "loopback") return tok;
+  if (!pass) throw new Error("RE-PAIR desktop — need password for GPU chat");
+  const out = await desktopLogin(settings, pass);
+  const next = String(out.token || "").trim();
+  if (!next || next === "loopback") throw new Error("desktop login returned no token");
+  settings.desktop_token = next;
+  settings.desktop_paired = true;
+  return next;
+}
+
 export async function desktopStatus(settings) {
   const url = baseUrl(settings);
   if (!url) return { ok: false, error: "no url" };
   try {
+    await ensureDesktopSession(settings).catch(() => {});
     const hdr = authHeaders(settings);
     const data = await httpLanGet(`${url}/api/auth/status`, 5000, hdr);
-    const health = await httpLanGet(`${url}/api/health`, 5000, hdr);
+    const health = await httpLanGet(`${url}/api/health`, 8000, hdr);
     return {
       ok: true,
       auth: Boolean(data.auth),
@@ -179,16 +194,37 @@ export async function desktopStatus(settings) {
   }
 }
 
-export async function desktopChat(settings, text) {
+async function postChat(settings, text, timeoutMs) {
   const url = baseUrl(settings);
-  const tok = token(settings);
-  if (!url || !tok) throw new Error("desktop not paired");
-  const raw = await httpLanPostJson(
-    `${url}/api/chat`,
-    authHeaders(settings),
-    { text },
-    12000,
-  );
+  return httpLanPostJson(`${url}/api/chat`, authHeaders(settings), { text }, timeoutMs);
+}
+
+/** Chat through desktop Pip GPU / Ollama. Re-auths once on 401. */
+export async function desktopChat(settings, text, timeoutMs = 90000) {
+  const url = baseUrl(settings);
+  if (!url) throw new Error("desktop not paired");
+  await ensureDesktopSession(settings);
+
+  let raw;
+  try {
+    raw = await postChat(settings, text, timeoutMs);
+  } catch (e) {
+    const msg = String(e.message || e);
+    const status = e.status || 0;
+    if (status === 401 || /401|login required/i.test(msg)) {
+      const pass = String(settings.desktop_password || "").trim();
+      if (!pass) throw new Error("session expired — RE-PAIR desktop");
+      const out = await desktopLogin(settings, pass);
+      settings.desktop_token = String(out.token || "").trim();
+      if (!settings.desktop_token || settings.desktop_token === "loopback") {
+        throw new Error("re-login failed — check Phone LAN + password");
+      }
+      raw = await postChat(settings, text, timeoutMs);
+    } else {
+      throw e;
+    }
+  }
+
   const reply = String(raw.reply || raw.content || "").trim();
   if (!reply) throw new Error("desktop empty reply");
   return {
@@ -197,6 +233,16 @@ export async function desktopChat(settings, text) {
     model: String((raw.router && raw.router.model) || (raw.ollama && raw.ollama.using) || "ollama"),
     theme: raw.theme || null,
     theme_name: raw.theme_name || "",
+  };
+}
+
+/** Quick GPU ping used by DATA → TEST. */
+export async function desktopGpuPing(settings) {
+  const out = await desktopChat(settings, "Reply with exactly: PIP GPU OK", 45000);
+  return {
+    ok: /pip gpu ok/i.test(out.text),
+    text: out.text,
+    model: out.model,
   };
 }
 

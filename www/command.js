@@ -75,7 +75,13 @@ export function orderFor(job, keyedIds, health = {}, pin = "auto") {
 
 export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto") {
   const rows = [];
-  if (desktop) rows.push({ id: "desktop", label: "DESKTOP", state: "on" });
+  if (desktop) {
+    rows.push({
+      id: "desktop",
+      label: "DESKTOP",
+      state: pin === "desktop" || pin === "auto" ? "on" : "key",
+    });
+  }
   for (const id of ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"]) {
     const keyed = keyedIds.includes(id);
     const ok = health[id]?.ok;
