@@ -90,7 +90,7 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
     }
     if (cookie) data._cookie = cookie;
     if (!status) {
-      const err = new Error("network failed — check Wi‑Fi / VPN");
+      const err = new Error("network failed — same Wi‑Fi? desktop Pip running?");
       err.status = 0;
       throw err;
     }

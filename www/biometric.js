@@ -1,4 +1,4 @@
-/** Pip lock — real device fingerprint/Face ID when available; hold fallback in browser. */
+/** Pip phosphor lock — hold the thumbprint. Matches Pip theme; no Android system sheet. */
 
 let unlocked = false;
 let unlocking = null;
@@ -6,31 +6,8 @@ let unlocking = null;
 const HOLD_MS = 1400;
 const TICK_MS = 40;
 
-function isNativeApp() {
-  try {
-    return window.Capacitor?.isNativePlatform?.() === true;
-  } catch {
-    return false;
-  }
-}
-
-function nativeBiometric() {
-  try {
-    return window.Capacitor?.Plugins?.NativeBiometric || null;
-  } catch {
-    return null;
-  }
-}
-
-export async function biometricAvailable() {
-  const plugin = nativeBiometric();
-  if (!plugin?.isAvailable) return !isNativeApp();
-  try {
-    const out = await plugin.isAvailable();
-    return Boolean(out?.isAvailable);
-  } catch {
-    return false;
-  }
+export function biometricAvailable() {
+  return true;
 }
 
 export function isUnlocked() {
@@ -86,7 +63,7 @@ function ensureScanDom() {
   el.hidden = true;
   el.innerHTML = `
     <div class="bio-scan-inner">
-      <div class="bio-ring" id="bio-ring" role="button" tabindex="0" aria-label="Unlock Pip">
+      <div class="bio-ring" id="bio-ring" role="button" tabindex="0" aria-label="Hold to unlock Pip">
         <svg class="bio-progress" viewBox="0 0 100 100" aria-hidden="true">
           <circle class="bio-progress-track" cx="50" cy="50" r="46" />
           <circle class="bio-progress-fill" id="bio-progress" cx="50" cy="50" r="46" />
@@ -111,7 +88,7 @@ function ensureScanDom() {
         <div class="bio-scanline"></div>
       </div>
       <p class="bio-title">PIP</p>
-      <p class="bio-sub" id="bio-sub">Fingerprint unlock</p>
+      <p class="bio-sub" id="bio-sub">Press & hold the print</p>
       <button type="button" class="bio-btn" id="bio-retry" hidden>TRY AGAIN</button>
     </div>`;
   document.body.appendChild(el);
@@ -137,7 +114,7 @@ export function showScanUI(msg) {
   el.hidden = false;
   el.classList.remove("ok", "bad", "holding");
   el.classList.add("on");
-  setSub(msg || "Fingerprint unlock");
+  setSub(msg || "Press & hold the print");
   setProgress(0);
   const retry = el.querySelector("#bio-retry");
   if (retry) retry.hidden = true;
@@ -203,7 +180,7 @@ function waitForHoldScan() {
     const succeed = async () => {
       clear();
       setProgress(1);
-      setSub("Identity confirmed");
+      setSub("Welcome back");
       await haptic("ok");
       unlocked = true;
       hideScanUI(true);
@@ -275,73 +252,13 @@ function waitForHoldScan() {
   });
 }
 
-async function waitForNativeScan() {
-  const plugin = nativeBiometric();
-  const el = ensureScanDom();
-  const retry = el.querySelector("#bio-retry");
-  showScanUI("Use fingerprint sensor");
-  el.classList.add("holding");
-  setProgress(0.35);
-  await haptic("start");
-
-  const run = async () => {
-    await plugin.verifyIdentity({
-      reason: "Unlock Phone Pip",
-      title: "Pip",
-      subtitle: "Confirm it's you",
-      description: "Fingerprint or face unlock",
-      negativeButtonText: "Cancel",
-      maxAttempts: 5,
-      useFallback: true,
-    });
-    setProgress(1);
-    setSub("Identity confirmed");
-    await haptic("ok");
-    unlocked = true;
-    hideScanUI(true);
-    return true;
-  };
-
-  try {
-    return await run();
-  } catch (e) {
-    el.classList.remove("holding");
-    el.classList.add("bad");
-    setProgress(0);
-    setSub(String(e?.message || e || "Biometric failed").slice(0, 80));
-    await haptic("bad");
-    if (retry) {
-      retry.hidden = false;
-      return new Promise((resolve, reject) => {
-        retry.onclick = async () => {
-          retry.hidden = true;
-          el.classList.remove("bad");
-          try {
-            resolve(await waitForNativeScan());
-          } catch (err) {
-            reject(err);
-          }
-        };
-      });
-    }
-    throw e;
-  }
-}
-
 export async function biometricUnlock() {
-  if (isNativeApp() && (await biometricAvailable())) {
-    showScanUI("Use fingerprint sensor");
-    await waitForNativeScan();
-    unlocked = true;
-    return true;
-  }
   showScanUI("Press & hold the print");
   await waitForHoldScan();
   unlocked = true;
   return true;
 }
 
-/** Full-screen gate used on boot when biometric_lock is on. */
 export async function requireAppUnlock(settings, { force = false } = {}) {
   if (!settings?.biometric_lock && !force) {
     unlocked = true;
@@ -352,13 +269,8 @@ export async function requireAppUnlock(settings, { force = false } = {}) {
 
   unlocking = (async () => {
     try {
-      if (isNativeApp() && (await biometricAvailable())) {
-        showScanUI("Use fingerprint sensor");
-        await waitForNativeScan();
-      } else {
-        showScanUI("Press & hold the print");
-        await waitForHoldScan();
-      }
+      showScanUI("Press & hold the print");
+      await waitForHoldScan();
       unlocked = true;
       return true;
     } finally {

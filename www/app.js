@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { probeKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint } from "./cloud.js";
-import { desktopConfigured, desktopLogin, desktopStatus, findAndPair, desktopGpuPing, desktopReachable } from "./desktop.js";
+import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets, requireAppUnlock } from "./biometric.js";
 import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
@@ -813,12 +813,12 @@ function renderData() {
   const health = providerHealth();
   const deskLive = s.desktop_live;
   const deskLine = !paired
-    ? "Not paired — FIND + PAIR (no password)."
+    ? "Not linked — tap CONNECT."
     : deskLive === true
       ? `ONLINE · ${s.desktop_url || ""}`
       : deskLive === false
         ? `OFFLINE · ${s.desktop_url || ""}`
-        : `Paired · ${s.desktop_url || ""} · tap CHECK`;
+        : `Paired · ${s.desktop_url || ""} · tap CONNECT`;
 
   const keyRows = PROVIDERS.map((p) => {
     const info = keyTag(s, p, health[p.id]);
@@ -848,15 +848,11 @@ function renderData() {
     </div>
 
     <h3>DESKTOP GPU</h3>
-    <p class="muted">Desktop Pip → DATA → TURN ON LAN → restart if it says so. Same Wi‑Fi. No password needed. Then FIND + PAIR.</p>
+    <p class="muted">Same Wi‑Fi as this PC. Leave URL blank and tap CONNECT — Pip finds the desktop. Or paste the COPY URL from desktop DATA.</p>
     <div class="desk-status ${paired ? (deskLive === false ? "bad" : deskLive === true ? "on" : "key") : "off"}" id="desk-status">${esc(deskLine)}</div>
-    <div class="field"><span>DESKTOP URL</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="http://192.168.x.x:7420 or paste COPY URL" /></div>
-    <div class="field"><span>VPN / PASTE URL (optional)</span><input id="set-vpn" value="${esc(s.vpn_url || "")}" placeholder="Tailscale / WireGuard URL" /></div>
+    <div class="field"><span>DESKTOP URL (optional)</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="blank = auto-find · or http://192.168.x.x:7420" /></div>
     <div class="actions">
-      <button type="button" id="desk-find" class="primary">FIND + PAIR</button>
-      <button type="button" id="desk-pair">${paired ? "RE-PAIR" : "PAIR URL"}</button>
-      <button type="button" id="desk-check">CHECK</button>
-      <button type="button" id="desk-test">TEST GPU</button>
+      <button type="button" id="desk-connect" class="primary">CONNECT</button>
       <button type="button" id="desk-clear">FORGET</button>
     </div>
     <p class="muted" id="desk-msg">${esc(deskLine)}</p>
@@ -882,7 +878,7 @@ function renderData() {
     <div class="key-list">${keyRows}</div>
 
     <h3>LOCK</h3>
-    <p class="muted" id="bio-help">Uses your phone fingerprint / face unlock when available. Hold-to-scan only in browser preview.</p>
+    <p class="muted" id="bio-help">Press & hold the phosphor print until the ring fills. Pip-themed lock — no Android popup.</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
     <h3>UI THEME</h3>
     <p class="muted">Current: ${esc(s.ui_theme_name || "phosphor default")}. CHAT: "phthalo green" or "reset ui theme".</p>
@@ -906,8 +902,8 @@ function renderData() {
       const el = $(`#set-${p.field}`);
       if (el) db.settings[p.field] = el.value.trim();
     }
-    db.settings.desktop_url = $("#set-durl").value.trim();
-    db.settings.vpn_url = ($("#set-vpn") && $("#set-vpn").value.trim()) || "";
+    db.settings.desktop_url = normalizeUrl($("#set-durl").value.trim());
+    if ($("#set-durl")) $("#set-durl").value = db.settings.desktop_url;
     db.settings.biometric_lock = Boolean($("#set-bio").checked);
     db.settings.keepalive = Boolean($("#set-keepalive")?.checked);
     persist();
@@ -923,193 +919,39 @@ function renderData() {
     }
   };
 
-  const afterPair = async () => {
-    setStatus("CHECKING DESKTOP…");
-    try {
-      const st = await desktopStatus(db.settings);
-      db.settings.desktop_live = Boolean(st.ok);
-      persist();
-      if (!st.ok) {
-        setDeskMsg(`OFFLINE · ${st.error || "no route"}`, "bad");
-        setStatus("PAIRED · DESKTOP OFFLINE");
-        paintBrainStrip();
-        return;
-      }
-      setStatus("TESTING GPU…");
-      const ping = await desktopGpuPing(db.settings);
-      persist();
-      const model = String(ping.model || "ollama").toUpperCase();
-      setDeskMsg(ping.ok ? `ONLINE · GPU OK · ${model}` : `ONLINE · GPU WEAK · ${model}`, "on");
-      setStatus(ping.ok ? `GPU OK · ${model}` : `GPU REPLY · ${String(ping.text || "").slice(0, 40)}`);
-      paintBrainStrip();
-    } catch (e) {
-      db.settings.desktop_live = false;
-      persist();
-      setDeskMsg(`PAIR WEAK · ${String(e.message || e).slice(0, 48)}`, "bad");
-      setStatus(`PAIRED · GPU TEST FAILED · ${String(e.message || e).slice(0, 48)}`);
-      paintBrainStrip();
-    }
-  };
-
-  const keepEl = $("#set-keepalive");
-  if (keepEl) keepEl.onchange = async () => {
-    await toggleKeepAlive(db, keepEl.checked, persist);
-    startBackground(db, { persist, setStatus, softRefresh });
-    setStatus(keepEl.checked ? "BACKGROUND ON" : "BACKGROUND OFF");
-  };
-
-  $("#data-save").onclick = () => {
-    guardSecrets(db.settings, () => {
-      grabSettings();
-      setStatus("SAVED");
-      updateBrainChip();
-      render();
-    }).catch((e) => setStatus(String(e.message || e)));
-  };
-
-  const themeResetBtn = $("#theme-reset");
-  if (themeResetBtn) {
-    themeResetBtn.onclick = () => {
-      resetTheme(db.settings);
-      persist();
-      render();
-      renderPrivacy();
-      setStatus("THEME RESET · PHOSPHOR GREEN");
-    };
-  }
-
-  const probeBtn = $("#brain-probe");
-  if (probeBtn) {
-    probeBtn.onclick = async () => {
-      grabSettings();
-      const box = $("#brain-probe-out");
-      if (box) box.textContent = "PROBING HOSTS…";
-      setStatus("PROBING KEYS…");
-      try {
-        const hits = await probeKeyed(db.settings);
-        db.settings.brain_health = providerHealth();
-        persist();
-        paintBrainStrip();
-        const lines = PROVIDERS.map((p) => {
-          const info = keyTag(db.settings, p, providerHealth()[p.id]);
-          const hit = (hits || []).find((h) => h.id === p.id);
-          const err = hit && !hit.ok ? ` · ${hit.error || ""}` : "";
-          return `${p.label.toUpperCase()} // ${info.tag}${err}`;
-        });
-        if (box) box.innerHTML = lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join("");
-        const live = (hits || []).filter((h) => h.ok).map((h) => h.id.toUpperCase());
-        setStatus(live.length ? `LIVE · ${live.join(" · ")}` : "NO LIVE KEYS — check paste / GET KEY");
-        if (tab === "data") renderData();
-      } catch (e) {
-        if (box) box.textContent = String(e.message || e);
-        setStatus(String(e.message || e).toUpperCase());
-      }
-    };
-  }
-
-  $("#desk-pair").onclick = () => {
-    guardSecrets(db.settings, async () => {
-      grabSettings();
-      if (!db.settings.desktop_url) {
-        setStatus("SET DESKTOP URL OR FIND");
-        return;
-      }
-      setStatus("PAIRING…");
-      try {
-        const out = await desktopLogin(db.settings, "");
-        db.settings.desktop_token = out.token || "";
-        db.settings.desktop_paired = true;
-        db.settings.desktop_password = "";
-        persist();
-        await afterPair();
-      } catch (e) {
-        setStatus(String(e.message || e));
-      }
-    }).catch((e) => setStatus(String(e.message || e)));
-  };
-
-  $("#desk-find").onclick = () => {
-    guardSecrets(db.settings, async () => {
-      grabSettings();
-      try {
-        const out = await findAndPair(db.settings, "", (msg) => setStatus(msg));
-        db.settings.desktop_url = out.url;
-        db.settings.desktop_token = out.token || "";
-        db.settings.desktop_paired = true;
-        db.settings.desktop_password = "";
-        persist();
-        if ($("#set-durl")) $("#set-durl").value = out.url;
-        await afterPair();
-      } catch (e) {
-        setStatus(String(e.message || e));
-      }
-    }).catch((e) => setStatus(String(e.message || e)));
-  };
-
-  const deskCheck = $("#desk-check");
-  if (deskCheck) {
-    deskCheck.onclick = async () => {
-      grabSettings();
-      setStatus("CHECKING DESKTOP…");
-      try {
-        const reach = await desktopReachable(db.settings, 2500);
-        if (!reach.ok) {
-          db.settings.desktop_live = false;
-          persist();
-          setDeskMsg(`OFFLINE · ${reach.error || "no route"}`, "bad");
-          setStatus("DESKTOP OFFLINE");
-          paintBrainStrip();
-          return;
-        }
-        const st = await desktopStatus(db.settings);
-        db.settings.desktop_live = Boolean(st.ok);
-        persist();
-        if (!st.ok) {
-          setDeskMsg(`OFFLINE · ${st.error || "auth"}`, "bad");
-          setStatus("DESKTOP OFFLINE");
-        } else {
-          const model = (st.ollama && st.ollama.using) || "ollama";
-          setDeskMsg(`ONLINE · auth ${st.auth ? "yes" : "no"} · ${model}`, "on");
-          setStatus(`DESKTOP ONLINE · ${String(model).toUpperCase()}`);
-        }
-        paintBrainStrip();
-      } catch (e) {
-        db.settings.desktop_live = false;
-        persist();
-        setStatus(String(e.message || e).toUpperCase());
-        paintBrainStrip();
-      }
-    };
-  }
-
-  $("#desk-test").onclick = async () => {
+  const runConnect = async () => {
     grabSettings();
-    setStatus("TESTING DESKTOP GPU…");
+    setStatus("CONNECTING…");
+    setDeskMsg("Connecting…", "key");
     try {
-      const st = await desktopStatus(db.settings);
-      db.settings.desktop_live = Boolean(st.ok);
-      if (!st.ok) {
-        persist();
-        setDeskMsg(st.error || "DESKTOP OFFLINE", "bad");
-        setStatus(st.error || "DESKTOP OFFLINE");
-        paintBrainStrip();
-        return;
-      }
-      const ping = await desktopGpuPing(db.settings);
+      const out = await connectDesktop(db.settings, (msg) => setStatus(msg));
       persist();
-      const model = ping.model || (st.ollama && st.ollama.using) || "ollama";
-      setDeskMsg(ping.ok ? `ONLINE · GPU OK · ${model}` : `ONLINE · GPU WEAK`, "on");
-      setStatus(ping.ok ? `GPU OK · ${String(model).toUpperCase()}` : `GPU WEAK · ${String(ping.text || "").slice(0, 36)}`);
+      if ($("#set-durl")) $("#set-durl").value = out.url;
+      const model = String(out.model || "ollama").toUpperCase();
+      const ok = out.ping && out.ping.ok;
+      db.settings.desktop_live = true;
+      persist();
+      setDeskMsg(ok ? `ONLINE · GPU OK · ${model}` : `ONLINE · GPU WEAK · ${model}`, "on");
+      setStatus(ok ? `GPU OK · ${model}` : `CONNECTED · ${model}`);
       paintBrainStrip();
     } catch (e) {
       db.settings.desktop_live = false;
       persist();
-      setStatus(String(e.message || e).toUpperCase());
+      const msg = String(e.message || e);
+      setDeskMsg(msg.slice(0, 90), "bad");
+      setStatus(msg.toUpperCase().slice(0, 80));
       paintBrainStrip();
     }
   };
 
-  $("#desk-clear").onclick = () => {
+  const deskConnect = $("#desk-connect");
+  if (deskConnect) {
+    deskConnect.onclick = () => {
+      guardSecrets(db.settings, runConnect).catch((e) => setStatus(String(e.message || e)));
+    };
+  }
+
+    $("#desk-clear").onclick = () => {
     db.settings.desktop_token = "";
     db.settings.desktop_password = "";
     db.settings.desktop_paired = false;
@@ -1140,10 +982,10 @@ function renderData() {
     }).catch(() => {});
   }
 
-  biometricAvailable().then((ok) => {
+  biometricAvailable().then(() => {
     const lockP = $("#bio-help");
-    if (lockP && !ok && window.Capacitor?.isNativePlatform?.()) {
-      lockP.textContent = "No biometric enrolled — enable fingerprint in Android settings, or turn lock off.";
+    if (lockP) {
+      lockP.textContent = "Press & hold the phosphor print until the ring fills. Pip-themed lock — no Android popup.";
     }
   }).catch(() => {});
 

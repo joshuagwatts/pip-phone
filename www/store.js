@@ -46,7 +46,7 @@ function blank() {
       desktop_paired: false,
       desktop_live: null,
       biometric_lock: true,
-      biometric_native: true,
+      biometric_native: false,
       lat: "",
       lon: "",
       city: "",
