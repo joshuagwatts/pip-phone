@@ -1,5 +1,6 @@
+/** Phone brain — privacy-first chain, cloud only when needed, leak tags for the UI. */
 import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS } from "./crew.js";
-import { chatChain, chatComplete, chatCloudEnabled, cloudComplete, cloudStatus, markHealth } from "./cloud.js";
+import { chatChain, chatComplete, chatCloudEnabled, cloudComplete, cloudStatus, markHealth, privacyOn } from "./cloud.js";
 import { desktopChat, desktopConfigured } from "./desktop.js";
 import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
@@ -14,7 +15,9 @@ const QWEN_TF = "onnx-community/Qwen2.5-0.5B-Instruct";
 let backend = null;
 let loading = null;
 let lastProgress = "";
-let lastBrain = { label: "QWEN", provider: "local" };
+let lastBrain = { label: "—", provider: "", model: "" };
+/** @type {{ leaked:boolean, provider:string, via:string, reason:string }} */
+let lastTurn = { leaked: false, provider: "", via: "", reason: "" };
 let pendingTheme = null;
 const listeners = new Set();
 
@@ -22,6 +25,16 @@ export function takePendingTheme() {
   const hit = pendingTheme;
   pendingTheme = null;
   return hit;
+}
+
+export function takeLastTurn() {
+  const hit = { ...lastTurn };
+  lastTurn = { leaked: false, provider: "", via: "", reason: "" };
+  return hit;
+}
+
+export function peekLastTurn() {
+  return { ...lastTurn };
 }
 
 export function brainReady() {
@@ -46,8 +59,20 @@ function setBrain(provider, model) {
         ? "GROK"
         : provider === "local"
           ? "QWEN"
-          : String(provider || "QWEN").toUpperCase();
-  lastBrain = { label, provider: provider || "local", model: model || "" };
+          : provider === "web"
+            ? "WEB"
+            : String(provider || "PIP").toUpperCase();
+  lastBrain = { label, provider: provider || "", model: model || "" };
+}
+
+function setTurn({ leaked = false, provider = "", via = "", reason = "" } = {}) {
+  lastTurn = {
+    leaked: Boolean(leaked),
+    provider: String(provider || ""),
+    via: String(via || ""),
+    reason: String(reason || ""),
+  };
+  if (provider) setBrain(provider, via);
 }
 
 function emit(msg) {
@@ -228,67 +253,105 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
   const raw = await eng.complete(messages, temperature, maxTokens);
   const cleaned = sanitizeReply(raw);
   if (!cleaned) throw new Error("local blank reply");
-  setBrain("local", eng.kind || "qwen");
-  return cleaned;
+  return { text: cleaned, provider: "local", model: eng.kind || "qwen", leaked: false };
 }
 
+/**
+ * Privacy-first chain:
+ * 1) Desktop GPU (stays on your PC) — private
+ * 2) Cloud APIs in brain order — LEAKED
+ * 3) On-device Qwen if pin=local — private
+ * LEAKY mode tries cloud earlier so OPP/CODE scrapes aren't blocked.
+ */
 async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life") {
   track(onProgress);
   const errors = [];
   const cloud = cloudStatus(settings);
   const isChat = lane === "life";
+  const secure = privacyOn(settings);
   pendingTheme = null;
   const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
 
-  /* Prefer phone-local keys → hit clouds directly. Desktop GPU only when no cloud key answers. */
-  const cloudOk = isChat ? chatCloudEnabled(settings) : cloud.leaky && cloud.keyed.length;
-  if (cloudOk) {
+  const tryDesktop = async () => {
+    if (!desktopConfigured(settings)) return null;
+    emit("DESKTOP");
+    const user = [...messages].reverse().find((m) => m.role === "user");
+    const out = await desktopChat(settings, String((user && user.content) || ""));
+    const cleaned = sanitizeReply(out.text);
+    if (!cleaned || isBlank(cleaned)) throw new Error("desktop blank");
+    if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
+    return { text: cleaned, provider: "desktop", model: out.model || "ollama", leaked: false };
+  };
+
+  const tryCloud = async () => {
+    const keyed = chatCloudEnabled(settings);
+    if (!keyed) throw new Error("no keys on phone — DATA → SYNC KEYS");
+    if (!isChat && !cloud.leaky) throw new Error("SECURE blocks cloud for OPP/CODE — flip LEAKY");
+    const first = isChat ? chatChain(settings, routeJob)[0] : null;
+    emit(isChat && first ? String(first.label || first.id).toUpperCase() : "CLOUD");
+    const out = isChat
+      ? await chatComplete(settings, messages, temperature, maxTokens, routeJob)
+      : await cloudComplete(settings, messages, lane, temperature, maxTokens);
+    const cleaned = sanitizeReply(out.text);
+    if (!cleaned || isBlank(cleaned)) throw new Error(`${out.provider} blank`);
+    markHealth(out.provider, true);
+    return { text: cleaned, provider: out.provider, model: out.model, leaked: true };
+  };
+
+  const tryLocal = async () => {
+    if (skipLocalModel(settings)) throw new Error("local qwen skipped (pin AUTO)");
+    emit("QWEN");
+    return localComplete(messages, temperature, maxTokens);
+  };
+
+  /** Order: private first, cloud only when needed (or LEAKY for non-chat). */
+  const steps = [];
+  if (isChat) {
+    steps.push(["desktop", tryDesktop]);
+    if (secure) {
+      steps.push(["cloud", tryCloud]);
+      steps.push(["local", tryLocal]);
+    } else {
+      steps.push(["cloud", tryCloud]);
+      steps.push(["desktop", tryDesktop]);
+      steps.push(["local", tryLocal]);
+    }
+  } else if (secure) {
+    steps.push(["desktop", tryDesktop]);
+    steps.push(["cloud", tryCloud]);
+  } else {
+    steps.push(["cloud", tryCloud]);
+    steps.push(["desktop", tryDesktop]);
+  }
+
+  const seen = new Set();
+  for (const [name, fn] of steps) {
+    if (seen.has(name)) continue;
+    seen.add(name);
     try {
-      const first = isChat ? chatChain(settings, routeJob)[0] : null;
-      emit(isChat && first ? String(first.label || first.id).toUpperCase() : cloud.pin === "xai" ? "GROK" : "CLOUD");
-      const out = isChat
-        ? await chatComplete(settings, messages, temperature, maxTokens, routeJob)
-        : await cloudComplete(settings, messages, lane, temperature, maxTokens);
-      const cleaned = sanitizeReply(out.text);
-      if (cleaned && !isBlank(cleaned)) {
-        setBrain(out.provider, out.model);
-        markHealth(out.provider, true);
-        return cleaned;
+      const hit = await fn();
+      if (hit?.text) {
+        setTurn({
+          leaked: hit.leaked,
+          provider: hit.provider,
+          via: hit.model || "",
+          reason: hit.leaked ? "left this device" : "stayed local",
+        });
+        return hit;
       }
-      errors.push(`${out.provider}: blank reply`);
-      if (out.provider) markHealth(out.provider, false, "blank");
     } catch (e) {
-      errors.push(String(e.message || e).slice(0, 100));
-    }
-  }
-
-  if (desktopConfigured(settings)) {
-    try {
-      emit("DESKTOP GPU");
-      const user = [...messages].reverse().find((m) => m.role === "user");
-      const out = await desktopChat(settings, String((user && user.content) || ""));
-      const cleaned = sanitizeReply(out.text);
-      if (cleaned && !isBlank(cleaned)) {
-        setBrain("desktop", out.model);
-        if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
-        return cleaned;
+      const msg = String(e.message || e).slice(0, 100);
+      errors.push(`${name}: ${msg}`);
+      if (name === "cloud") {
+        const m = msg.match(/^(\w+):/);
+        if (m) markHealth(m[1], false, msg);
       }
-      errors.push("desktop: blank reply");
-    } catch (e) {
-      errors.push(`desktop: ${String(e.message || e).slice(0, 80)}`);
     }
   }
 
-  if (!skipLocalModel(settings)) {
-    try {
-      emit("QWEN");
-      return await localComplete(messages, temperature, maxTokens);
-    } catch (e) {
-      errors.push(String(e.message || e).slice(0, 100));
-    }
-  }
-
-  throw new Error(errors.join(" · ") || "no keyed API answered — pair desktop to sync keys, or paste keys in DATA");
+  const detail = errors.join(" · ") || "no brain answered";
+  setTurn({ leaked: false, provider: "", via: "", reason: detail });
+  throw new Error(detail);
 }
 
 export async function sparkLine(recent = [], stanceLabel = "PIP") {
@@ -317,11 +380,16 @@ export async function sparkLine(recent = [], stanceLabel = "PIP") {
 
 async function complete(messages, temperature = 0.7, maxTokens = 400, settings = null, lane = "life", onProgress = null) {
   if (settings) {
-    return routedComplete(settings, messages, lane, temperature, maxTokens, onProgress);
+    const out = await routedComplete(settings, messages, lane, temperature, maxTokens, onProgress);
+    return out.text;
   }
-  return localComplete(messages, temperature, maxTokens);
+  const out = await localComplete(messages, temperature, maxTokens);
+  return out.text;
 }
 
+/**
+ * @returns {Promise<{ text:string, leaked:boolean, provider:string, via:string }>}
+ */
 export async function chat(settings, history, text, onProgress, kit, db, extras = {}) {
   track(onProgress);
   const operator = settings.operator || "Joshua";
@@ -335,12 +403,14 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     }
   }
   const job = pickJob(text);
-  let context = extras.webContext || extras.guideContext || "";
+  let context = extras.webContext || "";
+  let webUsed = Boolean(extras.webContext);
   if (!context) {
     try {
       const { webBrief } = await import("./web.js");
       emit("WEB…");
       context = await webBrief(text);
+      webUsed = Boolean(context);
     } catch {
       /* optional */
     }
@@ -355,26 +425,29 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       /* optional */
     }
   }
-  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. Use the crew chain for this job.`;
+  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. Follow the brain chain. Prefer local/desktop. Cloud is a leak.`;
   const system = [sysBase, momentLine, context].filter(Boolean).join("\n");
+  const prior = (history || []).filter((m) => m && m.content && m.content !== text).slice(-16);
   const messages = [
     { role: "system", content: system },
     ...SHOTS,
-    ...history.slice(-16).map((m) => ({
+    ...prior.map((m) => ({
       role: m.role === "user" ? "user" : "assistant",
       content: m.content,
     })),
     { role: "user", content: text },
   ];
-  let out = "";
+
+  let hit = null;
+  let errMsg = "";
   try {
-    out = await routedComplete(settings, messages, "life", 0.7, 1024, onProgress, job);
-  } catch {
-    out = "";
+    hit = await routedComplete(settings, messages, "life", 0.7, 1024, onProgress, job);
+  } catch (e) {
+    errMsg = String(e.message || e);
   }
-  if (isBlank(out) || !out) {
+  if (!hit?.text || isBlank(hit.text)) {
     try {
-      out = await routedComplete(
+      hit = await routedComplete(
         settings,
         [
           { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
@@ -386,13 +459,35 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
         0.35,
         512,
         onProgress,
+        job,
       );
-    } catch {
-      out = "";
+    } catch (e) {
+      errMsg = errMsg || String(e.message || e);
     }
   }
-  if (isBlank(out) || !out) return FALLBACK;
-  return out;
+
+  if (!hit?.text || isBlank(hit.text)) {
+    const tip = errMsg
+      ? `No brain answered — ${errMsg}`
+      : FALLBACK;
+    setTurn({ leaked: false, provider: "", via: "", reason: tip });
+    return { text: tip, leaked: false, provider: "", via: "", error: true };
+  }
+
+  const leaked = Boolean(hit.leaked || webUsed);
+  setTurn({
+    leaked,
+    provider: hit.provider,
+    via: hit.model || "",
+    reason: leaked ? (webUsed && !hit.leaked ? "web lookup left device" : "cloud API") : "local/desktop",
+  });
+  return {
+    text: hit.text,
+    leaked,
+    provider: hit.provider,
+    via: hit.model || "",
+    error: false,
+  };
 }
 
 export async function draftAnswers(settings, { title, kit, questions, kind }, onProgress) {
@@ -428,7 +523,14 @@ export async function draftAnswers(settings, { title, kit, questions, kind }, on
       content: `CALL: ${title}\nKIT:\n${JSON.stringify(kitBits)}\nQUESTIONS:\n${JSON.stringify(asks)}`,
     },
   ];
-  const raw = await routedComplete(settings, messages, "boost", 0.35, 1200, onProgress);
+  const hit = await routedComplete(settings, messages, "boost", 0.35, 1200, onProgress);
+  setTurn({
+    leaked: Boolean(hit.leaked),
+    provider: hit.provider,
+    via: hit.model || "",
+    reason: hit.leaked ? "application draft left device" : "draft stayed local",
+  });
+  const raw = hit.text;
   const parsed = parseJson(raw);
   const map = new Map();
   for (const item of parsed.answers || []) {
@@ -440,8 +542,8 @@ export async function draftAnswers(settings, { title, kit, questions, kind }, on
   }
   return questions.map((q) => {
     const prompt = q.prompt || q.q || "";
-    const hit = map.get(prompt.trim().toLowerCase()) || {};
-    return { ...q, q: prompt, a: hit.a || q.a || "", a5: hit.a5 || q.a5 || "" };
+    const row = map.get(prompt.trim().toLowerCase()) || {};
+    return { ...q, q: prompt, a: row.a || q.a || "", a5: row.a5 || q.a5 || "" };
   });
 }
 
@@ -459,4 +561,4 @@ function parseJson(text) {
   }
 }
 
-export { cloudStatus };
+export { cloudStatus, privacyOn };

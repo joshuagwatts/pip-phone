@@ -1,6 +1,6 @@
 import { load, save, KIT_LABELS } from "./store.js";
-import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme } from "./brain.js";
-import { probeKeyed, providerHealth } from "./cloud.js";
+import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
+import { probeKeyed, providerHealth, hydrateHealth } from "./cloud.js";
 import { desktopConfigured, desktopLogin, desktopStatus, findAndPair } from "./desktop.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets } from "./biometric.js";
@@ -965,7 +965,7 @@ function renderData() {
   const synced = s.keys_synced_at ? ` · synced ${String(s.keys_synced_at).slice(0, 16).replace("T", " ")}` : "";
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">Pair once → keys copy onto this phone → CHAT hits the clouds directly. Desktop stays for morning/opps/GPU fallback.</p>
+    <p class="muted">Pair once → keys copy onto this phone. Chat order: DESKTOP (private) → cloud chain (LEAKED, red) → local Qwen if pinned. Flip LEAKY only when OPP/CODE need cloud scrapes.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -1262,7 +1262,8 @@ async function draftThis() {
     persist();
     if (desktopConfigured(db.settings)) fullOppSync(db.settings, db).catch(() => {});
     render();
-    setStatus("DRAFT READY · GO PASTE IT");
+    const turn = takeLastTurn();
+    setStatus(turn.leaked ? "DRAFT READY · LEAKED TO CLOUD · PASTE IT" : "DRAFT READY · GO PASTE IT");
   } catch (e) {
     setStatus(String(e.message || e));
   }
@@ -1365,12 +1366,29 @@ async function runHunt(allTypes = false) {
   }
 }
 
-function addLog(role, text) {
+function addLog(role, text, opts = {}) {
   const div = document.createElement("div");
-  div.className = `bubble ${role}`;
-  div.innerHTML = `<div class="who">${role === "user" ? "YOU" : "PIP"}</div><div>${esc(text)}</div>`;
+  const leaked = Boolean(opts.leaked);
+  div.className = `bubble ${role}${leaked ? " leaked" : ""}`;
+  const who =
+    role === "user"
+      ? leaked
+        ? `YOU · LEAKED`
+        : "YOU"
+      : opts.brain
+        ? `PIP · ${String(opts.brain).toUpperCase()}`
+        : "PIP";
+  div.innerHTML = `<div class="who">${esc(who)}</div><div class="body">${esc(text)}</div>`;
   $("#log").appendChild(div);
   $("#log").scrollTop = $("#log").scrollHeight;
+  return div;
+}
+
+function markBubbleLeaked(el, reason) {
+  if (!el) return;
+  el.classList.add("leaked");
+  const who = el.querySelector(".who");
+  if (who) who.textContent = reason ? `YOU · LEAKED` : "YOU · LEAKED";
 }
 
 async function sendChat() {
@@ -1379,7 +1397,7 @@ async function sendChat() {
   if (!text) return;
   box.value = "";
   db.chat.push({ role: "user", content: text });
-  addLog("user", text);
+  const userBubble = addLog("user", text);
   captureMoment(db, text);
   persist();
   setStatus(pipStatus());
@@ -1431,6 +1449,12 @@ async function sendChat() {
     draftThis,
   });
   if (oppHit) {
+    if (oppHit.leaked || /scrape|draft|hunt|apply/i.test(oppHit.reply || "")) {
+      markBubbleLeaked(userBubble);
+      const last = db.chat[db.chat.length - 1];
+      if (last && last.role === "user") last.leaked = true;
+      persist();
+    }
     addLog("pip", oppHit.reply);
     if (oppHit.switchTab) {
       tab = oppHit.switchTab;
@@ -1438,25 +1462,46 @@ async function sendChat() {
     }
     persist();
     setStatus(oppHit.ok ? "OPP" : "OPP");
-    if (oppHit.run) await oppHit.run();
+    if (oppHit.run) {
+      markBubbleLeaked(userBubble);
+      await oppHit.run();
+      const turn = takeLastTurn();
+      if (turn.leaked) markBubbleLeaked(userBubble);
+    }
     return;
   }
 
   try {
-    const reply = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit, db);
+    const out = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit, db);
+    const reply = typeof out === "string" ? out : out.text;
+    const leaked = typeof out === "object" ? Boolean(out.leaked) : false;
+    const provider = typeof out === "object" ? out.provider : "";
     const pending = takePendingTheme();
     if (pending && applyThemePayload(db.settings, pending)) {
       persist();
       render();
       renderPrivacy();
     }
-    db.chat.push({ role: "pip", content: reply });
+    if (leaked) {
+      markBubbleLeaked(userBubble);
+      const last = db.chat.filter((m) => m.role === "user").pop();
+      if (last) last.leaked = true;
+    }
+    db.chat.push({
+      role: "pip",
+      content: reply,
+      brain: provider || "",
+      leaked,
+    });
     rememberReply(db, reply);
     persist();
-    addLog("pip", reply);
+    addLog("pip", reply, { brain: provider || activeBrain().label, leaked: false });
     updateBrainChip();
+    const label = (provider || activeBrain().label || "PIP").toUpperCase();
+    setStatus(leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`);
   } catch (e) {
     addLog("pip", String(e.message || e));
+    setStatus("CHAT ERROR");
   }
 }
 
@@ -1464,8 +1509,19 @@ function boot() {
   try {
     bootTheme(db.settings);
     applyAllOverlays();
-    db.chat.slice(-20).forEach((m) => addLog(m.role === "user" ? "user" : "pip", m.content));
-    if (!db.chat.length) addLog("pip", "Pip is happy to help! Hunt opps in CHAT — or connect Proton VPN in DATA for private search.");
+    hydrateHealth(db.settings.brain_health);
+    db.chat.slice(-20).forEach((m) =>
+      addLog(m.role === "user" ? "user" : "pip", m.content, {
+        leaked: Boolean(m.leaked),
+        brain: m.brain || "",
+      }),
+    );
+    if (!db.chat.length) {
+      addLog(
+        "pip",
+        "Pip is happy to help. Pair desktop in DATA → SYNC KEYS. Chat prefers your PC, then cloud (marked LEAKED), then local.",
+      );
+    }
     try {
       startBackground(db, { persist, setStatus, softRefresh });
     } catch {
@@ -1491,7 +1547,7 @@ function boot() {
       db.settings.privacy_mode = secure ? "leaky" : "secure";
       persist();
       renderPrivacy();
-      setStatus(secure ? "LEAKY // CLOUD UNLOCKED" : "SECURE // ON-DEVICE");
+      setStatus(secure ? "LEAKY // CLOUD OK FOR OPP/CODE" : "SECURE // PREFER LOCAL · CLOUD = LEAKED");
     };
   }
   $("#send").onclick = sendChat;
@@ -1558,24 +1614,37 @@ function boot() {
     if (typeof requestIdleCallback === "function") requestIdleCallback(fn, { timeout: 2500 });
     else setTimeout(fn, 80);
   };
-  deferProbe(() => {
-    probeKeyed(db.settings)
-      .then((hits) => {
-        db.settings.brain_health = providerHealth();
-        persist();
-        paintBrainStrip();
-        const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
-        const keyed = cloudStatus(db.settings).keyed;
-        if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
-        else if (keyed.length) setStatus("KEYS SAVED · PROBE FAILED");
-        else setStatus("PIP ON DECK · ADD KEYS IN DATA");
-        if (desktopConfigured(db.settings)) {
-          return syncEventsFromDesktop(db.settings, db)
-            .then(() => syncMealsFromDesktop(db.settings, db))
-            .then(() => persist());
+  deferProbe(async () => {
+    try {
+      if (desktopConfigured(db.settings)) {
+        try {
+          const keys = await pullCloudKeys(db.settings);
+          if (keys.applied) {
+            persist();
+            setStatus(`KEYS · ${keys.keyed.join(" · ").toUpperCase()}`);
+          }
+        } catch {
+          /* pair may be offline */
         }
-      })
-      .catch((e) => setStatus(String(e.message || e).toUpperCase()));
+      }
+      const hits = await probeKeyed(db.settings);
+      db.settings.brain_health = providerHealth();
+      persist();
+      paintBrainStrip();
+      const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
+      const keyed = cloudStatus(db.settings).keyed;
+      if (keyed.length && live.length) setStatus(`BRAIN · ${live.join(" · ").toUpperCase()}`);
+      else if (keyed.length) setStatus("KEYS ON PHONE · PROBE FAILED");
+      else if (desktopConfigured(db.settings)) setStatus("PAIRED · SYNC KEYS IN DATA");
+      else setStatus("PIP ON DECK · PAIR DESKTOP FOR KEYS");
+      if (desktopConfigured(db.settings)) {
+        await syncEventsFromDesktop(db.settings, db);
+        await syncMealsFromDesktop(db.settings, db);
+        persist();
+      }
+    } catch (e) {
+      setStatus(String(e.message || e).toUpperCase());
+    }
   });
   } catch (e) {
     const msg = String(e.message || e);

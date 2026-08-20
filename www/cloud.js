@@ -85,6 +85,20 @@ export function markHealth(id, ok, error = "") {
   return liveHealth[id];
 }
 
+/** Restore probe results saved on the phone. */
+export function hydrateHealth(saved) {
+  if (!saved || typeof saved !== "object") return providerHealth();
+  for (const [id, row] of Object.entries(saved)) {
+    if (!row || typeof row !== "object") continue;
+    liveHealth[id] = {
+      ok: Boolean(row.ok),
+      error: String(row.error || "").slice(0, 120),
+      at: Number(row.at) || Date.now(),
+    };
+  }
+  return providerHealth();
+}
+
 export async function probeModels(settings, prov) {
   const key = providerKey(settings, prov);
   if (!key) {

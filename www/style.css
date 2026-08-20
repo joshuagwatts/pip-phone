@@ -234,6 +234,12 @@ body.comm #comm { display: flex; }
 .brain-chip.skip { opacity: 0.45; }
 #log { flex: 1; overflow: auto; padding: 0.8rem; }
 .bubble .who { color: var(--phos); font-size: 10px; letter-spacing: 0.2em; margin-bottom: 0.25rem; }
+.bubble.user.leaked {
+  border-color: var(--leak);
+  box-shadow: inset 3px 0 0 var(--leak);
+}
+.bubble.user.leaked .who { color: var(--leak); }
+.bubble.user.leaked .body { color: #ff8a8a; }
 .composer {
   display: flex;
   gap: 0.4rem;
