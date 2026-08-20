@@ -15,7 +15,7 @@ import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThe
 import { captureMoment, topMoments } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { listEntries, applyAllOverlays } from "./codefs.js";
-import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers } from "./wx.js";
+import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot } from "./wx.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -399,21 +399,29 @@ function updateBrainChip() {
   renderPrivacy();
 }
 
-function renderToday() {
-  const root = $("#view");
-  root.innerHTML = `<div class="today-wrap"><div id="cal-root"></div><div class="story-strip" id="story-strip"></div></div>`;
-  const moments = topMoments(db, 5);
-  const strip = root.querySelector("#story-strip");
-  if (moments.length) {
-    strip.innerHTML = `<h3>YOUR STORY</h3>${moments.map((m) => `<p class="story-line">${esc(m.content)}</p>`).join("")}`;
-  } else {
-    strip.innerHTML = `<p class="muted">Substantive COMM lines stick here — goals, origin, why you make things. Not "bug again."</p>`;
-  }
-  renderCalendar(root.querySelector("#cal-root"), db, calState, {
+function paintCalendar() {
+  const root = $("#cal-root");
+  if (!root) return;
+  renderCalendar(root, db, calState, {
     esc,
     persist,
-    onChange: () => renderToday(),
+    onChange: paintCalendar,
   });
+}
+
+function renderToday() {
+  const root = $("#view");
+  if (!root.querySelector("#cal-root")) {
+    root.innerHTML = `<div class="today-wrap"><div id="cal-root"></div><div class="story-strip" id="story-strip"></div></div>`;
+    const moments = topMoments(db, 5);
+    const strip = root.querySelector("#story-strip");
+    if (moments.length) {
+      strip.innerHTML = `<h3>YOUR STORY</h3>${moments.map((m) => `<p class="story-line">${esc(m.content)}</p>`).join("")}`;
+    } else {
+      strip.innerHTML = `<p class="muted">Substantive COMM lines stick here — goals, origin, why you make things. Not "bug again."</p>`;
+    }
+  }
+  paintCalendar();
 }
 
 async function openCodeFile(name) {
@@ -513,10 +521,12 @@ async function renderWx() {
     <div class="wx-wrap">
       <div class="wx-layers" id="wx-layers"></div>
       <div id="wx-map"></div>
-      <div id="wx-panel" class="wx-panel"><p class="muted">Tap the map on a property. Storm dates, NOAA hail, news, Zillow — works offline from phone or via paired desktop.</p></div>
+      <div id="wx-panel" class="wx-panel"><p class="muted">Locating…</p></div>
     </div>`;
   try {
+    const center = await resolveMapCenter(db.settings);
     const cfg = await loadMapConfig(db.settings);
+    cfg.center = { ...cfg.center, ...center };
     $("#wx-layers").innerHTML = layerButtons(cfg, esc);
     $("#wx-layers").onclick = (e) => {
       const b = e.target.closest("[data-layer]");
@@ -524,34 +534,40 @@ async function renderWx() {
       setMapLayer(b.dataset.layer);
       $("#wx-layers").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
     };
-    mountMap($("#wx-map"), cfg, {
-      onTap: async (lat, lon) => {
-        wxState.lat = lat;
-        wxState.lon = lon;
-        setStatus("PINNED · RESEARCHING…");
-        try {
-          const hit = await quickPin(db.settings, lat, lon);
-          wxState.address = hit.geo?.address || "";
-          const data = await researchPin(db.settings, lat, lon, wxState.address);
-          wxState.data = data;
-          drawHailMarkers(data.hail);
-          renderDossier($("#wx-panel"), data, esc, async () => {
-            setStatus("DEEP RESEARCH…");
-            const deep = await researchPin(db.settings, lat, lon, wxState.address);
-            wxState.data = deep;
-            drawHailMarkers(deep.hail);
-            renderDossier($("#wx-panel"), deep, esc, null);
-            setStatus("DOSSIER UPDATED");
-          });
-          setStatus("WX DOSSIER");
-        } catch (e) {
-          $("#wx-panel").innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
-          setStatus("WX ERROR");
-        }
-      },
+    mountMap($("#wx-map"), cfg, { center, onTap: onWxTap });
+    quickPin(db.settings, center.lat, center.lon).then((hit) => {
+      renderWeatherBoot($("#wx-panel"), hit.geo, hit.weather || cfg.weather, hit.hail, esc);
+    }).catch(() => {
+      $("#wx-panel").innerHTML = `<p class="muted">Tap the map for storm dossier.</p>`;
     });
   } catch (e) {
     $("#view").innerHTML = `<p class="muted">${esc(String(e.message || e))}</p>`;
+  }
+}
+
+async function onWxTap(lat, lon) {
+  wxState.lat = lat;
+  wxState.lon = lon;
+  setStatus("PINNED · RESEARCHING…");
+  $("#wx-panel").innerHTML = `<p class="muted">Pulling storm history…</p>`;
+  try {
+    const hit = await quickPin(db.settings, lat, lon);
+    wxState.address = hit.geo?.address || "";
+    const data = await researchPin(db.settings, lat, lon, wxState.address, false);
+    wxState.data = data;
+    drawHailMarkers(data.hail);
+    renderDossier($("#wx-panel"), data, esc, async () => {
+      setStatus("DEEP RESEARCH…");
+      const deep = await researchPin(db.settings, lat, lon, wxState.address, true);
+      wxState.data = deep;
+      drawHailMarkers(deep.hail);
+      renderDossier($("#wx-panel"), deep, esc, null);
+      setStatus("DOSSIER UPDATED");
+    });
+    setStatus("WX DOSSIER");
+  } catch (e) {
+    $("#wx-panel").innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
+    setStatus("WX ERROR");
   }
 }
 

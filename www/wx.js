@@ -140,18 +140,34 @@ function parseSpcHailCsv(text, reportDay) {
   return rows;
 }
 
-async function fetchHailReports(lat, lon, radiusKm = 80, daysBack = 180) {
-  const hits = [];
+async function fetchHailReports(lat, lon, radiusKm = 80, daysBack = 45) {
   const today = new Date();
-  for (let d = 0; d < daysBack; d++) {
+  const days = Math.min(Math.max(daysBack, 7), 180);
+  const stamps = [];
+  for (let d = 0; d < days; d++) {
     const day = new Date(today);
     day.setDate(day.getDate() - d);
-    const stamp = day.toISOString().slice(0, 10).replace(/-/g, "").slice(2);
-    const iso = day.toISOString().slice(0, 10);
-    try {
-      const { body, status } = await httpGet(`https://www.spc.noaa.gov/climo/reports/${stamp}_rpts_filtered.csv`, 10000);
-      if (status === 404) continue;
-      const dayRows = parseSpcHailCsv(body, iso);
+    stamps.push({
+      stamp: day.toISOString().slice(0, 10).replace(/-/g, "").slice(2),
+      iso: day.toISOString().slice(0, 10),
+    });
+  }
+  const hits = [];
+  const batch = 12;
+  for (let i = 0; i < stamps.length; i += batch) {
+    const chunk = stamps.slice(i, i + batch);
+    const parts = await Promise.all(
+      chunk.map(async ({ stamp, iso }) => {
+        try {
+          const { body, status } = await httpGet(`https://www.spc.noaa.gov/climo/reports/${stamp}_rpts_filtered.csv`, 5500);
+          if (status === 404) return [];
+          return parseSpcHailCsv(body, iso);
+        } catch {
+          return [];
+        }
+      }),
+    );
+    for (const dayRows of parts) {
       for (const row of dayRows) {
         const dist = haversineKm(lat, lon, row.lat, row.lon);
         if (dist <= radiusKm) {
@@ -163,11 +179,84 @@ async function fetchHailReports(lat, lon, radiusKm = 80, daysBack = 180) {
           });
         }
       }
-    } catch {
-      /* skip day */
     }
   }
   return hits.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 120);
+}
+
+let mapConfigCache = null;
+let geoCenterCache = null;
+
+const BASE_LAYERS = [
+  { id: "osm", label: "Street", url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
+  { id: "sat", label: "Satellite", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
+];
+
+export function resolveMapCenter(settings) {
+  if (settings?.lat && settings?.lon) {
+    return Promise.resolve({
+      lat: parseFloat(settings.lat),
+      lon: parseFloat(settings.lon),
+      city: settings.city || "",
+    });
+  }
+  if (geoCenterCache) return Promise.resolve(geoCenterCache);
+  if (typeof navigator === "undefined" || !navigator.geolocation) {
+    return Promise.resolve({ lat: 39.7392, lon: -104.9903, city: settings?.city || "" });
+  }
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        geoCenterCache = { lat: p.coords.latitude, lon: p.coords.longitude, city: "" };
+        settings.lat = String(geoCenterCache.lat);
+        settings.lon = String(geoCenterCache.lon);
+        resolve(geoCenterCache);
+      },
+      () => resolve({ lat: 39.7392, lon: -104.9903, city: settings?.city || "" }),
+      { timeout: 7000, maximumAge: 600000, enableHighAccuracy: false },
+    );
+  });
+}
+
+async function currentWeather(lat, lon) {
+  const params = new URLSearchParams({
+    latitude: lat,
+    longitude: lon,
+    current: "temperature_2m,weather_code,wind_speed_10m",
+    temperature_unit: "fahrenheit",
+    wind_speed_unit: "mph",
+    timezone: "auto",
+  });
+  try {
+    const { body } = await httpGet(`https://api.open-meteo.com/v1/forecast?${params}`, 5000);
+    const data = JSON.parse(body || "{}");
+    const cur = data.current || {};
+    const code = parseInt(cur.weather_code || 0, 10);
+    return {
+      ok: true,
+      temp_f: cur.temperature_2m,
+      wind_mph: cur.wind_speed_10m,
+      label: WMO[code] || "Weather",
+    };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export function renderWeatherBoot(root, geo, wx, hail, esc) {
+  const addr = (geo && (geo.address || geo.city)) || "Your area";
+  const line = wx && wx.ok
+    ? `${Math.round(wx.temp_f)}°F · ${esc(wx.label || "Weather")}${wx.wind_mph ? ` · wind ${Math.round(wx.wind_mph)} mph` : ""}`
+    : "";
+  const hailRows = (hail || []).slice(0, 4);
+  root.innerHTML = `
+    <div class="wx-boot">
+      <div class="wx-addr">${esc(addr)}</div>
+      ${line ? `<div class="wx-now">${line}</div>` : ""}
+      ${hailRows.length
+        ? `<div class="wx-hail">${hailRows.map((h) => `<div class="wx-hail-row"><span class="date">${esc(h.date)}</span><span class="size">${esc(h.size_in)} in</span> ${esc(h.location || "")}</div>`).join("")}</div>`
+        : `<p class="muted">Tap the map on a roof for storm dossier.</p>`}
+    </div>`;
 }
 
 async function searchNews(query, limit = 6) {
@@ -190,37 +279,31 @@ async function searchNews(query, limit = 6) {
   }
 }
 
-async function localMapConfig(settings) {
-  let lat = 39.7392;
-  let lon = -104.9903;
-  let city = settings?.city || "Denver";
-  if (settings?.lat && settings?.lon) {
-    lat = parseFloat(settings.lat);
-    lon = parseFloat(settings.lon);
-  }
-  let radar = "";
-  try {
-    const { body } = await httpGet("https://api.rainviewer.com/public/weather-maps.json", 8000);
-    const rv = JSON.parse(body || "{}");
-    const ts = ((rv.radar || {}).past || []).slice(-1)[0]?.time;
-    if (ts) radar = `https://tilecache.rainviewer.com/v2/radar/${ts}/256/{z}/{x}/{y}/6/1_1.png`;
-  } catch {
-    /* optional */
-  }
-  const layerList = [
-    { id: "osm", label: "Street", url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
-    { id: "sat", label: "Satellite", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
-  ];
-  if (radar) layerList.unshift({ id: "radar", label: "Radar", url: radar, attribution: "© RainViewer", opacity: 0.55 });
-  return { center: { lat, lon, city }, layers: layerList };
+async function localMapConfig(settings, center) {
+  const c = center || (await resolveMapCenter(settings));
+  const layerList = [...BASE_LAYERS];
+  httpGet("https://api.rainviewer.com/public/weather-maps.json", 1800)
+    .then(({ body }) => {
+      const rv = JSON.parse(body || "{}");
+      const ts = ((rv.radar || {}).past || []).slice(-1)[0]?.time;
+      if (!ts || !map) return;
+      const url = `https://tilecache.rainviewer.com/v2/radar/${ts}/256/{z}/{x}/{y}/6/1_1.png`;
+      layers.radar = window.L.tileLayer(url, { attribution: "© RainViewer", opacity: 0.55, maxZoom: 19 });
+    })
+    .catch(() => {});
+  return { center: { lat: c.lat, lon: c.lon, city: c.city || settings?.city || "" }, layers: layerList };
 }
 
-async function localResearch(lat, lon, address = "") {
-  const geo = address ? { ok: true, address, city: address.split(",")[0] } : await reverseGeocode(lat, lon);
+async function localResearch(lat, lon, address = "", { deep = false } = {}) {
+  const geoP = address ? Promise.resolve({ ok: true, address, city: address.split(",")[0] }) : reverseGeocode(lat, lon);
+  const [geo, wxNow, storms, hail] = await Promise.all([
+    geoP,
+    currentWeather(lat, lon),
+    historicalStorms(lat, lon, deep ? 540 : 120),
+    fetchHailReports(lat, lon, 80, deep ? 90 : 21),
+  ]);
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const city = geo.city || addr.split(",")[0];
-  const storms = await historicalStorms(lat, lon);
-  const hail = await fetchHailReports(lat, lon);
   for (const h of hail.slice(0, 40)) {
     storms.unshift({
       date: h.date,
@@ -231,21 +314,23 @@ async function localResearch(lat, lon, address = "") {
     });
   }
   const news = [];
-  for (const q of [`hail damage "${city}"`, `hail storm "${city}"`, `severe weather "${addr}"`]) {
-    for (const hit of await searchNews(q, 4)) {
-      if (!news.some((n) => n.url === hit.url)) news.push(hit);
+  if (deep) {
+    for (const q of [`hail damage "${city}"`, `hail storm "${city}"`, `severe weather "${addr}"`]) {
+      for (const hit of await searchNews(q, 4)) {
+        if (!news.some((n) => n.url === hit.url)) news.push(hit);
+      }
     }
   }
-  const zurl = zillowUrl(addr);
   return {
     ok: true,
     address: addr,
     lat,
     lon,
+    weather: wxNow,
     storms,
     hail,
     news,
-    zillow_url: zurl,
+    zillow_url: zillowUrl(addr),
     owner_name: "",
     owner_phone: "",
     owner_email: "",
@@ -253,18 +338,21 @@ async function localResearch(lat, lon, address = "") {
 }
 
 export async function loadMapConfig(settings) {
-  const remote = await api("/api/storm/map", { settings }).catch(() => null);
-  return remote || localMapConfig(settings);
+  if (mapConfigCache) return mapConfigCache;
+  const center = await resolveMapCenter(settings);
+  const remote = await api("/api/storm/map", { settings, timeout: 8000 }).catch(() => null);
+  mapConfigCache = remote ? { ...remote, center: { ...remote.center, ...center } } : await localMapConfig(settings, center);
+  return mapConfigCache;
 }
 
-export async function researchPin(settings, lat, lon, address = "") {
+export async function researchPin(settings, lat, lon, address = "", deep = false) {
   const remote = await api("/api/storm/research", {
     settings,
     method: "POST",
-    body: { lat, lon, address, deep: true },
-    timeout: 180000,
+    body: { lat, lon, address, deep },
+    timeout: deep ? 180000 : 45000,
   }).catch(() => null);
-  return remote || localResearch(lat, lon, address);
+  return remote || localResearch(lat, lon, address, { deep });
 }
 
 export async function quickPin(settings, lat, lon) {
@@ -272,11 +360,15 @@ export async function quickPin(settings, lat, lon) {
     settings,
     method: "POST",
     body: { lat, lon },
+    timeout: 20000,
   }).catch(() => null);
   if (remote) return remote;
-  const geo = await reverseGeocode(lat, lon);
-  const hail = await fetchHailReports(lat, lon, 80, 90);
-  return { ok: true, geo, hail, recent_storms: hail.slice(0, 5) };
+  const [geo, wx, hail] = await Promise.all([
+    reverseGeocode(lat, lon),
+    currentWeather(lat, lon),
+    fetchHailReports(lat, lon, 80, 21),
+  ]);
+  return { ok: true, geo, weather: wx, hail, recent_storms: hail.slice(0, 5) };
 }
 
 export function drawHailMarkers(hailRows) {
@@ -299,7 +391,7 @@ export function drawHailMarkers(hailRows) {
   hailLayer.addTo(map);
 }
 
-export function mountMap(container, config, { onTap }) {
+export function mountMap(container, config, { onTap, center }) {
   if (!window.L) throw new Error("Leaflet not loaded");
   if (map) {
     map.remove();
@@ -308,8 +400,8 @@ export function mountMap(container, config, { onTap }) {
     hailLayer = null;
     layers = {};
   }
-  const c = config.center || { lat: 39.74, lon: -104.99 };
-  map = window.L.map(container, { zoomControl: true }).setView([c.lat, c.lon], 11);
+  const c = center || config.center || { lat: 39.74, lon: -104.99 };
+  map = window.L.map(container, { zoomControl: true, preferCanvas: true }).setView([c.lat, c.lon], 10);
   for (const layer of config.layers || []) {
     layers[layer.id] = window.L.tileLayer(layer.url, {
       attribution: layer.attribution || "",

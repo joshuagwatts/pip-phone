@@ -143,11 +143,11 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.17** — VPN pairing + tidy remote desktop.
+            **Phone Pip v0.1.18** — faster WX + calendar polish.
 
-            - **REMOTE DESKTOP** — FIND + PAIR tries VPN URLs (Tailscale / WireGuard) before Wi‑Fi scan. **PAIR VPN URL** for off-network.
-            - **WX tab** — storm map + NOAA hail (standalone or via desktop).
-            - **CODE / TODAY / themes** — unchanged.
+            - **WX** — starts at your location with live weather; map loads immediately; faster hail (parallel fetch).
+            - **TODAY** — snappier calendar (no full page rebuild on day tap).
+            - Desktop Pip HUD gets the same full calendar + geo-based WX (update local PiP).
 
             Install Pip.apk over your current build. KIT stays.
           files: |
