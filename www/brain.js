@@ -4,7 +4,7 @@ import { chatChain, chatComplete, chatCloudEnabled, cloudComplete, cloudStatus, 
 import { desktopChat, desktopConfigured, desktopReachable } from "./desktop.js";
 import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
-import { pickJob } from "./command.js";
+import { pickJob, skipLocalModel } from "./command.js";
 
 const QWEN_MLC = [
   "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
@@ -258,11 +258,11 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
 }
 
 /**
- * Brain chain:
- * SECURE chat: desktop GPU → cloud LIVE cascade → Qwen
- * LEAKY chat (auto): cloud LIVE cascade (upscale/downscale) → desktop → Qwen
- * Pin desktop / local / specific cloud still respected.
- * OPP/CODE: LEAKY unlocks cloud; SECURE blocks cloud scrapes.
+ * Brain chain (phone stays snappy — on-device Qwen is opt-in only):
+ * SECURE: desktop GPU → cloud LIVE cascade
+ * LEAKY: cloud LIVE cascade → desktop
+ * Pin local: Qwen only (slow; explicit)
+ * Otherwise Qwen is skipped — pair desktop or paste LIVE keys.
  */
 async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life") {
   track(onProgress);
@@ -272,6 +272,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const secure = privacyOn(settings);
   pendingTheme = null;
   const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
+  const allowLocal = !skipLocalModel(settings);
 
   const tryDesktop = async () => {
     if (!desktopConfigured(settings)) throw new Error("desktop not paired");
@@ -324,30 +325,24 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     } else if (pin === "desktop") {
       steps.push(["desktop", tryDesktop]);
       steps.push(["cloud", tryCloud]);
-      steps.push(["local", tryLocal]);
     } else if (pin !== "auto") {
-      // Pinned cloud id — try that family first via chatChain, then desktop, then Qwen
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
-      steps.push(["local", tryLocal]);
     } else if (secure) {
-      // SECURE auto: private GPU first, then LIVE cloud cascade, then Qwen
       steps.push(["desktop", tryDesktop]);
       steps.push(["cloud", tryCloud]);
-      steps.push(["local", tryLocal]);
     } else {
-      // LEAKY auto: master brain — LIVE keys upscale/downscale, then desktop, then Qwen
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
-      steps.push(["local", tryLocal]);
     }
   } else if (secure) {
     steps.push(["desktop", tryDesktop]);
     steps.push(["cloud", tryCloud]);
-    steps.push(["local", tryLocal]);
   } else {
     steps.push(["cloud", tryCloud]);
     steps.push(["desktop", tryDesktop]);
+  }
+  if (allowLocal && pin !== "local") {
     steps.push(["local", tryLocal]);
   }
 
@@ -382,28 +377,26 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   throw new Error(detail);
 }
 
+const SPARK_LINES = [
+  "One clean next step.",
+  "Stay with the work.",
+  "Small moves stack up.",
+  "Quiet focus wins.",
+  "Do the next right thing.",
+  "Keep the craft honest.",
+  "Breathe, then build.",
+  "Progress over polish.",
+  "Show up again.",
+  "Make it a little better.",
+];
+
 export async function sparkLine(recent = [], stanceLabel = "PIP") {
-  const used = (recent || []).filter(Boolean).slice(-8).join("; ") || "none";
-  const raw = await complete(
-    [
-      {
-        role: "system",
-        content:
-          "You are Pip. One line of encouragement for a full-screen VIBE overlay. " +
-          "Jim Rohn, Bob Ross, Alex Hormozi, Gary Vee. Practical, kind, patient. " +
-          "One sentence. Prefer under 10 words, never over 14. No emoji, no quotes, no name, no greeting. " +
-          "Never: unleash, harness, beast, devour, crush, dominate, warrior, savage, kill it, lock in, get after it.",
-      },
-      { role: "user", content: `Stance ${stanceLabel}. Do not repeat: ${used}` },
-    ],
-    0.95,
-    36,
-  );
-  return String(raw || "")
-    .split(/\n/)[0]
-    .replace(/^["'\s]+|["'\s]+$/g, "")
-    .replace(/^pip\s*[:—-]\s*/i, "")
-    .trim();
+  // Never wake on-device Qwen for vibe nudges — too slow on phone.
+  void stanceLabel;
+  const seen = new Set((recent || []).map((x) => String(x || "").toLowerCase()));
+  const pool = SPARK_LINES.filter((l) => !seen.has(l.toLowerCase()));
+  const pick = pool[Math.floor(Math.random() * (pool.length || 1))] || SPARK_LINES[0];
+  return pick;
 }
 
 async function complete(messages, temperature = 0.7, maxTokens = 400, settings = null, lane = "life", onProgress = null) {
@@ -411,8 +404,7 @@ async function complete(messages, temperature = 0.7, maxTokens = 400, settings =
     const out = await routedComplete(settings, messages, lane, temperature, maxTokens, onProgress);
     return out.text;
   }
-  const out = await localComplete(messages, temperature, maxTokens);
-  return out.text;
+  throw new Error("no brain settings — pair desktop or paste LIVE keys");
 }
 
 /**
@@ -458,7 +450,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       /* optional */
     }
   }
-  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. Follow the brain chain. Prefer local/desktop. Cloud is a leak.`;
+  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. Follow the brain chain. Prefer desktop GPU or LIVE cloud keys. On-device Qwen only if PIN=local.`;
   const system = [sysBase, momentLine, context].filter(Boolean).join("\n");
   const prior = (history || []).filter((m) => m && m.content && m.content !== text).slice(-16);
   const messages = [
@@ -501,7 +493,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
 
   if (!hit?.text || isBlank(hit.text)) {
     const tip = errMsg
-      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: DATA → PROBE KEYS (green = live) or FIND + PAIR desktop, then ask again.`
+      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: CONNECT desktop GPU or DATA → paste keys → PROBE (green = LIVE). On-device Qwen is off unless PIN=local.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "pip", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true };

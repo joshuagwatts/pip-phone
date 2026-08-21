@@ -757,22 +757,32 @@ function applyOverlays() {
   });
 }
 
+export function destroyMap() {
+  if (map) {
+    try {
+      map.off();
+      map.remove();
+    } catch {
+      /* ignore */
+    }
+    map = null;
+  }
+  pin = null;
+  hailLayer = null;
+  windLayer = null;
+  layers = {};
+  overlays = {};
+  activeOverlays = new Set(["radar"]);
+}
+
 export function mountMap(container, config, { onTap, center }) {
   if (!window.L) throw new Error("Leaflet not loaded");
-  if (map) {
-    map.remove();
-    map = null;
-    pin = null;
-    hailLayer = null;
-    windLayer = null;
-    layers = {};
-    overlays = {};
-  }
+  destroyMap();
   const c = center || config.center || { lat: 0, lon: 0 };
   const zoom = Math.abs(c.lat) < 1 && Math.abs(c.lon) < 1 ? 3 : 12;
   map = window.L.map(container, {
     zoomControl: true,
-    preferCanvas: false,
+    preferCanvas: true,
     scrollWheelZoom: true,
     touchZoom: true,
     doubleClickZoom: true,
@@ -786,9 +796,10 @@ export function mountMap(container, config, { onTap, center }) {
       opacity: layer.opacity ?? 1,
       maxZoom: MAP_MAX_ZOOM,
       maxNativeZoom: isOverlay ? layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM : 19,
-      tileSize: isOverlay ? 256 : 256,
-      updateWhenZooming: true,
-      keepBuffer: 2,
+      tileSize: 256,
+      updateWhenIdle: true,
+      updateWhenZooming: false,
+      keepBuffer: 1,
     });
     if (layer.kind === "overlay") overlays[layer.id] = tile;
     else layers[layer.id] = tile;
@@ -1016,20 +1027,30 @@ export async function fetchLiveWeather(lat, lon) {
 
 export function startWeatherWatch(getCenter, onAlert, everyMs = 8 * 60 * 1000) {
   let lastId = "";
+  let stopped = false;
   const tick = async () => {
+    if (stopped) return;
     try {
       const c = await getCenter();
-      if (!c?.lat) return;
+      if (stopped || !c?.lat) return;
       const live = await fetchLiveWeather(c.lat, c.lon);
-      if (!live.severity?.crummy) return;
+      if (stopped || !live.severity?.crummy) return;
       const id = (live.alerts[0] && live.alerts[0].id) || `${live.severity.level}:${live.label}`;
       if (id === lastId) return;
       lastId = id;
       onAlert(live);
     } catch {
-      /* keep watching */
+      /* keep watching while WX tab is open */
     }
   };
-  tick();
-  return setInterval(tick, everyMs);
+  // Defer first tick so map paint isn't competing with weather fetches.
+  const kick = setTimeout(tick, 2500);
+  const iv = setInterval(tick, everyMs);
+  return {
+    stop() {
+      stopped = true;
+      clearTimeout(kick);
+      clearInterval(iv);
+    },
+  };
 }

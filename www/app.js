@@ -17,7 +17,7 @@ import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
-import { loadMapConfig, mountMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier } from "./wx.js";
+import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier } from "./wx.js";
 import { describeChain, looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
   mealSnapshot,
@@ -69,6 +69,7 @@ let radioClock = 0;
 let radioBusy = false;
 let codeBusy = false;
 let wxState = { lat: null, lon: null, address: "", data: null };
+let wxWatch = null;
 
 function setStatus(msg) {
   $("#status").textContent = String(msg || "").toUpperCase();
@@ -90,12 +91,21 @@ function selected() {
   return db.opps.find((o) => o.id === oppId) || null;
 }
 
+function leaveWx() {
+  if (wxWatch && typeof wxWatch.stop === "function") {
+    wxWatch.stop();
+    wxWatch = null;
+  }
+  destroyMap();
+}
+
 function render() {
   if (tab === "guide") tab = "opp";
   document.body.classList.toggle("vibe-tab", tab === "vibe");
   document.body.classList.toggle("wx-tab", tab === "wx");
   $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   if (tab !== "vibe") leaveVibe();
+  if (tab !== "wx") leaveWx();
   if (tab === "kit") renderKit();
   else if (tab === "data") renderData();
   else if (tab === "vibe") renderVibe();
@@ -738,6 +748,7 @@ async function renderMeals() {
 async function renderWx() {
   document.body.classList.remove("comm");
   document.body.classList.add("wx-tab");
+  leaveWx();
   $("#view").innerHTML = `
     <div class="wx-wrap">
       <div class="wx-layers" id="wx-layers"></div>
@@ -746,8 +757,10 @@ async function renderWx() {
     </div>`;
   try {
     const center = await resolveMapCenter(db.settings);
+    if (tab !== "wx") return;
     persist();
     const cfg = await loadMapConfig(db.settings);
+    if (tab !== "wx") return;
     cfg.center = { ...cfg.center, ...center };
     $("#wx-layers").innerHTML = layerButtons(cfg, esc);
     $("#wx-layers").onclick = (e) => {
@@ -757,12 +770,34 @@ async function renderWx() {
       $("#wx-layers").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
     };
     mountMap($("#wx-map"), cfg, { center, onTap: onWxTap });
+    wxWatch = startWeatherWatch(
+      () => (tab === "wx" ? resolveMapCenter(db.settings) : Promise.resolve(null)),
+      (live) => {
+        if (tab !== "wx") return;
+        const line = (live.outlook && live.outlook.line) || "";
+        if (!line) return;
+        const nws = (live.alerts || []).slice(0, 2).map((a) => a.event).filter(Boolean);
+        const msg = nws.length ? `${line} ${nws.join(". ")}.` : line;
+        window.__pipWxLine = msg;
+        setStatus("WX ALERT");
+        const panel = $("#wx-panel");
+        if (panel && !panel.querySelector(".wx-alert")) {
+          const div = document.createElement("div");
+          div.className = "wx-alert";
+          div.textContent = msg;
+          panel.prepend(div);
+        }
+      },
+    );
     quickPin(db.settings, center.lat, center.lon).then((hit) => {
+      if (tab !== "wx") return;
       renderWeatherBoot($("#wx-panel"), hit.geo, hit.weather || cfg.weather, hit.hail, esc);
     }).catch(() => {
+      if (tab !== "wx") return;
       $("#wx-panel").innerHTML = `<p class="muted">Tap the map for storm dossier.</p>`;
     });
   } catch (e) {
+    if (tab !== "wx") return;
     $("#view").innerHTML = `<p class="muted">${esc(String(e.message || e))}</p>`;
   }
 }
@@ -879,6 +914,7 @@ function renderData() {
       <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
     </div>
     <div id="brain-probe-out" class="probe-out muted">Tap PROBE KEYS after pasting.</div>
+    <p class="muted">PIN auto = cascade. desktop = GPU first. Cloud ids = that API first. local = on-device Qwen (slow — avoid unless offline).</p>
     <div class="field"><span>PIN</span>
       <select id="brain-pin">
         ${["auto", "desktop", "local", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
@@ -1635,21 +1671,7 @@ function boot() {
           pingPresence(db.settings).then(injectNudge).catch(() => {});
         });
       }
-      resolveMapCenter(db.settings).then(() => persist()).catch(() => {});
-      startWeatherWatch(
-        () => resolveMapCenter(db.settings),
-        (live) => {
-          const line = (live.outlook && live.outlook.line) || "";
-          if (!line) return;
-          const nws = (live.alerts || []).slice(0, 2).map((a) => a.event).filter(Boolean);
-          const msg = nws.length ? `${line} ${nws.join(". ")}.` : line;
-          window.__pipWxLine = msg;
-          db.chat.push({ role: "pip", content: msg });
-          persist();
-          addLog("pip", msg);
-          setStatus("WX ALERT");
-        },
-      );
+      // Map / weather watch only while WX tab is open (see renderWx / leaveWx).
       const deferProbe = (fn) => {
         if (typeof requestIdleCallback === "function") requestIdleCallback(fn, { timeout: 2500 });
         else setTimeout(fn, 80);

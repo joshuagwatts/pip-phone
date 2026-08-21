@@ -111,14 +111,14 @@ export function describeChain(keyedIds, health = {}, desktop = false, pin = "aut
   rows.push({
     id: "local",
     label: "QWEN",
-    state: pin === "local" || pin === "auto" || pin === "desktop" ? "key" : "skip",
+    state: pin === "local" ? "key" : "skip",
   });
   return rows;
 }
 
 export function skipLocalModel(settings) {
-  // Always allow on-device Qwen as last hop so chat never goes mute.
-  return false;
+  // On-device Qwen is too slow on phones. Opt-in only via PIN → local.
+  return String(settings?.brain_pin || "auto").toLowerCase() !== "local";
 }
 
 export { NOT_CHAT_JOB };
