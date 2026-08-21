@@ -109,16 +109,21 @@ export function describeChain(keyedIds, health = {}, desktop = false, pin = "aut
   if (leaky) rows.push(...cloudRows, ...desk);
   else rows.push(...desk, ...cloudRows);
   rows.push({
+    id: "lite",
+    label: "LITE",
+    state: pin === "lite" || pin === "local" || pin === "auto" || pin === "desktop" ? "on" : "key",
+  });
+  rows.push({
     id: "local",
     label: "QWEN",
-    state: pin === "local" ? "key" : "skip",
+    state: pin === "qwen" ? "key" : "skip",
   });
   return rows;
 }
 
 export function skipLocalModel(settings) {
-  // On-device Qwen is too slow on phones. Opt-in only via PIN → local.
-  return String(settings?.brain_pin || "auto").toLowerCase() !== "local";
+  // Heavy on-device Qwen only when explicitly pinned.
+  return String(settings?.brain_pin || "auto").toLowerCase() !== "qwen";
 }
 
 export { NOT_CHAT_JOB };

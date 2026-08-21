@@ -914,12 +914,21 @@ function renderData() {
       <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
     </div>
     <div id="brain-probe-out" class="probe-out muted">Tap PROBE KEYS after pasting.</div>
-    <p class="muted">PIN auto = cascade. desktop = GPU first. Cloud ids = that API first. local = on-device Qwen (slow — avoid unless offline).</p>
+    <p class="muted">PIN auto = cascade ending in Pip Lite (pocket Guide). lite/local = Guide only. desktop = GPU first. qwen = slow on-device model. Cloud ids = that API first.</p>
     <div class="field"><span>PIN</span>
       <select id="brain-pin">
-        ${["auto", "desktop", "local", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
+        ${["auto", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
           const on = (s.brain_pin || "auto") === id;
-          const label = id === "xai" ? "xai (Grok)" : id === "desktop" ? "desktop GPU" : id;
+          const label =
+            id === "xai"
+              ? "xai (Grok)"
+              : id === "desktop"
+                ? "desktop GPU"
+                : id === "lite" || id === "local"
+                  ? "pip lite (guide)"
+                  : id === "qwen"
+                    ? "qwen (slow)"
+                    : id;
           return `<option value="${id}" ${on ? "selected" : ""}>${label}</option>`;
         }).join("")}
       </select>

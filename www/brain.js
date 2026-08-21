@@ -5,6 +5,7 @@ import { desktopChat, desktopConfigured, desktopReachable } from "./desktop.js";
 import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
 import { pickJob, skipLocalModel } from "./command.js";
+import { liteComplete } from "./piplite.js";
 
 const QWEN_MLC = [
   "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
@@ -59,7 +60,9 @@ function setBrain(provider, model) {
         ? "GROK"
         : provider === "local"
           ? "QWEN"
-          : provider === "web"
+          : provider === "lite"
+            ? "LITE"
+            : provider === "web"
             ? "WEB"
             : String(provider || "PIP").toUpperCase();
   lastBrain = { label, provider: provider || "", model: model || "" };
@@ -258,11 +261,11 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
 }
 
 /**
- * Brain chain (phone stays snappy — on-device Qwen is opt-in only):
- * SECURE: desktop GPU → cloud LIVE cascade
- * LEAKY: cloud LIVE cascade → desktop
- * Pin local: Qwen only (slow; explicit)
- * Otherwise Qwen is skipped — pair desktop or paste LIVE keys.
+ * Brain chain (phone stays snappy):
+ * SECURE: desktop GPU → cloud LIVE cascade → Pip Lite
+ * LEAKY: cloud LIVE cascade → desktop → Pip Lite
+ * Pin lite/local: Pip Lite only (pocket Guide)
+ * Pin qwen: on-device Qwen (slow; opt-in)
  */
 async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life") {
   track(onProgress);
@@ -272,7 +275,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const secure = privacyOn(settings);
   pendingTheme = null;
   const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
-  const allowLocal = !skipLocalModel(settings);
+  const allowQwen = !skipLocalModel(settings);
 
   const tryDesktop = async () => {
     if (!desktopConfigured(settings)) throw new Error("desktop not paired");
@@ -312,7 +315,17 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     };
   };
 
-  const tryLocal = async () => {
+  const tryLite = async () => {
+    emit("PIP LITE");
+    const user = [...messages].reverse().find((m) => m.role === "user");
+    const hit = liteComplete(String((user && user.content) || ""), {
+      operator: settings?.operator || "",
+    });
+    if (!hit?.text) throw new Error("lite blank");
+    return hit;
+  };
+
+  const tryQwen = async () => {
     emit("QWEN");
     return localComplete(messages, temperature, maxTokens);
   };
@@ -320,31 +333,39 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const pin = String(settings?.brain_pin || "auto").toLowerCase();
   const steps = [];
   if (isChat) {
-    if (pin === "local") {
-      steps.push(["local", tryLocal]);
+    if (pin === "lite" || pin === "local") {
+      steps.push(["lite", tryLite]);
+    } else if (pin === "qwen") {
+      steps.push(["local", tryQwen]);
+      steps.push(["lite", tryLite]);
     } else if (pin === "desktop") {
       steps.push(["desktop", tryDesktop]);
       steps.push(["cloud", tryCloud]);
+      steps.push(["lite", tryLite]);
     } else if (pin !== "auto") {
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
+      steps.push(["lite", tryLite]);
     } else if (secure) {
       steps.push(["desktop", tryDesktop]);
       steps.push(["cloud", tryCloud]);
+      steps.push(["lite", tryLite]);
     } else {
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
+      steps.push(["lite", tryLite]);
     }
   } else if (secure) {
     steps.push(["desktop", tryDesktop]);
     steps.push(["cloud", tryCloud]);
+    steps.push(["lite", tryLite]);
   } else {
     steps.push(["cloud", tryCloud]);
     steps.push(["desktop", tryDesktop]);
+    steps.push(["lite", tryLite]);
   }
-  if (allowLocal && pin !== "local") {
-    steps.push(["local", tryLocal]);
-  }
+  // Opt-in Qwen only when pin=qwen (already added) or allowQwen leftover — never auto.
+  void allowQwen;
 
   const seen = new Set();
   for (const [name, fn] of steps) {
@@ -357,7 +378,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
           leaked: hit.leaked,
           provider: hit.provider,
           via: hit.model || "",
-          reason: hit.leaked ? "left this device" : "stayed local",
+          reason: hit.leaked ? "left this device" : hit.provider === "lite" ? "pip lite guide" : "stayed local",
           tokens: hit.tokens || 0,
         });
         return hit;
@@ -450,7 +471,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       /* optional */
     }
   }
-  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. Follow the brain chain. Prefer desktop GPU or LIVE cloud keys. On-device Qwen only if PIN=local.`;
+  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. Prefer desktop GPU or LIVE cloud keys. Pip Lite is the pocket Hitchhiker guide when those are down.`;
   const system = [sysBase, momentLine, context].filter(Boolean).join("\n");
   const prior = (history || []).filter((m) => m && m.content && m.content !== text).slice(-16);
   const messages = [
@@ -493,7 +514,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
 
   if (!hit?.text || isBlank(hit.text)) {
     const tip = errMsg
-      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: CONNECT desktop GPU or DATA → paste keys → PROBE (green = LIVE). On-device Qwen is off unless PIN=local.`
+      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: CONNECT desktop, PROBE LIVE keys, or ask the Guide (water, fire, first aid…).`
       : FALLBACK;
     setTurn({ leaked: false, provider: "pip", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true };
