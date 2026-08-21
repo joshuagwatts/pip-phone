@@ -30,9 +30,9 @@ export const PROVIDERS = [
     label: "Cerebras",
     field: "cerebras",
     base: "https://api.cerebras.ai/v1",
-    life: "gpt-oss-120b",
-    boost: "gpt-oss-120b",
-    models: ["gpt-oss-120b", "llama3.1-8b", "llama-3.3-70b", "gemma-4-31b"],
+    life: "llama3.1-8b",
+    boost: "llama3.1-8b",
+    models: ["llama3.1-8b", "gpt-oss-120b", "llama-3.3-70b", "gemma-4-31b"],
     reasoning: true,
     keyUrl: "https://cloud.cerebras.ai",
     tip: "High speed · ~1M tok/day.",
@@ -52,9 +52,9 @@ export const PROVIDERS = [
     label: "Gemini",
     field: "gemini",
     base: "https://generativelanguage.googleapis.com/v1beta/openai",
-    life: "gemini-2.5-flash",
-    boost: "gemini-2.5-flash",
-    models: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
+    life: "gemini-2.0-flash",
+    boost: "gemini-2.0-flash",
+    models: ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
     fishy: true,
     keyUrl: "https://aistudio.google.com/apikey",
     tip: "Google AI Studio key · vision OK for rocks/shingles.",
@@ -216,15 +216,44 @@ export function liveProviderIds(settings) {
     .filter((id) => health[id]?.ok === true);
 }
 
+/**
+ * Pack chat history for cloud APIs:
+ * one system (Pip voice) + recent user/assistant turns.
+ * Avoids multi-system / long few-shot dumps that free APIs reject.
+ */
+export function packMessagesForCloud(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const systems = [];
+  const turns = [];
+  for (const m of list) {
+    if (!m || !m.content) continue;
+    const role = m.role === "assistant" || m.role === "pip" ? "assistant" : m.role === "system" ? "system" : "user";
+    const content = String(m.content).trim();
+    if (!content) continue;
+    if (role === "system") systems.push(content);
+    else turns.push({ role, content: content.slice(0, 6000) });
+  }
+  const system = systems.join("\n\n").slice(0, 8000);
+  const recent = turns.slice(-12);
+  const out = [];
+  if (system) out.push({ role: "system", content: system });
+  out.push(...recent);
+  if (!out.length) out.push({ role: "user", content: "hey" });
+  return out;
+}
+
 async function openaiOnce(prov, key, model, messages, temperature, maxTokens, tools) {
+  const packed = packMessagesForCloud(messages);
   const payload = {
     model,
-    messages,
-    temperature,
-    max_tokens: maxTokens,
+    messages: packed,
+    temperature: Math.min(1, Math.max(0, Number(temperature) || 0.7)),
+    max_tokens: Math.min(4096, Math.max(64, Number(maxTokens) || 1024)),
   };
-  // gpt-oss and other reasoning models often leave content empty unless effort is low.
-  if (prov.reasoning) payload.reasoning_effort = "low";
+  // Only gpt-oss-style models want reasoning_effort — others 400 on unknown fields.
+  if (prov.reasoning && /gpt-oss|o1|o3|reasoning/i.test(model)) {
+    payload.reasoning_effort = "low";
+  }
   if (tools && tools.length) payload.tools = tools;
   let data;
   try {

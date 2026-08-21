@@ -12,7 +12,7 @@ In chat you can show code in markdown fences when coding. Keep fences intact for
 No emoji. No corporate cheer. You draft. They paste. You do not submit forms.
 If it is not a job, it is conversation. Stay in it. Don't go flat.`;
 
-const BLANK = /(don't have (a )?personal (preference|preferences|feelings)|i don't have (personal )?(preferences|feelings)|i can't answer that|as an ai( language model)?|as an? (ai )?language model|i('m| am) just an? (ai|language model|chatbot|assistant)|is there anything else i can help|how (else )?can i (help|assist)|stick to the facts|here to provide information|i('d| would) be happy to|i'm here to help|let me know if|feel free to|of course[!.,]? i can)/i;
+const BLANK = /^(as an ai( language model)?|as an? (ai )?language model|i('m| am) just an? (ai|language model|chatbot)|i don't have (personal )?(preferences|feelings|opinions)|i can't (answer|help with) that)\.?$/i;
 
 export const SHOTS = [
   { role: "user", content: "hey" },

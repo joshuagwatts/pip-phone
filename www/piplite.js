@@ -47,11 +47,11 @@ For deep drafts, code, or long reasoning: CONNECT desktop or PROBE LIVE keys. Fo
     title: "BRAINS",
     tags: ["brain", "brains", "api", "keys", "desktop", "gpu", "leaky", "secure", "qwen", "model"],
     lead: "Chain of command, short form.",
-    body: `SECURE: desktop GPU → cloud hierarchy.
-LEAKY: cloud hierarchy (LIVE preferred) → desktop.
-PIP LITE: Guide hits only when heavier brains are down (or PIN=lite).
-COMPARE: type "compare: your question" or PIN=compare for parallel tabs — not every message.
-DATA → paste keys → SAVE → PROBE until green LIVE.`,
+    body: `Keys pasted = cloud hierarchy speaks as Pip (LIVE preferred).
+Desktop = private GPU fallback.
+PIP LITE = Guide only (PIN=lite) — not general chat when keys exist.
+COMPARE: type "compare: …" for parallel tabs.
+DATA → SAVE → PROBE until green LIVE. Chat bubble shows which brain answered.`,
   },
   {
     id: "opp",

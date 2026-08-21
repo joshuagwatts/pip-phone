@@ -271,14 +271,11 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
 }
 
 /**
- * Brain chain (phone stays snappy):
- * LEAKY + keys: cloud hierarchy (LIVE preferred) → desktop → Pip Lite (guide hits only)
- * SECURE: desktop → cloud hierarchy → Pip Lite (guide hits only)
- * Pin compare/all: fan-out all keyed brains (opt-in tabs)
- * Pin lite/local: Pip Lite only
- * Pin qwen: on-device Qwen (slow; opt-in)
- * Pin desktop: desktop first
- * Pin cerebras/gemini/…: that cloud family first
+ * Brain chain — cloud keys speak as Pip whenever present.
+ * Keys present: cloud hierarchy first (LIVE preferred) → desktop → error (Lite only if pinned)
+ * No keys: desktop → Pip Lite guide
+ * SECURE still limits OPP/CODE/vision scrapes; chat with pasted keys is intentional.
+ * Pin compare/all: parallel tabs. Pin lite/local: Guide only.
  */
 async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life") {
   track(onProgress);
@@ -301,7 +298,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     const user = [...messages].reverse().find((m) => m.role === "user");
     const out = await desktopChat(settings, String((user && user.content) || ""), 60000);
     const cleaned = sanitizeReply(out.text);
-    if (!cleaned || isBlank(cleaned)) throw new Error("desktop blank");
+    if (!cleaned) throw new Error("desktop blank");
     if (out.theme) pendingTheme = { theme: out.theme, name: out.theme_name || "" };
     return { text: cleaned, provider: "desktop", model: out.model || "ollama", leaked: false };
   };
@@ -318,8 +315,9 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     const out = isChat
       ? await chatComplete(settings, messages, temperature, maxTokens, routeJob)
       : await cloudComplete(settings, messages, lane, temperature, maxTokens);
+    // Cloud replies speak as Pip — keep text; do not trash as "blank" for normal help phrases.
     const cleaned = sanitizeReply(out.text) || String(out.text || "").trim();
-    if (!cleaned || isBlank(cleaned)) throw new Error(`${out.provider} blank`);
+    if (!cleaned) throw new Error(`${out.provider} empty`);
     markHealth(out.provider, true);
     return {
       text: cleaned,
@@ -354,8 +352,9 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       operator: settings?.operator || "",
     });
     if (!hit?.text) throw new Error("lite blank");
-    if (hit.weak && (hasKeys || desktopConfigured(settings)) && pin !== "lite" && pin !== "local") {
-      throw new Error("lite miss — need desktop or LIVE cloud");
+    // With keys or desktop, Lite is Guide-only (pin lite/local), never general chat.
+    if (pin !== "lite" && pin !== "local" && (hasKeys || desktopConfigured(settings))) {
+      throw new Error("lite skipped — use cloud/desktop");
     }
     return hit;
   };
@@ -376,36 +375,28 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       steps.push(["compare", tryCompare]);
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
-      steps.push(["lite", tryLite]);
     } else if (pin === "desktop") {
       steps.push(["desktop", tryDesktop]);
-      steps.push(["cloud", tryCloud]);
+      if (hasKeys) steps.push(["cloud", tryCloud]);
       steps.push(["lite", tryLite]);
     } else if (pin !== "auto") {
+      // Pinned provider family
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
-      steps.push(["lite", tryLite]);
-    } else if (!secure && hasKeys) {
+    } else if (hasKeys) {
+      // THE MAIN PATH: pasted keys → cloud hierarchy speaks as Pip
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
-      steps.push(["lite", tryLite]);
-    } else if (secure) {
-      steps.push(["desktop", tryDesktop]);
-      steps.push(["cloud", tryCloud]);
-      steps.push(["lite", tryLite]);
     } else {
       steps.push(["desktop", tryDesktop]);
-      steps.push(["cloud", tryCloud]);
       steps.push(["lite", tryLite]);
     }
   } else if (secure) {
     steps.push(["desktop", tryDesktop]);
     steps.push(["cloud", tryCloud]);
-    steps.push(["lite", tryLite]);
   } else {
     steps.push(["cloud", tryCloud]);
     steps.push(["desktop", tryDesktop]);
-    steps.push(["lite", tryLite]);
   }
   void allowQwen;
   void liveCloud;
@@ -424,18 +415,18 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
           reason: hit.compare
             ? "compare tabs"
             : hit.leaked
-              ? "left this device"
+              ? "cloud API as Pip"
               : hit.provider === "lite"
                 ? "pip lite guide"
-                : "stayed local",
+                : "desktop/local",
           tokens: hit.tokens || 0,
         });
         return hit;
       }
     } catch (e) {
-      const msg = String(e.message || e).slice(0, 100);
+      const msg = String(e.message || e).slice(0, 140);
       errors.push(`${name}: ${msg}`);
-      emit(`${String(name).toUpperCase()} FAIL`);
+      emit(`${String(name).toUpperCase()} FAIL · ${msg.slice(0, 48)}`);
     }
   }
 
@@ -528,12 +519,17 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       /* optional */
     }
   }
-  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. Prefer desktop GPU or LIVE cloud keys. Pip Lite is the pocket Hitchhiker guide when those are down.`;
-  const system = [sysBase, momentLine, context].filter(Boolean).join("\n");
-  const prior = (history || []).filter((m) => m && m.content && m.content !== text).slice(-16);
+  const voiceExamples =
+    "Voice examples (stay in this register):\n" +
+    SHOTS.filter((_, i) => i % 2 === 1)
+      .slice(0, 4)
+      .map((m) => `- ${m.content}`)
+      .join("\n");
+  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. You are answering through a cloud or desktop brain — stay Pip. Keys on this phone are intentional.`;
+  const system = [sysBase, voiceExamples, momentLine, context].filter(Boolean).join("\n");
+  const prior = (history || []).filter((m) => m && m.content && m.content !== text).slice(-10);
   const messages = [
     { role: "system", content: system },
-    ...SHOTS,
     ...prior.map((m) => ({
       role: m.role === "user" ? "user" : "assistant",
       content: m.content,
@@ -548,19 +544,17 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   } catch (e) {
     errMsg = String(e.message || e);
   }
-  if (!hit?.text || isBlank(hit.text)) {
+  if (!hit?.text) {
     try {
       hit = await routedComplete(
         routeSettings,
         [
           { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
-          ...SHOTS,
           { role: "user", content: askText },
-          { role: "user", content: "Stay Pip. Two short sentences. Pip is happy to help." },
         ],
         "life",
-        0.35,
-        512,
+        0.55,
+        768,
         onProgress,
         job,
       );
@@ -569,9 +563,9 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     }
   }
 
-  if (!hit?.text || isBlank(hit.text)) {
+  if (!hit?.text) {
     const tip = errMsg
-      ? `Pip is here — no brain answered yet. ${errMsg}. Fix: CONNECT desktop, PROBE LIVE keys, or ask the Guide (water, fire, first aid…).`
+      ? `Pip couldn't reach a brain. ${errMsg}. Fix: DATA → SAVE keys → PROBE until LIVE · or CONNECT desktop · or PIN lite for the Guide.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "pip", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true };

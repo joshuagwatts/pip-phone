@@ -995,8 +995,8 @@ function renderData() {
       </select>
     </div>
     ${securePosture
-      ? `<p class="muted">SECURE: desktop GPU first · cloud hierarchy if desktop quiet · OPP scrapes limited.</p>`
-      : `<p class="muted">LEAKY: cloud hierarchy first (LIVE preferred) · then desktop · Pip Lite only for Guide hits.</p>`}
+      ? `<p class="muted">SECURE: OPP/vision scrapes limited · chat still uses pasted keys when present · desktop if no keys.</p>`
+      : `<p class="muted">LEAKY: cloud hierarchy speaks as Pip first · then desktop · Lite only if PIN=lite.</p>`}
     <div class="key-list">${keyRows}</div>
 
     <h3>LOCK</h3>
@@ -1026,6 +1026,13 @@ function renderData() {
       const v = el.value.trim();
       // Blank field = keep existing key (so re-open DATA doesn't wipe).
       if (v) db.settings[p.field] = v;
+    }
+    // Pasting keys means you want them used — flip to LEAKY so chat hierarchy prefers cloud.
+    if (PROVIDERS.some((p) => String(db.settings[p.field] || "").trim())) {
+      if (privacyOn(db.settings)) {
+        db.settings.privacy_mode = "leaky";
+        renderPrivacy();
+      }
     }
     db.settings.desktop_url = normalizeUrl($("#set-durl").value.trim());
     if ($("#set-durl")) $("#set-durl").value = db.settings.desktop_url;
@@ -1674,11 +1681,11 @@ async function sendChat() {
       addCompareLog(compare, { leaked, tokens });
       setStatus(`COMPARE · ${compare.filter((c) => c.ok).length} BRAINS`);
     } else {
-      addLog("pip", reply, {
-        brain: provider || activeBrain().label,
-        leaked: false,
-        tokens,
-      });
+    addLog("pip", reply, {
+      brain: provider || activeBrain().label,
+      leaked,
+      tokens,
+    });
       const label = (provider || activeBrain().label || "PIP").toUpperCase();
       const tokBit = tokens ? ` · ~${tokens} TOK` : "";
       setStatus((leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`) + tokBit);
@@ -1701,6 +1708,10 @@ function boot() {
     hydrateHealth(db.settings.brain_health);
     // Drop stale KEY BAD poison from the old chat-ping probe.
     db.settings.brain_health = providerHealth();
+    // Keys on device = use them as Pip. Don't leave people stuck in SECURE + desktop-only.
+    if (PROVIDERS.some((p) => String(db.settings[p.field] || "").trim())) {
+      db.settings.privacy_mode = "leaky";
+    }
     persist();
     if (db.settings.biometric_lock === undefined) {
       db.settings.biometric_lock = true;

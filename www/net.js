@@ -58,6 +58,7 @@ function assertLan(url) {
 async function request(method, url, headers, body, timeoutMs, assertFn) {
   const target = assertFn(url);
   const http = nativeHttp();
+  const publicCall = assertFn === assertPublic;
   if (http) {
     const req = {
       url: target,
@@ -103,7 +104,9 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
     if (cookie) data._cookie = cookie;
     if (!status) {
       const err = new Error(
-        "network failed — Proton: Allow LAN connections · or same Wi‑Fi · Open-Firewall.bat as Admin",
+        publicCall
+          ? "network failed — check data/Wi‑Fi · Proton may be blocking this API"
+          : "network failed — Proton: Allow LAN connections · or same Wi‑Fi · Open-Firewall.bat as Admin",
       );
       err.status = 0;
       throw err;
@@ -112,7 +115,7 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
       const detail =
         (data && (data.detail || (typeof data.error === "string" ? data.error : data.error?.message))) ||
         `http ${status}`;
-      const err = new Error(detail);
+      const err = new Error(String(detail).slice(0, 180));
       err.status = status;
       throw err;
     }
@@ -135,7 +138,11 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
     const data = await res.json().catch(() => ({}));
     const cookie = parseCookie(res.headers.get("set-cookie"));
     if (cookie) data._cookie = cookie;
-    if (!res.ok) throw new Error((data.detail || data.error) || `http ${res.status}`);
+    if (!res.ok) {
+      const detail =
+        (typeof data.error === "string" ? data.error : data.error?.message) || data.detail || `http ${res.status}`;
+      throw new Error(String(detail).slice(0, 180));
+    }
     return data;
   } finally {
     clearTimeout(t);

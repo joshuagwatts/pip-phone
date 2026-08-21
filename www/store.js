@@ -32,7 +32,7 @@ function blank() {
       operator: "Joshua",
       humor: 89,
       honesty: 90,
-      privacy_mode: "secure",
+      privacy_mode: "leaky",
       brain_pin: "auto",
       groq: "",
       openrouter: "",
