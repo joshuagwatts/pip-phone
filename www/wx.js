@@ -28,12 +28,16 @@ const WMO = {
 export const DEFAULT_FILTERS = { km: 25, hailIn: 0, windMph: 38, days: 180, year: "all", sort: "date" };
 let wxFilters = { ...DEFAULT_FILTERS };
 let overlays = {};
-let activeOverlays = new Set(["radar"]);
+/** Exclusive weather product on the map: precip | cloud | vis | wind */
+let activeWxProduct = "precip";
+let activeOverlays = new Set(["precip"]);
 let windLayer = null;
+let windFieldLayer = null;
 let radarFrames = [];
 let radarFrameIdx = 0;
 let radarHost = "https://tilecache.rainviewer.com";
 let radarColor = "2/1_1";
+const WX_PRODUCTS = ["precip", "cloud", "vis", "wind"];
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   const r = 6371;
@@ -301,7 +305,100 @@ function mergeHailRows(...groups) {
     if (ds) return ds;
     return parseFloat(b.size_in) - parseFloat(a.size_in);
   });
-  return merged.slice(0, 120);
+  return merged.slice(0, 200);
+}
+
+/**
+ * HailTrace-style: one extremeness tag per calendar day near the pin.
+ * Keeps the max size that day; folds radar/spotter hits into one zone.
+ */
+export function collapseHailByDate(rows) {
+  const byDate = new Map();
+  for (const h of rows || []) {
+    const day = String(h.date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+    const sz = parseFloat(h.size_in);
+    const size = Number.isNaN(sz) ? 0 : sz;
+    const dist = Number(h.distance_km);
+    const distN = Number.isFinite(dist) ? dist : 999;
+    const prev = byDate.get(day);
+    const pt = Number.isFinite(h.lat) && Number.isFinite(h.lon) ? { lat: h.lat, lon: h.lon } : null;
+    if (!prev) {
+      byDate.set(day, {
+        ...h,
+        date: day,
+        size_in: Number.isNaN(sz) ? "UNK" : size.toFixed(2),
+        hits: 1,
+        zone_pts: pt ? [pt] : [],
+        sources: new Set([h.source || "hail"]),
+        max_size: size,
+        min_dist: distN,
+      });
+      continue;
+    }
+    prev.hits += 1;
+    if (pt) prev.zone_pts.push(pt);
+    if (h.source) prev.sources.add(h.source);
+    const better =
+      size > prev.max_size ||
+      (size === prev.max_size && distN < prev.min_dist) ||
+      (Number.isNaN(parseFloat(prev.size_in)) && !Number.isNaN(sz));
+    if (better) {
+      prev.max_size = Math.max(prev.max_size, size);
+      prev.min_dist = Math.min(prev.min_dist, distN);
+      prev.size_in = Number.isNaN(sz) ? prev.size_in : size.toFixed(2);
+      prev.lat = h.lat ?? prev.lat;
+      prev.lon = h.lon ?? prev.lon;
+      prev.time = h.time || prev.time;
+      prev.location = h.location || prev.location;
+      prev.state = h.state || prev.state;
+      prev.distance_km = distN < 900 ? Math.round(distN * 10) / 10 : prev.distance_km;
+      prev.score = Math.max(prev.score || 0, h.score || 0);
+      prev.comments = h.comments || prev.comments;
+    } else {
+      prev.min_dist = Math.min(prev.min_dist, distN);
+      if (distN < (Number(prev.distance_km) || 999)) prev.distance_km = Math.round(distN * 10) / 10;
+    }
+  }
+  return [...byDate.values()].map((row) => {
+    const srcs = [...(row.sources || [])];
+    const hasRadar = srcs.some((s) => /radar|swdi/i.test(s));
+    const hasSpot = srcs.some((s) => /spc|spot/i.test(s) || s === "hail");
+    let source = "hail";
+    if (hasRadar && hasSpot) source = "mixed";
+    else if (hasRadar) source = "noaa-swdi-radar";
+    else if (hasSpot) source = "noaa-spc";
+    const pts = row.zone_pts || [];
+    let zone_lat = row.lat;
+    let zone_lon = row.lon;
+    let zone_r_km = Math.max(1.2, Math.min(8, (parseFloat(row.size_in) || 0.5) * 2.2));
+    if (pts.length) {
+      zone_lat = pts.reduce((a, p) => a + p.lat, 0) / pts.length;
+      zone_lon = pts.reduce((a, p) => a + p.lon, 0) / pts.length;
+      let maxSpread = 0;
+      for (const p of pts) maxSpread = Math.max(maxSpread, haversineKm(zone_lat, zone_lon, p.lat, p.lon));
+      zone_r_km = Math.max(zone_r_km, maxSpread + 0.6);
+    }
+    return {
+      kind: "hail",
+      date: row.date,
+      time: row.time || "",
+      lat: zone_lat,
+      lon: zone_lon,
+      size_in: row.size_in,
+      location: row.location || "Hail zone",
+      county: row.county || "",
+      state: row.state || "",
+      comments: row.comments || `${row.hits} signature${row.hits === 1 ? "" : "s"}`,
+      source,
+      distance_km: row.distance_km,
+      score: row.score || (parseFloat(row.size_in) >= 1 ? 5 : 3),
+      hits: row.hits,
+      zone_r_km: Math.round(zone_r_km * 10) / 10,
+      severity: hailSeverityLabel(row.size_in),
+      stars: hailStars(row.size_in),
+    };
+  });
 }
 
 function enrichStormDates(storms, hail, wind) {
@@ -309,41 +406,54 @@ function enrichStormDates(storms, hail, wind) {
   for (const s of storms || []) {
     if (s.date) byDate.set(s.date, { ...s, reasons: [...(s.reasons || [])] });
   }
-  for (const h of hail || []) {
+  // Already 1 hail tag/day when collapsed; still guard against duplicates.
+  const hailDays = collapseHailByDate(hail);
+  for (const h of hailDays) {
     if (!h.date) continue;
-    const tag = h.source === "noaa-swdi-radar" ? `radar hail ${h.size_in} in` : `hail ${h.size_in} in`;
+    const tag = `${h.severity || "HAIL"} ${h.size_in}"`;
     const cur = byDate.get(h.date);
     if (cur) {
-      if (!cur.reasons.includes(tag)) cur.reasons.push(tag);
+      cur.reasons = (cur.reasons || []).filter((r) => !/hail|radar hail/i.test(r));
+      cur.reasons.push(tag);
       cur.score = Math.max(cur.score || 0, h.score || 4);
+      cur.hail_in = h.size_in;
+      cur.severity = h.severity;
     } else {
       byDate.set(h.date, {
         date: h.date,
         score: h.score || 4,
-        label: h.source === "noaa-swdi-radar" ? "Radar hail" : "Hail",
+        label: "Hail",
         reasons: [tag],
         wind_mph: 0,
+        hail_in: h.size_in,
+        severity: h.severity,
         source: h.source || "hail",
       });
     }
   }
+  const windByDate = new Map();
   for (const w of wind || []) {
     if (!w.date) continue;
     const mph = Number(w.wind_mph) || 0;
+    const prev = windByDate.get(w.date);
+    if (!prev || mph > prev.mph) windByDate.set(w.date, { mph, row: w });
+  }
+  for (const [day, { mph }] of windByDate) {
     const tag = `wind ${mph.toFixed(0)} mph`;
-    const cur = byDate.get(w.date);
+    const cur = byDate.get(day);
     if (cur) {
-      if (!cur.reasons.includes(tag)) cur.reasons.push(tag);
+      cur.reasons = (cur.reasons || []).filter((r) => !/^wind /i.test(r));
+      cur.reasons.push(tag);
       cur.score = Math.max(cur.score || 0, mph >= 58 ? 4 : 3);
       cur.wind_mph = Math.max(cur.wind_mph || 0, mph);
     } else {
-      byDate.set(w.date, {
-        date: w.date,
+      byDate.set(day, {
+        date: day,
         score: mph >= 58 ? 4 : 3,
         label: "Wind",
         reasons: [tag],
         wind_mph: mph,
-        source: w.source || "noaa-spc",
+        source: "noaa-spc",
       });
     }
   }
@@ -444,15 +554,15 @@ export function hailSeverityLabel(sizeIn) {
 function setRadarTilePath(path) {
   if (!map || !window.L || !path) return;
   const url = rainTileUrl(radarHost, path, radarColor);
-  const wasOn = activeOverlays.has("radar");
-  if (overlays.radar) {
+  const wasOn = activeWxProduct === "precip" || activeOverlays.has("precip") || activeOverlays.has("radar");
+  if (overlays.precip) {
     try {
-      map.removeLayer(overlays.radar);
+      map.removeLayer(overlays.precip);
     } catch {
       /* ignore */
     }
   }
-  overlays.radar = window.L.tileLayer(url, {
+  overlays.precip = window.L.tileLayer(url, {
     attribution: "© RainViewer",
     opacity: 0.72,
     maxZoom: MAP_MAX_ZOOM,
@@ -462,7 +572,8 @@ function setRadarTilePath(path) {
     updateWhenZooming: false,
     keepBuffer: 1,
   });
-  if (wasOn) overlays.radar.addTo(map);
+  overlays.radar = overlays.precip;
+  if (wasOn && activeWxProduct === "precip") overlays.precip.addTo(map);
 }
 
 export function setRadarFrame(idx) {
@@ -484,10 +595,10 @@ export function setRadarFrame(idx) {
 }
 
 export function radarScrubberHtml() {
-  if (radarFrames.length < 2) return "";
+  if (radarFrames.length < 2 || activeWxProduct !== "precip") return "";
   const max = radarFrames.length - 1;
   return `<div class="wx-radar-scrub" id="wx-radar-scrub">
-    <span class="wx-radar-tag">RADAR</span>
+    <span class="wx-radar-tag">PRECIP</span>
     <input type="range" id="wx-radar-range" min="0" max="${max}" value="${radarFrameIdx}" step="1" />
     <span id="wx-radar-label" class="wx-radar-label">…</span>
   </div>`;
@@ -583,6 +694,7 @@ export function renderHourlyTimeline(root, bundle, esc) {
     root.innerHTML = `<p class="muted">Hourly timeline offline.</p>`;
     return;
   }
+  let mode = root.dataset.wxMode || "temp";
   const idx = Math.min(hours.length - 1, Math.max(0, Number(bundle.nowIdx) || 0));
   const paint = (i) => {
     const row = hours[i];
@@ -594,25 +706,46 @@ export function renderHourlyTimeline(root, bundle, esc) {
           ? `${Math.abs(row.offsetHr)}h ago`
           : `+${row.offsetHr}h`;
     const tLabel = new Date(row.ts).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    let focus = `${Math.round(row.temp_f)}°F · ${esc(row.label)}`;
+    if (mode === "precip") {
+      const inch = row.precip_mm != null ? (Number(row.precip_mm) / 25.4).toFixed(2) : null;
+      focus = `${row.precip_prob != null ? `${Math.round(row.precip_prob)}% chance` : "precip"}${inch != null ? ` · ${inch} in` : ""} · ${esc(row.label)}`;
+    } else if (mode === "wind") {
+      focus = `${row.wind_mph != null ? `${Math.round(row.wind_mph)} mph` : "wind"} · ${esc(row.label)}`;
+    } else {
+      focus = `${Math.round(row.temp_f)}°F · ${esc(row.label)}${row.wind_mph != null ? ` · ${Math.round(row.wind_mph)} mph` : ""}`;
+    }
+    root.dataset.wxMode = mode;
     root.innerHTML = `
       <div class="wx-timeline">
+        <div class="wx-timeline-modes">
+          <button type="button" data-wx-mode="temp" class="${mode === "temp" ? "on" : ""}">TEMP</button>
+          <button type="button" data-wx-mode="precip" class="${mode === "precip" ? "on" : ""}">PRECIP</button>
+          <button type="button" data-wx-mode="wind" class="${mode === "wind" ? "on" : ""}">WIND</button>
+        </div>
         <div class="wx-timeline-head">
           <span class="wx-timeline-when">${esc(when)}</span>
           <span class="wx-timeline-clock">${esc(tLabel)}</span>
         </div>
-        <div class="wx-now">${Math.round(row.temp_f)}°F · ${esc(row.label)}${row.wind_mph != null ? ` · ${Math.round(row.wind_mph)} mph` : ""}${row.precip_prob != null ? ` · ${Math.round(row.precip_prob)}% precip` : ""}</div>
+        <div class="wx-now">${focus}</div>
         <label class="wx-timeline-scrub">HISTORY → FORECAST
           <input type="range" id="wx-hour-range" min="0" max="${hours.length - 1}" value="${i}" step="1" />
         </label>
         <div class="wx-timeline-ticks">${hours
           .map((h, j) => {
-            const mark = h.offsetHr === 0 ? "●" : h.offsetHr < 0 ? "·" : "·";
+            const mark = h.offsetHr === 0 ? "●" : "·";
             return `<span class="${j === i ? "on" : ""} ${h.offsetHr === 0 ? "now" : ""}">${mark}</span>`;
           })
           .join("")}</div>
       </div>`;
     const range = root.querySelector("#wx-hour-range");
     if (range) range.oninput = () => paint(Number(range.value));
+    root.querySelectorAll("[data-wx-mode]").forEach((b) => {
+      b.onclick = () => {
+        mode = b.dataset.wxMode;
+        paint(Number(root.querySelector("#wx-hour-range")?.value || i));
+      };
+    });
   };
   paint(idx);
 }
@@ -622,14 +755,14 @@ export function renderWeatherBoot(root, geo, wx, hail, esc) {
   const line = wx && wx.ok
     ? `${Math.round(wx.temp_f)}°F · ${esc(wx.label || "Weather")}${wx.wind_mph ? ` · wind ${Math.round(wx.wind_mph)} mph` : ""}`
     : "";
-  const hailRows = (hail || []).slice(0, 4);
+  const hailRows = collapseHailByDate(hail || []).slice(0, 4);
   root.innerHTML = `
     <div class="wx-boot">
       <div class="wx-addr">${esc(addr)}</div>
       ${line ? `<div class="wx-now">${line}</div>` : ""}
       ${hailRows.length
-        ? `<div class="wx-hail">${hailRows.map((h) => `<div class="wx-hail-row"><span class="date">${esc(h.date)}</span><span class="size">${esc(h.size_in)} in</span> ${esc(h.location || "")}</div>`).join("")}</div>`
-        : `<p class="muted">Tap the map on a roof for storm dossier.</p>`}
+        ? `<div class="wx-hail">${hailRows.map((h) => `<div class="wx-hail-row"><span class="stars">${esc(h.stars || hailStars(h.size_in))}</span><span class="date">${esc(h.date)}</span><span class="size">${esc(h.size_in)}"</span> <span class="sev">${esc(h.severity || "")}</span></div>`).join("")}</div>`
+        : `<p class="muted">Search an address or tap the map for hail zones.</p>`}
     </div>`;
 }
 
@@ -688,9 +821,9 @@ async function localMapConfig(settings, center) {
     const vis = ((rv.satellite || {}).visible || []).slice(-1)[0];
     if (frame?.path) {
       layerList.push({
-        id: "radar",
-        label: "Radar",
-        kind: "overlay",
+        id: "precip",
+        label: "Precip",
+        kind: "wx",
         url: rainTileUrl(radarHost, frame.path),
         attribution: "© RainViewer",
         opacity: 0.72,
@@ -699,9 +832,9 @@ async function localMapConfig(settings, center) {
     }
     if (ir?.path) {
       layerList.push({
-        id: "clouds",
-        label: "Clouds",
-        kind: "overlay",
+        id: "cloud",
+        label: "Cloud",
+        kind: "wx",
         url: rainTileUrl(radarHost, ir.path, "0/0_0"),
         attribution: "© RainViewer",
         opacity: 0.55,
@@ -712,13 +845,19 @@ async function localMapConfig(settings, center) {
       layerList.push({
         id: "vis",
         label: "Vis",
-        kind: "overlay",
+        kind: "wx",
         url: rainTileUrl(radarHost, vis.path, "0/0_0"),
         attribution: "© RainViewer",
         opacity: 0.45,
         maxNativeZoom: RADAR_NATIVE_ZOOM,
       });
     }
+    layerList.push({
+      id: "wind",
+      label: "Wind",
+      kind: "wx",
+      synthetic: true,
+    });
   } catch {
     /* overlays optional */
   }
@@ -890,27 +1029,48 @@ export function drawHailMarkers(hailRows, windRows) {
   if (windLayer) windLayer.remove();
   hailLayer = window.L.layerGroup();
   windLayer = window.L.layerGroup();
-  const sorted = [...(hailRows || [])].sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0));
-  for (const h of sorted.slice(0, 80)) {
+  const days = collapseHailByDate(hailRows || []);
+  const sorted = [...days].sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0));
+  for (const h of sorted.slice(0, 40)) {
+    if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
     const sz = parseFloat(h.size_in);
-    const r = Number.isNaN(sz) ? 5 : Math.min(20, 3 + sz * 5);
     const color = Number.isNaN(sz) ? "#7dff5a" : sz >= 2 ? "#ff3a3a" : sz >= 1.5 ? "#e07050" : sz >= 1 ? "#d4a84b" : "#7dff5a";
-    const stars = hailStars(h.size_in);
-    const sev = hailSeverityLabel(h.size_in);
-    const src = h.source === "noaa-swdi-radar" ? "radar" : "spotter";
-    window.L.circleMarker([h.lat, h.lon], {
-      radius: r,
+    const rM = Math.max(900, Math.min(12000, (h.zone_r_km || 2) * 1000));
+    const stars = h.stars || hailStars(h.size_in);
+    const sev = h.severity || hailSeverityLabel(h.size_in);
+    const src =
+      h.source === "mixed" ? "radar+spot" : h.source === "noaa-swdi-radar" ? "radar" : "spotter";
+    window.L.circle([h.lat, h.lon], {
+      radius: rM,
       color,
       fillColor: color,
-      fillOpacity: 0.75,
-      weight: sz >= 2 ? 2 : 1,
+      fillOpacity: sz >= 2 ? 0.28 : sz >= 1 ? 0.2 : 0.12,
+      weight: sz >= 2 ? 2.5 : 1.5,
+      opacity: 0.85,
     })
       .bindPopup(
-        `<b>${stars} ${sev}</b><br>${h.date}${h.time ? ` ${h.time}` : ""} · <b>${h.size_in}"</b> hail (${src})<br>${h.location || ""}${h.state ? `, ${h.state}` : ""}<br>${h.distance_km} km from pin`,
+        `<b>${stars} ${sev}</b><br>${h.date}${h.time ? ` ${h.time}` : ""} · <b>${h.size_in}"</b> max (${src})<br>${h.hits || 1} signature${(h.hits || 1) === 1 ? "" : "s"} · zone ~${h.zone_r_km || "?"} km<br>${h.location || ""}${h.state ? `, ${h.state}` : ""}<br>${h.distance_km != null ? `${h.distance_km} km from pin` : ""}`,
       )
       .addTo(hailLayer);
+    window.L.circleMarker([h.lat, h.lon], {
+      radius: Number.isNaN(sz) ? 4 : Math.min(10, 3 + sz * 2),
+      color,
+      fillColor: color,
+      fillOpacity: 0.9,
+      weight: 1,
+    }).addTo(hailLayer);
   }
-  for (const w of (windRows || []).slice(0, 40)) {
+  // Wind: one max per date near pin (not every report).
+  const windDays = new Map();
+  for (const w of windRows || []) {
+    const day = String(w.date || "").slice(0, 10);
+    if (!day) continue;
+    const mph = Number(w.wind_mph) || 0;
+    const prev = windDays.get(day);
+    if (!prev || mph > (Number(prev.wind_mph) || 0)) windDays.set(day, w);
+  }
+  for (const w of [...windDays.values()].slice(0, 24)) {
+    if (!Number.isFinite(w.lat) || !Number.isFinite(w.lon)) continue;
     const mph = Number(w.wind_mph) || 0;
     window.L.circleMarker([w.lat, w.lon], {
       radius: Math.min(16, 4 + mph / 12),
@@ -919,7 +1079,7 @@ export function drawHailMarkers(hailRows, windRows) {
       fillOpacity: 0.55,
       weight: 1,
     })
-      .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location}, ${w.state}<br>${w.distance_km} km from pin`)
+      .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location || ""}, ${w.state || ""}<br>${w.distance_km} km from pin`)
       .addTo(windLayer);
   }
   hailLayer.addTo(map);
@@ -928,10 +1088,75 @@ export function drawHailMarkers(hailRows, windRows) {
 
 function applyOverlays() {
   if (!map) return;
-  Object.keys(overlays).forEach((id) => {
-    if (activeOverlays.has(id)) overlays[id].addTo(map);
-    else map.removeLayer(overlays[id]);
-  });
+  for (const id of Object.keys(overlays)) {
+    if (id === "radar") continue;
+    const on = activeWxProduct === id || (id === "precip" && activeWxProduct === "precip");
+    try {
+      if (on) overlays[id].addTo(map);
+      else map.removeLayer(overlays[id]);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (activeWxProduct === "wind") refreshWindField();
+  else if (windFieldLayer) {
+    try {
+      map.removeLayer(windFieldLayer);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+async function refreshWindField() {
+  if (!map || !window.L || activeWxProduct !== "wind") return;
+  const c = map.getCenter();
+  if (!c) return;
+  try {
+    const params = new URLSearchParams({
+      latitude: c.lat,
+      longitude: c.lng,
+      current: "wind_speed_10m,wind_direction_10m,wind_gusts_10m",
+      hourly: "wind_speed_10m,wind_direction_10m",
+      forecast_days: "1",
+      wind_speed_unit: "mph",
+      timezone: "auto",
+    });
+    const { body } = await httpGet(`https://api.open-meteo.com/v1/forecast?${params}`, 8000);
+    const data = JSON.parse(body || "{}");
+    const cur = data.current || {};
+    const spd = Number(cur.wind_speed_10m) || 0;
+    const gust = Number(cur.wind_gusts_10m) || spd;
+    const dir = Number(cur.wind_direction_10m) || 0;
+    if (windFieldLayer) {
+      try {
+        map.removeLayer(windFieldLayer);
+      } catch {
+        /* ignore */
+      }
+    }
+    windFieldLayer = window.L.layerGroup();
+    const color = gust >= 50 ? "#ff3a3a" : gust >= 35 ? "#d4a84b" : "#4a9eff";
+    window.L.circle([c.lat, c.lng], {
+      radius: Math.max(2500, Math.min(18000, gust * 220)),
+      color,
+      fillColor: color,
+      fillOpacity: 0.15,
+      weight: 2,
+    })
+      .bindPopup(`Wind ${Math.round(spd)} mph · gust ${Math.round(gust)} · from ${Math.round(dir)}°`)
+      .addTo(windFieldLayer);
+    window.L.circleMarker([c.lat, c.lng], {
+      radius: Math.min(18, 5 + spd / 4),
+      color,
+      fillColor: color,
+      fillOpacity: 0.75,
+      weight: 1,
+    }).addTo(windFieldLayer);
+    if (activeWxProduct === "wind") windFieldLayer.addTo(map);
+  } catch {
+    /* wind field optional */
+  }
 }
 
 export function destroyMap() {
@@ -947,9 +1172,11 @@ export function destroyMap() {
   pin = null;
   hailLayer = null;
   windLayer = null;
+  windFieldLayer = null;
   layers = {};
   overlays = {};
-  activeOverlays = new Set(["radar"]);
+  activeOverlays = new Set(["precip"]);
+  activeWxProduct = "precip";
 }
 
 export function mountMap(container, config, { onTap, center }) {
@@ -967,22 +1194,27 @@ export function mountMap(container, config, { onTap, center }) {
   }).setView([c.lat, c.lon], zoom);
   const all = config.layers || [];
   for (const layer of all) {
-    const isOverlay = layer.kind === "overlay";
+    if (layer.synthetic || !layer.url) continue;
+    const isWx = layer.kind === "wx" || layer.kind === "overlay";
     const tile = window.L.tileLayer(layer.url, {
       attribution: layer.attribution || "",
       opacity: layer.opacity ?? 1,
       maxZoom: MAP_MAX_ZOOM,
-      maxNativeZoom: isOverlay ? layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM : 19,
+      maxNativeZoom: isWx ? layer.maxNativeZoom ?? RADAR_NATIVE_ZOOM : 19,
       tileSize: 256,
       updateWhenIdle: true,
       updateWhenZooming: false,
       keepBuffer: 1,
     });
-    if (layer.kind === "overlay") overlays[layer.id] = tile;
-    else layers[layer.id] = tile;
+    if (isWx) {
+      overlays[layer.id] = tile;
+      if (layer.id === "precip") overlays.radar = tile;
+    } else layers[layer.id] = tile;
   }
   (layers.dark || layers[activeLayer] || layers.osm || Object.values(layers)[0])?.addTo(map);
   if (layers.dark) activeLayer = "dark";
+  activeWxProduct = overlays.precip ? "precip" : WX_PRODUCTS.find((id) => overlays[id]) || "precip";
+  activeOverlays = new Set([activeWxProduct]);
   applyOverlays();
   map.on("click", (e) => {
     const { lat, lng } = e.latlng;
@@ -990,14 +1222,19 @@ export function mountMap(container, config, { onTap, center }) {
     else pin = window.L.marker(e.latlng).addTo(map);
     if (onTap) onTap(lat, lng);
   });
+  map.on("moveend", () => {
+    if (activeWxProduct === "wind") refreshWindField();
+  });
   return map;
 }
 
 export function setMapLayer(id) {
   if (!map) return;
-  if (overlays[id]) {
-    if (activeOverlays.has(id)) activeOverlays.delete(id);
-    else activeOverlays.add(id);
+  if (id === "radar") id = "precip";
+  if (id === "clouds") id = "cloud";
+  if (WX_PRODUCTS.includes(id) || overlays[id]) {
+    activeWxProduct = id;
+    activeOverlays = new Set([id]);
     applyOverlays();
     return;
   }
@@ -1006,6 +1243,65 @@ export function setMapLayer(id) {
   layers[id].addTo(map);
   applyOverlays();
   activeLayer = id;
+}
+
+export function flyToPin(lat, lon, zoom = 13) {
+  if (!map || !window.L || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  map.setView([lat, lon], zoom);
+  if (pin) pin.setLatLng([lat, lon]);
+  else pin = window.L.marker([lat, lon]).addTo(map);
+}
+
+/** Forward geocode an address/place for WX search. */
+export async function geocodeAddress(query) {
+  const q = String(query || "").trim();
+  if (q.length < 3) throw new Error("type a longer address");
+  const looksStreet = /\d/.test(q) || /,/.test(q);
+  const fromNominatim = async () => {
+    const { body: nb } = await httpGet(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&addressdetails=1`,
+      9000,
+      { "User-Agent": "PipWeather/1.0 (joshuagwatts)" },
+    );
+    const hits = JSON.parse(nb || "[]");
+    return hits.map((h) => ({
+      lat: Number(h.lat),
+      lon: Number(h.lon),
+      address: h.display_name || q,
+      city: String((h.address && (h.address.city || h.address.town || h.address.village)) || "").trim() || String(h.display_name || "").split(",")[0],
+      source: "nominatim",
+    }));
+  };
+  const fromMeteo = async () => {
+    const { body } = await httpGet(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=5&language=en&format=json`,
+      9000,
+    );
+    const results = JSON.parse(body || "{}").results || [];
+    return results.map((h) => ({
+      lat: Number(h.latitude),
+      lon: Number(h.longitude),
+      address: [h.name, h.admin1, h.country].filter(Boolean).join(", "),
+      city: h.name || q,
+      source: "open-meteo",
+    }));
+  };
+  let hits = [];
+  try {
+    hits = looksStreet ? await fromNominatim() : await fromMeteo();
+  } catch {
+    hits = [];
+  }
+  if (!hits.length) {
+    try {
+      hits = looksStreet ? await fromMeteo() : await fromNominatim();
+    } catch {
+      hits = [];
+    }
+  }
+  hits = hits.filter((h) => Number.isFinite(h.lat) && Number.isFinite(h.lon));
+  if (!hits.length) throw new Error("address not found");
+  return hits;
 }
 
 function cutoffDate(days) {
@@ -1021,7 +1317,7 @@ export function filterDossier(data, filters = wxFilters) {
   const windMin = Number(filters.windMph) || 0;
   const year = String(filters.year || "all");
   const sort = String(filters.sort || "date");
-  let hail = (data.hail || []).filter((h) => {
+  let hailRaw = (data.hail || []).filter((h) => {
     if (year !== "all") {
       if (!h.date || !String(h.date).startsWith(year)) return false;
     } else if (h.date && h.date < since) {
@@ -1031,6 +1327,8 @@ export function filterDossier(data, filters = wxFilters) {
     const sz = parseFloat(h.size_in);
     return Number.isNaN(sz) || sz >= hailMin;
   });
+  // One extremeness tag per date (HailTrace-style).
+  let hail = collapseHailByDate(hailRaw);
   if (sort === "size") {
     hail = [...hail].sort(
       (a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0) || String(b.date).localeCompare(String(a.date)),
@@ -1040,7 +1338,7 @@ export function filterDossier(data, filters = wxFilters) {
       (a, b) => String(b.date).localeCompare(String(a.date)) || (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0),
     );
   }
-  const wind = (data.wind || []).filter((w) => {
+  const windRaw = (data.wind || []).filter((w) => {
     if (year !== "all") {
       if (!w.date || !String(w.date).startsWith(year)) return false;
     } else if (w.date && w.date < since) {
@@ -1049,23 +1347,38 @@ export function filterDossier(data, filters = wxFilters) {
     if (w.distance_km != null && w.distance_km > km) return false;
     return (Number(w.wind_mph) || 0) >= windMin;
   });
+  // One wind max per date.
+  const windByDay = new Map();
+  for (const w of windRaw) {
+    const day = String(w.date || "").slice(0, 10);
+    const prev = windByDay.get(day);
+    if (!prev || (Number(w.wind_mph) || 0) > (Number(prev.wind_mph) || 0)) windByDay.set(day, { ...w, date: day });
+  }
+  const wind = [...windByDay.values()].sort((a, b) => String(b.date).localeCompare(String(a.date)));
   const archiveStorms = (data.storms || []).filter(
     (s) =>
       (s.source || "").includes("open-meteo") ||
       (s.reasons || []).some((r) => /precip|thunder|storm|Weather/i.test(r)),
   );
-  let storms = enrichStormDates(archiveStorms, hail, wind);
+  let storms = enrichStormDates(archiveStorms, hailRaw, windRaw);
   storms = storms.filter((s) => {
     if (year !== "all") {
       if (!s.date || !String(s.date).startsWith(year)) return false;
     } else if (s.date && s.date < since) {
       return false;
     }
-    if ((Number(s.wind_mph) || 0) < windMin && !(s.reasons || []).some((r) => /hail|thunder/i.test(r))) {
+    if ((Number(s.wind_mph) || 0) < windMin && !(s.reasons || []).some((r) => /hail|thunder|EXTREME|SEVERE|STRONG|MOD/i.test(r))) {
       return (Number(s.wind_mph) || 0) >= windMin || (Number(s.precip_mm) || 0) >= 25;
     }
     return true;
   });
+  if (sort === "size") {
+    storms = [...storms].sort((a, b) => {
+      const as = parseFloat(a.hail_in) || Number(a.wind_mph) || a.score || 0;
+      const bs = parseFloat(b.hail_in) || Number(b.wind_mph) || b.score || 0;
+      return bs - as || String(b.date).localeCompare(String(a.date));
+    });
+  }
   return { hail, wind, storms };
 }
 
@@ -1095,10 +1408,8 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
       <div class="wx-links">
         ${zurl ? `<a href="${esc(zurl)}" target="_blank" rel="noopener">ZILLOW SEARCH</a>` : ""}
         ${onResearch ? `<button type="button" id="wx-deep" class="primary">DEEP RESEARCH</button>` : ""}
-        <button type="button" id="wx-lens-shingle">SHINGLE ID</button>
-        <button type="button" id="wx-lens-rock">ROCK ID</button>
       </div>
-      <p class="muted wx-meta">${meta.deep ? `Deep scan · ${meta.fetchedDays || "?"}d · ${meta.fetchedKm || "?"} km` : "Quick scan · DEEP RESEARCH for hail + news · lens needs LEAKY + Gemini/OpenRouter"}</p>
+      <p class="muted wx-meta">${meta.deep ? `Deep scan · ${meta.fetchedDays || "?"}d · ${meta.fetchedKm || "?"} km` : "Quick scan · DEEP RESEARCH for hail zones + news · Rock/shingle ID lives under CHAT → LENS"}</p>
       <div class="wx-filters">
         <label>NEAR <select id="wx-f-km">
           <option value="8"${wxFilters.km == 8 ? " selected" : ""}>8 km</option>
@@ -1131,8 +1442,8 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
           ${years.map((y) => `<option value="${esc(y)}"${String(wxFilters.year) === y ? " selected" : ""}>${esc(y)}</option>`).join("")}
         </select></label>
         <label>SORT <select id="wx-f-sort">
-          <option value="date"${wxFilters.sort !== "size" ? " selected" : ""}>date</option>
-          <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>size ★</option>
+          <option value="date"${wxFilters.sort !== "size" ? " selected" : ""}>chrono</option>
+          <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>extreme ★</option>
         </select></label>
       </div>
       <div class="wx-contacts">
@@ -1140,28 +1451,29 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
         ${data.owner_phone ? `<div>Phone: ${esc(data.owner_phone)}</div>` : ""}
         ${data.owner_email ? `<div>Email: ${esc(data.owner_email)}</div>` : ""}
       </div>
-      <h4>HAIL TRACE · ${hail.length} HITS</h4>
-      <div class="wx-hail-legend muted">☆ light · ★ 0.75" · ★★ 1" · ★★★ 1.25"+ · ★★★★ 2"+ · ★★★★★ 3"+</div>
+      <h4>HAIL TRACE · ${hail.length} DAYS</h4>
+      <div class="wx-hail-legend muted">1 tag per date · max size that day · ☆ light → ★★★★★ 3"+ · map shows severity zones</div>
       <div class="wx-hail">${
         hail.length
           ? hail
-              .slice(0, 24)
+              .slice(0, 36)
               .map((h) => {
-                const stars = hailStars(h.size_in);
-                const sev = hailSeverityLabel(h.size_in);
-                const src = h.source === "noaa-swdi-radar" ? "RADAR" : "SPOT";
-                return `<div class="wx-hail-row sev-${esc(sev.toLowerCase())}">
+                const stars = h.stars || hailStars(h.size_in);
+                const sev = h.severity || hailSeverityLabel(h.size_in);
+                const src =
+                  h.source === "mixed" ? "ZONE" : h.source === "noaa-swdi-radar" ? "RADAR" : "SPOT";
+                return `<div class="wx-hail-row sev-${esc(String(sev).toLowerCase())}">
           <span class="stars">${esc(stars)}</span>
           <span class="date">${esc(h.date)}</span>
           <span class="size">${esc(h.size_in)}"</span>
           <span class="sev">${esc(sev)}</span>
           <span class="src">${esc(src)}</span>
-          <span class="dist">${esc(String(h.distance_km))} km</span>
-          <span class="loc">${esc(h.location || "")}${h.state ? `, ${esc(h.state)}` : ""}</span>
+          <span class="dist">${esc(String(h.distance_km ?? "—"))} km</span>
+          <span class="loc">${esc(h.hits || 1)} hit${(h.hits || 1) === 1 ? "" : "s"}${h.zone_r_km ? ` · ~${esc(String(h.zone_r_km))}km zone` : ""}</span>
         </div>`;
               })
               .join("")
-          : `<p class="muted">No hail this close after filters. Widen NEAR, drop HAIL ≥, or change YEAR.</p>`
+          : `<p class="muted">No hail days this close after filters. Widen NEAR, drop HAIL ≥, or change YEAR.</p>`
       }</div>
       <h4>WIND NEAR PIN</h4>
       <div class="wx-wind">${
@@ -1248,16 +1560,20 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
 }
 
 export function layerButtons(config, esc) {
-  const bases = (config.layers || []).filter((l) => l.kind !== "overlay");
-  const over = (config.layers || []).filter((l) => l.kind === "overlay");
-  const baseBtns = (bases.length ? bases : config.layers || [])
-    .map((l) => `<button type="button" data-layer="${esc(l.id)}" class="${l.id === activeLayer || (!bases.length && l.id === activeLayer) ? "on" : ""}">${esc(l.label)}</button>`)
+  const bases = (config.layers || []).filter((l) => l.kind !== "overlay" && l.kind !== "wx");
+  const wx = (config.layers || []).filter((l) => l.kind === "wx" || l.kind === "overlay");
+  const baseBtns = (bases.length ? bases : [])
+    .map((l) => `<button type="button" data-layer="${esc(l.id)}" class="${l.id === activeLayer ? "on" : ""}">${esc(l.label)}</button>`)
     .join("");
-  const overBtns = over
-    .map((l) => `<button type="button" data-layer="${esc(l.id)}" class="overlay ${activeOverlays.has(l.id) ? "on" : ""}">${esc(l.label)}</button>`)
+  const wxBtns = wx
+    .map((l) => {
+      const id = l.id === "radar" ? "precip" : l.id === "clouds" ? "cloud" : l.id;
+      const on = activeWxProduct === id;
+      return `<button type="button" data-layer="${esc(id)}" class="wx-product ${on ? "on" : ""}">${esc(l.label)}</button>`;
+    })
     .join("");
   const scrub = radarScrubberHtml();
-  const row = overBtns ? `${baseBtns}<span class="wx-split"></span>${overBtns}` : baseBtns;
+  const row = wxBtns ? `${baseBtns}<span class="wx-split"></span>${wxBtns}` : baseBtns;
   return scrub ? `${row}${scrub}` : row;
 }
 

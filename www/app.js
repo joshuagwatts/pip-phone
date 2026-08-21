@@ -17,7 +17,7 @@ import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
-import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier, bindRadarScrubber, fetchWeatherBundle, renderHourlyTimeline } from "./wx.js";
+import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier, bindRadarScrubber, fetchWeatherBundle, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml } from "./wx.js";
 import { pickAndIdentify, detectVisionMode } from "./vision.js";
 import { describeChain, looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
@@ -752,10 +752,20 @@ async function renderWx() {
   leaveWx();
   $("#view").innerHTML = `
     <div class="wx-wrap">
+      <form class="wx-search" id="wx-search" autocomplete="off">
+        <input type="search" id="wx-addr-q" placeholder="Address or place…" enterkeyhint="search" />
+        <button type="submit" class="primary">GO</button>
+      </form>
       <div class="wx-layers" id="wx-layers"></div>
       <div id="wx-map"></div>
       <div id="wx-panel" class="wx-panel"><p class="muted">Locating…</p></div>
     </div>`;
+  const refreshLayers = (cfg) => {
+    const el = $("#wx-layers");
+    if (!el || !cfg) return;
+    el.innerHTML = layerButtons(cfg, esc);
+    bindRadarScrubber(document);
+  };
   try {
     const center = await resolveMapCenter(db.settings);
     if (tab !== "wx") return;
@@ -763,21 +773,49 @@ async function renderWx() {
     const cfg = await loadMapConfig(db.settings);
     if (tab !== "wx") return;
     cfg.center = { ...cfg.center, ...center };
-    $("#wx-layers").innerHTML = layerButtons(cfg, esc);
+    refreshLayers(cfg);
     $("#wx-layers").onclick = (e) => {
       const b = e.target.closest("button[data-layer]");
       if (!b) return;
       const id = b.dataset.layer;
-      const isOverlay = b.classList.contains("overlay");
+      const isWx = b.classList.contains("wx-product") || b.classList.contains("overlay");
       setMapLayer(id);
-      if (isOverlay) {
-        b.classList.toggle("on");
+      if (isWx) {
+        $("#wx-layers").querySelectorAll("button.wx-product, button.overlay").forEach((x) => x.classList.toggle("on", x === b));
+        // Rebuild scrubber when switching to/from precip.
+        const scrubHost = $("#wx-layers");
+        const oldScrub = scrubHost?.querySelector("#wx-radar-scrub");
+        if (oldScrub) oldScrub.remove();
+        const html = radarScrubberHtml();
+        if (html && scrubHost) {
+          scrubHost.insertAdjacentHTML("beforeend", html);
+          bindRadarScrubber(document);
+        }
       } else {
-        $("#wx-layers").querySelectorAll("button[data-layer]:not(.overlay)").forEach((x) => x.classList.toggle("on", x === b));
+        $("#wx-layers").querySelectorAll("button[data-layer]:not(.wx-product):not(.overlay)").forEach((x) => x.classList.toggle("on", x === b));
       }
     };
     mountMap($("#wx-map"), cfg, { center, onTap: onWxTap });
     bindRadarScrubber(document);
+    const searchForm = $("#wx-search");
+    if (searchForm) {
+      searchForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const q = ($("#wx-addr-q")?.value || "").trim();
+        if (!q) return;
+        setStatus("GEOCODING…");
+        try {
+          const hits = await geocodeAddress(q);
+          const hit = hits[0];
+          if (!hit || !Number.isFinite(hit.lat)) throw new Error("no match");
+          flyToPin(hit.lat, hit.lon, 14);
+          setStatus(`PINNED · ${String(hit.city || hit.address || q).slice(0, 40)}`);
+          await onWxTap(hit.lat, hit.lon);
+        } catch (err) {
+          setStatus(String(err.message || err).slice(0, 48).toUpperCase());
+        }
+      };
+    }
     wxWatch = startWeatherWatch(
       () => (tab === "wx" ? resolveMapCenter(db.settings) : Promise.resolve(null)),
       (live) => {
@@ -815,39 +853,12 @@ async function renderWx() {
       }
     }).catch(() => {
       if (tab !== "wx") return;
-      $("#wx-panel").innerHTML = `<p class="muted">Tap the map for storm dossier.</p>`;
+      $("#wx-panel").innerHTML = `<p class="muted">Search an address or tap the map for storm dossier.</p>`;
     });
   } catch (e) {
     if (tab !== "wx") return;
     $("#view").innerHTML = `<p class="muted">${esc(String(e.message || e))}</p>`;
   }
-}
-
-function bindWxLensButtons(panel) {
-  if (!panel) return;
-  const run = async (mode) => {
-    setStatus(`LENS · ${mode.toUpperCase()}…`);
-    try {
-      const hit = await pickAndIdentify(db.settings, mode);
-      document.body.classList.add("comm");
-      addLog("user", `[photo · ${mode}]`);
-      addLog("pip", hit.text, { brain: String(hit.provider || "LENS").toUpperCase(), leaked: true });
-      setStatus(`LENS · ${String(hit.provider || "").toUpperCase()}`);
-    } catch (e) {
-      const msg = String(e.message || e);
-      if (/cancelled/i.test(msg)) {
-        setStatus("LENS CANCELLED");
-        return;
-      }
-      setStatus(msg.slice(0, 60).toUpperCase());
-      addLog("pip", msg);
-      document.body.classList.add("comm");
-    }
-  };
-  const sh = panel.querySelector("#wx-lens-shingle");
-  const rk = panel.querySelector("#wx-lens-rock");
-  if (sh) sh.onclick = () => run("shingle");
-  if (rk) rk.onclick = () => run("rock");
 }
 
 async function onWxTap(lat, lon) {
@@ -858,14 +869,13 @@ async function onWxTap(lat, lon) {
   const onDeep = async () => {
     setStatus("DEEP RESEARCH…");
     const meta = panel.querySelector(".wx-meta");
-    if (meta) meta.textContent = "Deep scan running (hail + news)…";
+    if (meta) meta.textContent = "Deep scan running (hail zones + news)…";
     try {
       const deep = await researchPin(db.settings, lat, lon, wxState.address, true);
       wxState.data = deep;
       const f = filterDossier(deep);
       drawHailMarkers(f.hail, f.wind);
       renderDossier(panel, deep, esc, onDeep, onRefetch);
-      bindWxLensButtons(panel);
       setStatus("DOSSIER UPDATED");
     } catch (e) {
       panel.innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
@@ -882,7 +892,6 @@ async function onWxTap(lat, lon) {
       onPartial: (partial) => {
         wxState.address = partial.address || "";
         renderDossier(panel, partial, esc, onDeep, onRefetch);
-        bindWxLensButtons(panel);
         setStatus("PINNED · HAIL NEARBY…");
       },
     });
@@ -891,7 +900,6 @@ async function onWxTap(lat, lon) {
     const f = filterDossier(data);
     drawHailMarkers(f.hail, f.wind);
     renderDossier(panel, data, esc, onDeep, onRefetch);
-    bindWxLensButtons(panel);
     setStatus("WX DOSSIER");
   } catch (e) {
     panel.innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
@@ -1697,29 +1705,45 @@ function boot() {
       }
       $("#send").onclick = sendChat;
       const lensBtn = $("#lens-btn");
-      if (lensBtn) {
-        lensBtn.onclick = async () => {
-          const mode = detectVisionMode($("#input")?.value || "lens");
-          setStatus(`LENS · ${mode.toUpperCase()}…`);
-          try {
-            const hit = await pickAndIdentify(db.settings, mode);
-            document.body.classList.add("comm");
-            addLog("user", `[photo · ${mode}]`);
-            db.chat.push({ role: "user", content: `[photo · ${mode}]`, leaked: true });
-            addLog("pip", hit.text, { brain: String(hit.provider || "LENS").toUpperCase(), leaked: true });
-            db.chat.push({ role: "pip", content: hit.text, leaked: true, provider: hit.provider });
-            persist();
-            setStatus(`LENS · ${String(hit.provider || "").toUpperCase()}`);
-          } catch (e) {
-            const msg = String(e.message || e);
-            if (/cancelled/i.test(msg)) {
-              setStatus("LENS CANCELLED");
-              return;
-            }
-            document.body.classList.add("comm");
-            addLog("pip", msg);
-            setStatus(msg.slice(0, 60).toUpperCase());
+      const lensModes = $("#lens-modes");
+      const runLens = async (mode) => {
+        if (lensModes) lensModes.hidden = true;
+        setStatus(`LENS · ${mode.toUpperCase()}…`);
+        try {
+          const hit = await pickAndIdentify(db.settings, mode);
+          document.body.classList.add("comm");
+          addLog("user", `[photo · ${mode}]`);
+          db.chat.push({ role: "user", content: `[photo · ${mode}]`, leaked: true });
+          addLog("pip", hit.text, { brain: String(hit.provider || "LENS").toUpperCase(), leaked: true });
+          db.chat.push({ role: "pip", content: hit.text, leaked: true, provider: hit.provider });
+          persist();
+          setStatus(`LENS · ${String(hit.provider || "").toUpperCase()}`);
+        } catch (e) {
+          const msg = String(e.message || e);
+          if (/cancelled/i.test(msg)) {
+            setStatus("LENS CANCELLED");
+            return;
           }
+          document.body.classList.add("comm");
+          addLog("pip", msg);
+          setStatus(msg.slice(0, 60).toUpperCase());
+        }
+      };
+      if (lensBtn) {
+        lensBtn.onclick = () => {
+          const hinted = detectVisionMode($("#input")?.value || "");
+          if (hinted && hinted !== "lens") {
+            runLens(hinted);
+            return;
+          }
+          if (lensModes) lensModes.hidden = !lensModes.hidden;
+        };
+      }
+      if (lensModes) {
+        lensModes.onclick = (e) => {
+          const b = e.target.closest("button[data-lens]");
+          if (!b) return;
+          runLens(b.dataset.lens);
         };
       }
       $("#input").addEventListener("keydown", (e) => {
