@@ -1,6 +1,15 @@
 /** Phone brain — privacy-first chain, cloud only when needed, leak tags for the UI. */
 import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS } from "./crew.js";
-import { chatChain, chatComplete, chatCloudEnabled, cloudComplete, cloudStatus, markHealth, privacyOn } from "./cloud.js";
+import {
+  chatChain,
+  chatComplete,
+  chatCloudEnabled,
+  cloudComplete,
+  cloudStatus,
+  liveProviderIds,
+  markHealth,
+  privacyOn,
+} from "./cloud.js";
 import { desktopChat, desktopConfigured, desktopReachable } from "./desktop.js";
 import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
@@ -262,10 +271,13 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
 
 /**
  * Brain chain (phone stays snappy):
- * SECURE: desktop GPU → cloud LIVE cascade → Pip Lite
- * LEAKY: cloud LIVE cascade → desktop → Pip Lite
- * Pin lite/local: Pip Lite only (pocket Guide)
+ * LIVE cloud keys → use them first (that's what PROBE LIVE means)
+ * else SECURE: desktop → cloud keyed → Pip Lite
+ * else LEAKY: cloud → desktop → Pip Lite
+ * Pin lite/local: Pip Lite only
  * Pin qwen: on-device Qwen (slow; opt-in)
+ * Pin desktop: desktop first
+ * Pin cerebras/gemini/…: that cloud family first
  */
 async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life") {
   track(onProgress);
@@ -276,6 +288,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   pendingTheme = null;
   const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
   const allowQwen = !skipLocalModel(settings);
+  const liveCloud = liveProviderIds(settings);
 
   const tryDesktop = async () => {
     if (!desktopConfigured(settings)) throw new Error("desktop not paired");
@@ -343,6 +356,12 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       steps.push(["cloud", tryCloud]);
       steps.push(["lite", tryLite]);
     } else if (pin !== "auto") {
+      // Pinned cloud brain (cerebras, gemini, …)
+      steps.push(["cloud", tryCloud]);
+      steps.push(["desktop", tryDesktop]);
+      steps.push(["lite", tryLite]);
+    } else if (liveCloud.length) {
+      // PROBE said LIVE — use those APIs first, even in SECURE chat
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
       steps.push(["lite", tryLite]);
@@ -386,6 +405,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     } catch (e) {
       const msg = String(e.message || e).slice(0, 100);
       errors.push(`${name}: ${msg}`);
+      emit(`${String(name).toUpperCase()} FAIL`);
       if (name === "cloud") {
         const m = msg.match(/^(\w+):/);
         if (m) markHealth(m[1], false, msg);

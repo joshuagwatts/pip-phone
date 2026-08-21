@@ -32,6 +32,8 @@ export const PROVIDERS = [
     base: "https://api.cerebras.ai/v1",
     life: "gpt-oss-120b",
     boost: "gpt-oss-120b",
+    models: ["gpt-oss-120b", "llama3.1-8b", "llama-3.3-70b", "gemma-4-31b"],
+    reasoning: true,
     keyUrl: "https://cloud.cerebras.ai",
     tip: "High speed · ~1M tok/day.",
   },
@@ -52,6 +54,7 @@ export const PROVIDERS = [
     base: "https://generativelanguage.googleapis.com/v1beta/openai",
     life: "gemini-2.5-flash",
     boost: "gemini-2.5-flash",
+    models: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
     fishy: true,
     keyUrl: "https://aistudio.google.com/apikey",
     tip: "Google AI Studio key · vision OK for rocks/shingles.",
@@ -141,6 +144,23 @@ export async function probeModels(settings, prov) {
     const data = JSON.parse(body || "{}");
     const n = Array.isArray(data.data) ? data.data.length : Array.isArray(data.models) ? data.models.length : 1;
     if (!n) throw new Error("empty models");
+    // Confirm chat completions work — /models alone was marking LIVE while chat failed.
+    try {
+      await openaiWithFallback(
+        prov,
+        key,
+        "life",
+        [
+          { role: "system", content: "Reply with exactly: PIP OK" },
+          { role: "user", content: "ping" },
+        ],
+        0,
+        16,
+      );
+    } catch (chatErr) {
+      markHealth(prov.id, false, String(chatErr.message || chatErr).slice(0, 120));
+      return { ok: false, id: prov.id, error: String(chatErr.message || chatErr).slice(0, 160) };
+    }
     markHealth(prov.id, true);
     return { ok: true, id: prov.id, models: n };
   } catch (e) {
@@ -175,26 +195,35 @@ function modelFor(prov, lane) {
   return lane === "boost" ? prov.boost : prov.life;
 }
 
-/** CHAT — fastest reliable brains first (orderFor / JOBS.life owns the cascade). */
-export function chatCloudEnabled(settings) {
-  return keyedProviders(settings).length > 0;
+function modelsFor(prov, lane) {
+  const primary = modelFor(prov, lane);
+  const extras = Array.isArray(prov.models) ? prov.models : [];
+  return [...new Set([primary, ...extras].filter(Boolean))];
 }
 
-export function chatChain(settings, job = "life") {
-  const pin = brainPin(settings);
-  const keyedIds = keyedProviders(settings).map((p) => p.id);
-  const ids = orderFor(job, keyedIds, liveHealth, pin);
-  return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
+function messageText(msg) {
+  if (!msg || typeof msg !== "object") return "";
+  const c = msg.content;
+  if (typeof c === "string") return c.trim();
+  if (Array.isArray(c)) {
+    return c
+      .map((p) => {
+        if (typeof p === "string") return p;
+        if (!p || typeof p !== "object") return "";
+        return p.text || p.content || p.output_text || "";
+      })
+      .join("")
+      .trim();
+  }
+  return String(msg.reasoning || msg.reasoning_content || msg.refusal || "").trim();
 }
 
-/** OPP/CODE cloud chain — same LIVE upscale/downscale as CHAT when LEAKY. */
-export function chain(settings, lane = "life") {
-  if (privacyOn(settings)) return [];
-  const pin = brainPin(settings);
-  const keyedIds = keyedProviders(settings).map((p) => p.id);
-  const job = lane === "boost" ? "boost" : lane === "code" ? "code" : "life";
-  const ids = orderFor(job, keyedIds, liveHealth, pin);
-  return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
+/** LIVE cloud ids (probe ok) — chat should prefer these. */
+export function liveProviderIds(settings) {
+  const health = providerHealth();
+  return keyedProviders(settings)
+    .map((p) => p.id)
+    .filter((id) => health[id]?.ok === true);
 }
 
 async function openaiOnce(prov, key, model, messages, temperature, maxTokens, tools) {
@@ -204,6 +233,8 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
     temperature,
     max_tokens: maxTokens,
   };
+  // gpt-oss and other reasoning models often leave content empty unless effort is low.
+  if (prov.reasoning) payload.reasoning_effort = "low";
   if (tools && tools.length) payload.tools = tools;
   let data;
   try {
@@ -214,7 +245,7 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
         ...(prov.headers || {}),
       },
       payload,
-      22000,
+      45000,
     );
   } catch (e) {
     throw new Error(`${prov.id}: ${String(e.message || e).slice(0, 140)}`);
@@ -224,8 +255,10 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
     const msg = typeof err === "string" ? err : err.message || JSON.stringify(err);
     throw new Error(`${prov.id}: ${String(msg).slice(0, 140)}`);
   }
-  const msg = (((data.choices || [])[0] || {}).message || {});
-  const text = String(msg.content || "").trim();
+  const choice = (data.choices || [])[0] || {};
+  const msg = choice.message || {};
+  let text = messageText(msg);
+  if (!text) text = messageText(choice);
   if (!text && !(msg.tool_calls || []).length) throw new Error(`${prov.id} empty reply`);
   const usage = data.usage || {};
   const tokens =
@@ -243,13 +276,48 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
   };
 }
 
+async function openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools) {
+  const errors = [];
+  for (const model of modelsFor(prov, lane)) {
+    try {
+      return await openaiOnce(prov, key, model, messages, temperature, maxTokens, tools);
+    } catch (e) {
+      errors.push(String(e.message || e).slice(0, 120));
+    }
+  }
+  throw new Error(errors.join(" · ") || `${prov.id} failed`);
+}
+
+/** CHAT — fastest reliable brains first (orderFor / JOBS.life owns the cascade). */
+export function chatCloudEnabled(settings) {
+  return keyedProviders(settings).length > 0;
+}
+
+export function chatChain(settings, job = "life") {
+  const pin = brainPin(settings);
+  if (pin === "local" || pin === "lite" || pin === "qwen") return [];
+  const keyedIds = keyedProviders(settings).map((p) => p.id);
+  const ids = orderFor(job, keyedIds, liveHealth, pin);
+  return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
+}
+
+/** OPP/CODE cloud chain — same LIVE upscale/downscale as CHAT when LEAKY. */
+export function chain(settings, lane = "life") {
+  if (privacyOn(settings)) return [];
+  const pin = brainPin(settings);
+  const keyedIds = keyedProviders(settings).map((p) => p.id);
+  const job = lane === "boost" ? "boost" : lane === "code" ? "code" : "life";
+  const ids = orderFor(job, keyedIds, liveHealth, pin);
+  return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
+}
+
 export async function cloudCompleteTools(settings, messages, tools, lane = "boost", temperature = 0.2, maxTokens = 8000) {
   const errors = [];
   for (const prov of chain(settings, lane)) {
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {
-      const out = await openaiOnce(prov, key, modelFor(prov, lane), messages, temperature, maxTokens, tools);
+      const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools);
       markHealth(prov.id, true);
       return out;
     } catch (e) {
@@ -262,11 +330,13 @@ export async function cloudCompleteTools(settings, messages, tools, lane = "boos
 
 export async function chatComplete(settings, messages, temperature = 0.7, maxTokens = 1024, job = "life") {
   const errors = [];
-  for (const prov of chatChain(settings, job)) {
+  const chainList = chatChain(settings, job);
+  if (!chainList.length) throw new Error("no keyed chat brains — paste keys in DATA or unpin");
+  for (const prov of chainList) {
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {
-      const out = await openaiOnce(prov, key, modelFor(prov, "life"), messages, temperature, maxTokens);
+      const out = await openaiWithFallback(prov, key, "life", messages, temperature, maxTokens);
       markHealth(prov.id, true);
       return out;
     } catch (e) {
@@ -283,7 +353,7 @@ export async function cloudComplete(settings, messages, lane = "life", temperatu
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {
-      const out = await openaiOnce(prov, key, modelFor(prov, lane), messages, temperature, maxTokens);
+      const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens);
       markHealth(prov.id, true);
       return out;
     } catch (e) {

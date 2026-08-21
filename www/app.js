@@ -960,7 +960,7 @@ function renderData() {
 
     <h3>BRAIN KEYS</h3>
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
-    <p class="muted">Green LIVE = API accepted the key. Amber KEY SET = pasted but not probed. Red KEY BAD = rejected. Chat order: DESKTOP → cloud → Qwen.</p>
+    <p class="muted">Green LIVE = API accepted the key. Amber KEY SET = pasted but not probed. Red KEY BAD = rejected. Chat with LIVE keys uses those APIs first (then desktop, then Pip Lite).</p>
     <div class="actions">
       <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
     </div>
@@ -985,8 +985,8 @@ function renderData() {
       </select>
     </div>
     ${securePosture
-      ? `<p class="muted">SECURE: desktop GPU first · cloud keys as fallback · OPP scrapes stay limited.</p>`
-      : `<p class="muted">LEAKY: master brain — LIVE cloud keys upscale/downscale first, then desktop, then Qwen.</p>`}
+      ? `<p class="muted">SECURE: LIVE cloud keys still answer chat first when probed · desktop if cloud quiet · OPP scrapes stay limited.</p>`
+      : `<p class="muted">LEAKY: LIVE cloud cascade first · then desktop · then Pip Lite.</p>`}
     <div class="key-list">${keyRows}</div>
 
     <h3>LOCK</h3>

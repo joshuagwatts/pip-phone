@@ -15,7 +15,7 @@ export const JOBS = {
   },
   wx: {
     label: "WX",
-    brains: ["gemini", "openrouter", "groq"],
+    brains: ["gemini", "cerebras", "openrouter", "groq", "mistral"],
   },
   vision: {
     label: "LENS",
@@ -62,7 +62,7 @@ export function wantsDesktopCodeUpgrade(text) {
 
 export function orderFor(job, keyedIds, health = {}, pin = "auto") {
   const spec = JOBS[job] || JOBS.life;
-  if (pin === "local") return [];
+  if (pin === "local" || pin === "lite" || pin === "qwen") return [];
   const keyed = spec.brains.filter((id) => keyedIds.includes(id));
   // Prefer pin first, but always fall through to other keyed brains.
   let ordered = keyed;
