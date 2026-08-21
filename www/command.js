@@ -115,7 +115,7 @@ export function describeChain(keyedIds, health = {}, desktop = false, pin = "aut
   rows.push({
     id: "lite",
     label: "LITE",
-    state: pin === "lite" || pin === "local" || pin === "auto" || pin === "desktop" ? "on" : "key",
+    state: pin === "lite" || pin === "local" ? "on" : "key",
   });
   rows.push({
     id: "local",

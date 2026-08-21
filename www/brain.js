@@ -6,6 +6,7 @@ import {
   chatCloudEnabled,
   cloudComplete,
   cloudStatus,
+  compareComplete,
   liveProviderIds,
   markHealth,
   privacyOn,
@@ -271,9 +272,9 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
 
 /**
  * Brain chain (phone stays snappy):
- * LIVE cloud keys → use them first (that's what PROBE LIVE means)
- * else SECURE: desktop → cloud keyed → Pip Lite
- * else LEAKY: cloud → desktop → Pip Lite
+ * LEAKY + keys: cloud hierarchy (LIVE preferred) → desktop → Pip Lite (guide hits only)
+ * SECURE: desktop → cloud hierarchy → Pip Lite (guide hits only)
+ * Pin compare/all: fan-out all keyed brains (opt-in tabs)
  * Pin lite/local: Pip Lite only
  * Pin qwen: on-device Qwen (slow; opt-in)
  * Pin desktop: desktop first
@@ -288,7 +289,9 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   pendingTheme = null;
   const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
   const allowQwen = !skipLocalModel(settings);
+  const hasKeys = chatCloudEnabled(settings);
   const liveCloud = liveProviderIds(settings);
+  const pin = String(settings?.brain_pin || "auto").toLowerCase();
 
   const tryDesktop = async () => {
     if (!desktopConfigured(settings)) throw new Error("desktop not paired");
@@ -304,8 +307,7 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   };
 
   const tryCloud = async () => {
-    const keyed = chatCloudEnabled(settings);
-    if (!keyed) throw new Error("no cloud keys on phone — paste them in DATA");
+    if (!hasKeys) throw new Error("no cloud keys on phone — paste them in DATA");
     if (!isChat && !cloud.leaky) throw new Error("SECURE blocks cloud for OPP/CODE — flip LEAKY");
     const chainList = isChat ? chatChain(settings, routeJob) : null;
     if (isChat && !(chainList || []).length) {
@@ -328,6 +330,23 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     };
   };
 
+  const tryCompare = async () => {
+    if (!hasKeys) throw new Error("compare needs cloud keys in DATA");
+    if (secure && !isChat) throw new Error("SECURE blocks compare for OPP — flip LEAKY");
+    emit("COMPARE…");
+    const out = await compareComplete(settings, messages, temperature, maxTokens, routeJob);
+    const cleaned = sanitizeReply(out.text) || String(out.text || "").trim();
+    if (!cleaned) throw new Error("compare blank");
+    return {
+      text: cleaned,
+      provider: out.provider,
+      model: out.model,
+      leaked: true,
+      tokens: Number(out.tokens) || 0,
+      compare: out.compare,
+    };
+  };
+
   const tryLite = async () => {
     emit("PIP LITE");
     const user = [...messages].reverse().find((m) => m.role === "user");
@@ -335,6 +354,9 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       operator: settings?.operator || "",
     });
     if (!hit?.text) throw new Error("lite blank");
+    if (hit.weak && (hasKeys || desktopConfigured(settings)) && pin !== "lite" && pin !== "local") {
+      throw new Error("lite miss — need desktop or LIVE cloud");
+    }
     return hit;
   };
 
@@ -343,7 +365,6 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     return localComplete(messages, temperature, maxTokens);
   };
 
-  const pin = String(settings?.brain_pin || "auto").toLowerCase();
   const steps = [];
   if (isChat) {
     if (pin === "lite" || pin === "local") {
@@ -351,17 +372,20 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     } else if (pin === "qwen") {
       steps.push(["local", tryQwen]);
       steps.push(["lite", tryLite]);
+    } else if (pin === "compare" || pin === "all") {
+      steps.push(["compare", tryCompare]);
+      steps.push(["cloud", tryCloud]);
+      steps.push(["desktop", tryDesktop]);
+      steps.push(["lite", tryLite]);
     } else if (pin === "desktop") {
       steps.push(["desktop", tryDesktop]);
       steps.push(["cloud", tryCloud]);
       steps.push(["lite", tryLite]);
     } else if (pin !== "auto") {
-      // Pinned cloud brain (cerebras, gemini, …)
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
       steps.push(["lite", tryLite]);
-    } else if (liveCloud.length) {
-      // PROBE said LIVE — use those APIs first, even in SECURE chat
+    } else if (!secure && hasKeys) {
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
       steps.push(["lite", tryLite]);
@@ -370,8 +394,8 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       steps.push(["cloud", tryCloud]);
       steps.push(["lite", tryLite]);
     } else {
-      steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
+      steps.push(["cloud", tryCloud]);
       steps.push(["lite", tryLite]);
     }
   } else if (secure) {
@@ -383,8 +407,8 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     steps.push(["desktop", tryDesktop]);
     steps.push(["lite", tryLite]);
   }
-  // Opt-in Qwen only when pin=qwen (already added) or allowQwen leftover — never auto.
   void allowQwen;
+  void liveCloud;
 
   const seen = new Set();
   for (const [name, fn] of steps) {
@@ -397,7 +421,13 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
           leaked: hit.leaked,
           provider: hit.provider,
           via: hit.model || "",
-          reason: hit.leaked ? "left this device" : hit.provider === "lite" ? "pip lite guide" : "stayed local",
+          reason: hit.compare
+            ? "compare tabs"
+            : hit.leaked
+              ? "left this device"
+              : hit.provider === "lite"
+                ? "pip lite guide"
+                : "stayed local",
           tokens: hit.tokens || 0,
         });
         return hit;
@@ -406,10 +436,6 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       const msg = String(e.message || e).slice(0, 100);
       errors.push(`${name}: ${msg}`);
       emit(`${String(name).toUpperCase()} FAIL`);
-      if (name === "cloud") {
-        const m = msg.match(/^(\w+):/);
-        if (m) markHealth(m[1], false, msg);
-      }
     }
   }
 
@@ -463,16 +489,27 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       /* optional */
     }
   }
-  const job = pickJob(text);
+  let askText = String(text || "");
+  let forceCompare = false;
+  const cmp = askText.match(/^\s*(compare|ask all|all brains?)\s*[:\-]?\s*/i);
+  if (cmp) {
+    forceCompare = true;
+    askText = askText.slice(cmp[0].length).trim() || askText;
+  }
+  const routeSettings =
+    forceCompare || /^(compare|all)$/i.test(String(settings?.brain_pin || ""))
+      ? { ...settings, brain_pin: "compare" }
+      : settings;
+  const job = pickJob(askText);
   let context = extras.webContext || "";
   let webUsed = Boolean(extras.webContext);
   if (!context) {
     try {
       const { webBrief, wantsWeb } = await import("./web.js");
-      if (wantsWeb(text)) {
+      if (wantsWeb(askText)) {
         emit("WEB…");
         context = await Promise.race([
-          webBrief(text),
+          webBrief(askText),
           new Promise((resolve) => setTimeout(() => resolve(""), 2500)),
         ]);
         webUsed = Boolean(context);
@@ -484,7 +521,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   if (db) {
     try {
       const { mealBrief } = await import("./meals.js");
-      if (job === "meal" || /\b(meals?|breakfast|lunch|dinner)\b/i.test(text)) {
+      if (job === "meal" || /\b(meals?|breakfast|lunch|dinner)\b/i.test(askText)) {
         context = [context, `Today's meals:\n${mealBrief(db)}`].filter(Boolean).join("\n");
       }
     } catch {
@@ -501,24 +538,24 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       role: m.role === "user" ? "user" : "assistant",
       content: m.content,
     })),
-    { role: "user", content: text },
+    { role: "user", content: askText },
   ];
 
   let hit = null;
   let errMsg = "";
   try {
-    hit = await routedComplete(settings, messages, "life", 0.7, 1024, onProgress, job);
+    hit = await routedComplete(routeSettings, messages, "life", 0.7, 1024, onProgress, job);
   } catch (e) {
     errMsg = String(e.message || e);
   }
   if (!hit?.text || isBlank(hit.text)) {
     try {
       hit = await routedComplete(
-        settings,
+        routeSettings,
         [
           { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
           ...SHOTS,
-          { role: "user", content: text },
+          { role: "user", content: askText },
           { role: "user", content: "Stay Pip. Two short sentences. Pip is happy to help." },
         ],
         "life",
@@ -554,9 +591,10 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     provider: hit.provider,
     via: hit.model || "",
     tokens: hit.tokens || 0,
-    error: false,
+    compare: hit.compare || null,
   };
 }
+
 
 export async function draftAnswers(settings, { title, kit, questions, kind }, onProgress) {
   track(onProgress);

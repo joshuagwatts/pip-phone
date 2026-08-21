@@ -968,15 +968,15 @@ function renderData() {
 
     <h3>BRAIN KEYS</h3>
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
-    <p class="muted">Green LIVE = API accepted the key. Amber KEY SET = pasted but not probed. Red KEY BAD = rejected. Chat with LIVE keys uses those APIs first (then desktop, then Pip Lite).</p>
+    <p class="muted">Green LIVE = key accepted (/models). Amber KEY SET = pasted, not probed. Red KEY BAD = rejected auth. LEAKY uses the cloud hierarchy (best LIVE first). COMPARE pin or type "compare: …" to tab through all keyed brains once.</p>
     <div class="actions">
       <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
     </div>
     <div id="brain-probe-out" class="probe-out muted">Tap PROBE KEYS after pasting.</div>
-    <p class="muted">PIN auto = cascade ending in Pip Lite (pocket Guide). lite/local = Guide only. desktop = GPU first. qwen = slow on-device model. Cloud ids = that API first.</p>
+    <p class="muted">PIN auto = hierarchy cascade (not blast-all). compare = parallel tabs. lite/local = Guide only. desktop = GPU first. Cloud ids = that API first.</p>
     <div class="field"><span>PIN</span>
       <select id="brain-pin">
-        ${["auto", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
+        ${["auto", "compare", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
           const on = (s.brain_pin || "auto") === id;
           const label =
             id === "xai"
@@ -987,14 +987,16 @@ function renderData() {
                   ? "pip lite (guide)"
                   : id === "qwen"
                     ? "qwen (slow)"
-                    : id;
+                    : id === "compare"
+                      ? "compare (all tabs)"
+                      : id;
           return `<option value="${id}" ${on ? "selected" : ""}>${label}</option>`;
         }).join("")}
       </select>
     </div>
     ${securePosture
-      ? `<p class="muted">SECURE: LIVE cloud keys still answer chat first when probed · desktop if cloud quiet · OPP scrapes stay limited.</p>`
-      : `<p class="muted">LEAKY: LIVE cloud cascade first · then desktop · then Pip Lite.</p>`}
+      ? `<p class="muted">SECURE: desktop GPU first · cloud hierarchy if desktop quiet · OPP scrapes limited.</p>`
+      : `<p class="muted">LEAKY: cloud hierarchy first (LIVE preferred) · then desktop · Pip Lite only for Guide hits.</p>`}
     <div class="key-list">${keyRows}</div>
 
     <h3>LOCK</h3>
@@ -1434,6 +1436,38 @@ function addLog(role, text, opts = {}) {
   return div;
 }
 
+/** Parallel compare replies — tab through brains (opt-in only). */
+function addCompareLog(compare, opts = {}) {
+  const ok = (compare || []).filter((c) => c && c.ok && c.text);
+  if (!ok.length) {
+    addLog("pip", "Compare found no replies.", opts);
+    return;
+  }
+  const div = document.createElement("div");
+  div.className = `bubble pip leaked compare-bubble`;
+  let idx = 0;
+  const paint = () => {
+    const row = ok[idx];
+    const tabs = ok
+      .map(
+        (c, i) =>
+          `<button type="button" class="compare-tab ${i === idx ? "on" : ""}" data-ci="${i}">${esc(String(c.label || c.provider).toUpperCase())}</button>`,
+      )
+      .join("");
+    div.innerHTML = `<div class="who">PIP · COMPARE</div><div class="compare-tabs">${tabs}</div><div class="body">${formatChatBody(row.text)}</div><div class="chat-meta">${esc(String(row.model || row.provider || ""))}${row.tokens ? ` · ~${row.tokens} TOK` : ""}</div>`;
+    div.querySelectorAll(".compare-tab").forEach((b) => {
+      b.onclick = () => {
+        idx = Number(b.dataset.ci) || 0;
+        paint();
+      };
+    });
+  };
+  paint();
+  $("#log").appendChild(div);
+  $("#log").scrollTop = $("#log").scrollHeight;
+  return div;
+}
+
 function updateLogBody(el, text, opts = {}) {
   if (!el) return;
   const body = el.querySelector(".body");
@@ -1614,6 +1648,7 @@ async function sendChat() {
     const reply = typeof out === "string" ? out : out.text;
     const leaked = typeof out === "object" ? Boolean(out.leaked) : false;
     const provider = typeof out === "object" ? out.provider : "";
+    const compare = typeof out === "object" ? out.compare : null;
     const pending = takePendingTheme();
     if (pending && applyThemePayload(db.settings, pending)) {
       persist();
@@ -1630,19 +1665,25 @@ async function sendChat() {
       content: reply,
       brain: provider || "",
       leaked,
+      compare: compare || undefined,
     });
     rememberReply(db, reply);
     persist();
     const tokens = typeof out === "object" ? Number(out.tokens) || 0 : 0;
-    addLog("pip", reply, {
-      brain: provider || activeBrain().label,
-      leaked: false,
-      tokens,
-    });
+    if (compare && Array.isArray(compare) && compare.some((c) => c.ok)) {
+      addCompareLog(compare, { leaked, tokens });
+      setStatus(`COMPARE · ${compare.filter((c) => c.ok).length} BRAINS`);
+    } else {
+      addLog("pip", reply, {
+        brain: provider || activeBrain().label,
+        leaked: false,
+        tokens,
+      });
+      const label = (provider || activeBrain().label || "PIP").toUpperCase();
+      const tokBit = tokens ? ` · ~${tokens} TOK` : "";
+      setStatus((leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`) + tokBit);
+    }
     updateBrainChip();
-    const label = (provider || activeBrain().label || "PIP").toUpperCase();
-    const tokBit = tokens ? ` · ~${tokens} TOK` : "";
-    setStatus((leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`) + tokBit);
   } catch (e) {
     addLog("pip", String(e.message || e));
     setStatus("CHAT ERROR");
@@ -1658,6 +1699,9 @@ function boot() {
     bootTheme(db.settings);
     applyAllOverlays();
     hydrateHealth(db.settings.brain_health);
+    // Drop stale KEY BAD poison from the old chat-ping probe.
+    db.settings.brain_health = providerHealth();
+    persist();
     if (db.settings.biometric_lock === undefined) {
       db.settings.biometric_lock = true;
       persist();

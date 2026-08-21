@@ -47,10 +47,10 @@ For deep drafts, code, or long reasoning: CONNECT desktop or PROBE LIVE keys. Fo
     title: "BRAINS",
     tags: ["brain", "brains", "api", "keys", "desktop", "gpu", "leaky", "secure", "qwen", "model"],
     lead: "Chain of command, short form.",
-    body: `SECURE: desktop GPU → LIVE cloud keys.
-LEAKY: LIVE cloud cascade → desktop.
-PIP LITE: always on this phone — instant, offline, Guide voice.
-PIN=local uses Lite. PIN=qwen wakes the slow on-device model (avoid).
+    body: `SECURE: desktop GPU → cloud hierarchy.
+LEAKY: cloud hierarchy (LIVE preferred) → desktop.
+PIP LITE: Guide hits only when heavier brains are down (or PIN=lite).
+COMPARE: type "compare: your question" or PIN=compare for parallel tabs — not every message.
 DATA → paste keys → SAVE → PROBE until green LIVE.`,
   },
   {
@@ -314,23 +314,25 @@ export function liteComplete(text, extras = {}) {
 
   const shot = shotReply(raw);
   const entry = bestEntry(raw);
+  const entryScore = entry ? scoreEntry(entry, norm(raw)) : 0;
 
-  // Guide intent wins when scored high; small talk wins for greetings.
   const guideAsk =
     /\b(guide|encyclopedia|survival|how (do|to)|what (should|do) i|help me|tell me about|explain)\b/i.test(
       raw,
-    ) || Boolean(entry && scoreEntry(entry, norm(raw)) >= 15);
+    ) || Boolean(entry && entryScore >= 15);
 
   let out = "";
-  if (guideAsk && entry) {
+  let weak = false;
+  if (guideAsk && entry && entryScore >= 12) {
     out = formatEntry(entry);
-  } else if (shot && (!entry || scoreEntry(entry, norm(raw)) < 20)) {
+  } else if (shot && (!entry || entryScore < 20)) {
     out = shot;
-  } else if (entry) {
+  } else if (entry && entryScore >= 18) {
     out = formatEntry(entry);
   } else if (shot) {
     out = shot;
   } else {
+    weak = true;
     out = formatEntry(ENTRIES[0]);
     out += `\n\nNothing exact matched "${raw.slice(0, 48)}". Name a topic — water, fire, first aid, food, storm, lost — or CONNECT desktop / PROBE keys for the heavy brain.`;
   }
@@ -345,6 +347,7 @@ export function liteComplete(text, extras = {}) {
     provider: "lite",
     model: "pip-lite",
     leaked: false,
+    weak,
   };
 }
 

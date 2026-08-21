@@ -120,9 +120,14 @@ export function hydrateHealth(saved) {
   if (!saved || typeof saved !== "object") return providerHealth();
   for (const [id, row] of Object.entries(saved)) {
     if (!row || typeof row !== "object") continue;
+    // Drop stale "KEY BAD" from the short-lived chat-ping probe (v0.1.51).
+    const err = String(row.error || "");
+    if (row.ok === false && /empty reply|PIP OK|chat ping|timeout|failed/i.test(err) && !/http 40[13]|invalid.?api|unauthorized|no key/i.test(err)) {
+      continue;
+    }
     liveHealth[id] = {
       ok: Boolean(row.ok),
-      error: String(row.error || "").slice(0, 120),
+      error: err.slice(0, 120),
       at: Number(row.at) || Date.now(),
     };
   }
@@ -136,31 +141,16 @@ export async function probeModels(settings, prov) {
     return { ok: false, id: prov.id, error: "no key" };
   }
   try {
-    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 8000, {
+    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 10000, {
       Authorization: `Bearer ${key}`,
       ...(prov.headers || {}),
     });
+    if (status === 401 || status === 403) throw new Error(`http ${status} unauthorized`);
     if (status >= 400) throw new Error(`http ${status}`);
     const data = JSON.parse(body || "{}");
     const n = Array.isArray(data.data) ? data.data.length : Array.isArray(data.models) ? data.models.length : 1;
     if (!n) throw new Error("empty models");
-    // Confirm chat completions work — /models alone was marking LIVE while chat failed.
-    try {
-      await openaiWithFallback(
-        prov,
-        key,
-        "life",
-        [
-          { role: "system", content: "Reply with exactly: PIP OK" },
-          { role: "user", content: "ping" },
-        ],
-        0,
-        16,
-      );
-    } catch (chatErr) {
-      markHealth(prov.id, false, String(chatErr.message || chatErr).slice(0, 120));
-      return { ok: false, id: prov.id, error: String(chatErr.message || chatErr).slice(0, 160) };
-    }
+    // /models accepted the key → LIVE. Do not require a chat ping (that poisoned good keys).
     markHealth(prov.id, true);
     return { ok: true, id: prov.id, models: n };
   } catch (e) {
@@ -296,8 +286,10 @@ export function chatCloudEnabled(settings) {
 export function chatChain(settings, job = "life") {
   const pin = brainPin(settings);
   if (pin === "local" || pin === "lite" || pin === "qwen") return [];
+  // compare uses auto hierarchy order, then fans out
+  const effectivePin = pin === "compare" || pin === "all" ? "auto" : pin;
   const keyedIds = keyedProviders(settings).map((p) => p.id);
-  const ids = orderFor(job, keyedIds, liveHealth, pin);
+  const ids = orderFor(job, keyedIds, liveHealth, effectivePin);
   return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
 }
 
@@ -340,11 +332,59 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
       markHealth(prov.id, true);
       return out;
     } catch (e) {
-      markHealth(prov.id, false, String(e.message || e).slice(0, 120));
+      // Soft miss — keep prior LIVE so hierarchy isn't poisoned by one timeout.
       errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
     }
   }
   throw new Error(errors.join(" · ") || "no cloud brain keyed");
+}
+
+/**
+ * Opt-in parallel compare — all keyed chat brains at once (pin=compare or "compare …").
+ * Does not run on every message.
+ */
+export async function compareComplete(settings, messages, temperature = 0.7, maxTokens = 1024, job = "life") {
+  const chainList = chatChain(
+    { ...settings, brain_pin: "auto" },
+    job,
+  );
+  if (!chainList.length) throw new Error("no keyed chat brains — paste keys in DATA");
+  const jobs = chainList.map(async (prov) => {
+    const key = providerKey(settings, prov);
+    if (!key) return null;
+    try {
+      const out = await openaiWithFallback(prov, key, "life", messages, temperature, maxTokens);
+      markHealth(prov.id, true);
+      return {
+        provider: out.provider,
+        label: prov.label || prov.id,
+        model: out.model,
+        text: out.text,
+        tokens: Number(out.tokens) || 0,
+        ok: true,
+      };
+    } catch (e) {
+      return {
+        provider: prov.id,
+        label: prov.label || prov.id,
+        text: "",
+        error: String(e.message || e).slice(0, 160),
+        ok: false,
+      };
+    }
+  });
+  const settled = (await Promise.all(jobs)).filter(Boolean);
+  const ok = settled.filter((r) => r.ok && r.text);
+  if (!ok.length) {
+    throw new Error(settled.map((r) => r.error || r.provider).join(" · ") || "compare failed");
+  }
+  return {
+    text: ok[0].text,
+    provider: ok[0].provider,
+    model: ok[0].model,
+    tokens: ok[0].tokens,
+    compare: settled,
+  };
 }
 
 export async function cloudComplete(settings, messages, lane = "life", temperature = 0.7, maxTokens = 400) {
@@ -357,7 +397,6 @@ export async function cloudComplete(settings, messages, lane = "life", temperatu
       markHealth(prov.id, true);
       return out;
     } catch (e) {
-      markHealth(prov.id, false, String(e.message || e).slice(0, 120));
       errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
     }
   }
