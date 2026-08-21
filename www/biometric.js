@@ -56,6 +56,14 @@ async function haptic(kind = "tick") {
 
 function ensureScanDom() {
   let el = document.getElementById("bio-scan");
+  if (el) {
+    // Refresh print glyph after app upgrades (DOM may be stale from prior session).
+    const print = el.querySelector(".bio-print");
+    if (print && print.dataset.v !== "3") {
+      el.remove();
+      el = null;
+    }
+  }
   if (el) return el;
   el = document.createElement("div");
   el.id = "bio-scan";
@@ -69,21 +77,19 @@ function ensureScanDom() {
           <circle class="bio-progress-fill" id="bio-progress" cx="50" cy="50" r="46" />
         </svg>
         <div class="bio-ring-glow"></div>
-        <svg class="bio-print" viewBox="0 0 64 64" aria-hidden="true">
-          <path d="M32 8c-9.5 0-17 7-17 16.5 0 2.2.4 4.3 1.1 6.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <path d="M48.2 30.2c.6-1.8.9-3.7.9-5.7C49.1 15 41.6 8 32 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <path d="M20.2 34.5c-1.2 3.4-1.2 7.2.2 10.8 2.8 7.2 9.4 12.2 16.6 12.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <path d="M43.8 52c4.8-3.2 8-8.4 8-14.4 0-2.1-.4-4.1-1-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <path d="M24.5 22.5c-2.6 2.2-4.2 5.5-4.2 9.2 0 1.6.3 3.1.8 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-          <path d="M43.5 22.8c2.4 2.1 3.9 5.2 3.9 8.9 0 1.4-.2 2.8-.7 4.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-          <path d="M27.2 26.2c-1.6 1.6-2.6 3.9-2.6 6.5 0 5.4 3.4 10 8.2 11.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-          <path d="M39.5 26.4c1.5 1.6 2.4 3.8 2.4 6.3 0 4.2-2.1 7.9-5.3 10.1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-          <path d="M32 24.5v16.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
-          <path d="M29.2 28.5c0 6.2 1.1 11.2 2.8 14.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <path d="M34.8 28.5c0 6.2-1.1 11.2-2.8 14.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <path d="M26.8 40.2c2.2 4.6 5.4 7.4 9.2 7.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-          <path d="M22.8 38c1.1 5.8 4.6 10.5 9.2 12.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <path d="M41.2 38.5c-.8 5.2-3.6 9.5-7.4 11.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <svg class="bio-print" data-v="3" viewBox="0 0 24 24" aria-hidden="true">
+          <!-- Lucide-style fingerprint — readable thumbprint ridges -->
+          <g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/>
+            <path d="M14 13.12c0 2.38 0 6.38-1 8.88"/>
+            <path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/>
+            <path d="M2 12a10 10 0 0 1 18-6"/>
+            <path d="M2 16h.01"/>
+            <path d="M21.8 16c.2-2 .131-5.354 0-6"/>
+            <path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2"/>
+            <path d="M8.65 22c.21-.66.45-1.32.57-2"/>
+            <path d="M9 6.8a6 6 0 0 1 9 5.2v2"/>
+          </g>
         </svg>
         <div class="bio-scanline"></div>
       </div>

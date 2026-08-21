@@ -614,7 +614,7 @@ body.bio-locked > *:not(#bio-scan) { visibility: hidden; }
 .bio-scan.holding .bio-sub { color: var(--phos); }
 .bio-scan.holding .bio-print { filter: drop-shadow(0 0 14px rgba(125, 255, 90, 0.9)); }
 .bio-print {
-  width: 4.2rem; height: 4.2rem; color: var(--phos);
+  width: 4.6rem; height: 4.6rem; color: var(--phos);
   position: relative; z-index: 1;
   filter: drop-shadow(0 0 8px rgba(125, 255, 90, 0.55));
 }
