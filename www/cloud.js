@@ -22,7 +22,8 @@ export const PROVIDERS = [
     boost: "qwen/qwen3-coder:free",
     headers: { "HTTP-Referer": "https://pip.phone", "X-Title": "Phone Pip" },
     keyUrl: "https://openrouter.ai/keys",
-    tip: "One key · :free models.",
+    tip: "One key · :free models · vision via Gemini routes.",
+    vision: true,
   },
   {
     id: "cerebras",
@@ -53,7 +54,8 @@ export const PROVIDERS = [
     boost: "gemini-2.5-flash",
     fishy: true,
     keyUrl: "https://aistudio.google.com/apikey",
-    tip: "Google AI Studio key.",
+    tip: "Google AI Studio key · vision OK for rocks/shingles.",
+    vision: true,
   },
   {
     id: "xai",

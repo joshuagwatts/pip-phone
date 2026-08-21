@@ -72,6 +72,15 @@ Shopping list lives under MEALS. Desktop sync merges; it won't wipe a good local
 Survival food stores are under FOOD in this Guide.`,
   },
   {
+    id: "lens",
+    title: "LENS · ROCKS & SHINGLES",
+    tags: ["lens", "rock", "shingle", "identify", "photo", "picture", "google lens", "roof", "mineral"],
+    lead: "Pocket lens. Flip LEAKY, keep a Gemini or OpenRouter key LIVE, then tap LENS in chat — or SHINGLE ID / ROCK ID on a WX pin.",
+    body: `Modes: rock · shingle · general identify.
+Vision leaves the device (marked LEAKED). Don't Panic — say when the photo is unclear.
+Heavy chat still prefers desktop GPU / LIVE APIs. Lite stays the field book.`,
+  },
+  {
     id: "water",
     title: "WATER",
     tags: ["water", "thirst", "purify", "purification", "bleach", "boil", "drink", "dehydration"],

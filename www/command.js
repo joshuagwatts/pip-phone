@@ -15,7 +15,11 @@ export const JOBS = {
   },
   wx: {
     label: "WX",
-    brains: [],
+    brains: ["gemini", "openrouter", "groq"],
+  },
+  vision: {
+    label: "LENS",
+    brains: ["gemini", "openrouter"],
   },
   theme: {
     label: "THEME",
