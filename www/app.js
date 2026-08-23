@@ -1,7 +1,8 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
-import { probeKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth } from "./cloud.js";
+import { probeKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, chatPing } from "./cloud.js";
 import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
+import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets, requireAppUnlock } from "./biometric.js";
 import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
@@ -971,6 +972,7 @@ function renderData() {
     <p class="muted">Green LIVE = key accepted (/models). Amber KEY SET = pasted, not probed. Red KEY BAD = rejected auth. LEAKY uses the cloud hierarchy (best LIVE first). COMPARE pin or type "compare: …" to tab through all keyed brains once.</p>
     <div class="actions">
       <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
+      ${paired ? `<button type="button" id="keys-sync">SYNC FROM DESKTOP</button>` : ""}
     </div>
     <div id="brain-probe-out" class="probe-out muted">Tap PROBE KEYS after pasting.</div>
     <p class="muted">PIN auto = hierarchy cascade (not blast-all). compare = parallel tabs. lite/local = Guide only. desktop = GPU first. Cloud ids = that API first.</p>
@@ -1063,8 +1065,19 @@ function renderData() {
       const ok = out.ping && out.ping.ok;
       db.settings.desktop_live = true;
       persist();
-      setDeskMsg(ok ? `ONLINE · GPU OK · ${model}` : `ONLINE · GPU WEAK · ${model}`, "on");
-      setStatus(ok ? `GPU OK · ${model}` : `CONNECTED · ${model}`);
+      let keyBit = "";
+      try {
+        const sync = await ensureCloudKeys(db.settings, { force: true });
+        if (sync.applied) {
+          keyBit = ` · ${sync.applied} KEY${sync.applied > 1 ? "S" : ""}`;
+          persist();
+          renderPrivacy();
+        }
+      } catch {
+        /* keys optional */
+      }
+      setDeskMsg(ok ? `ONLINE · GPU OK · ${model}${keyBit}` : `ONLINE · GPU WEAK · ${model}${keyBit}`, "on");
+      setStatus(ok ? `GPU OK · ${model}${keyBit}` : `CONNECTED · ${model}${keyBit}`);
       paintBrainStrip();
     } catch (e) {
       db.settings.desktop_live = false;
@@ -1190,13 +1203,24 @@ function renderData() {
       setStatus("PROBING KEYS…");
       try {
         const hits = await probeKeyed(db.settings);
+        const chatChecks = [];
+        for (const hit of (hits || []).filter((h) => h.ok)) {
+          const prov = PROVIDERS.find((p) => p.id === hit.id);
+          if (!prov) continue;
+          chatChecks.push(chatPing(db.settings, prov));
+        }
+        const pings = chatChecks.length ? await Promise.all(chatChecks) : [];
         db.settings.brain_health = providerHealth();
         persist();
         paintBrainStrip();
         const lines = PROVIDERS.map((p) => {
           const info = keyTag(db.settings, p, providerHealth()[p.id]);
           const hit = (hits || []).find((h) => h.id === p.id);
-          const err = hit && !hit.ok ? ` · ${hit.error || ""}` : "";
+          const ping = pings.find((x) => x.id === p.id);
+          let err = hit && !hit.ok ? ` · ${hit.error || ""}` : "";
+          if (hit?.ok && ping) {
+            err += ping.ok ? " · CHAT OK" : ` · CHAT FAIL · ${ping.error || ""}`;
+          }
           return `${p.label.toUpperCase()} // ${info.tag}${err}`;
         });
         if (box) box.innerHTML = lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join("");
@@ -1205,6 +1229,25 @@ function renderData() {
       } catch (e) {
         if (box) box.textContent = String(e.message || e);
         setStatus(String(e.message || e).toUpperCase());
+      }
+    };
+  }
+
+  const keysSyncBtn = $("#keys-sync");
+  if (keysSyncBtn) {
+    keysSyncBtn.onclick = async () => {
+      grabSettings();
+      setStatus("SYNCING KEYS…");
+      try {
+        const out = await pullCloudKeys(db.settings);
+        persist();
+        renderPrivacy();
+        paintBrainStrip();
+        const n = out.applied || keyedSummary(db.settings).length;
+        setStatus(n ? `SYNCED ${n} KEY${n > 1 ? "S" : ""} · TAP PROBE` : "DESKTOP HAS NO KEYS — paste on PC DATA first");
+        renderData();
+      } catch (e) {
+        setStatus(String(e.message || e).toUpperCase().slice(0, 80));
       }
     };
   }
@@ -1576,6 +1619,47 @@ async function sendChat() {
   setStatus(pipStatus());
 
   try {
+    await ensureCloudKeys(db.settings).then((sync) => {
+      if (sync.source === "desktop" && sync.applied) {
+        persist();
+        paintBrainStrip();
+      }
+    });
+  } catch {
+    /* optional */
+  }
+
+  if (/^\s*(test\s+(brain|keys?|cloud)|\/test)\s*$/i.test(text)) {
+    setStatus("TESTING BRAINS…");
+    try {
+      const hits = await probeKeyed(db.settings);
+      const lines = [];
+      for (const p of PROVIDERS) {
+        const key = String(db.settings[p.field] || "").trim();
+        if (!key) continue;
+        const hit = (hits || []).find((h) => h.id === p.id);
+        if (!hit?.ok) {
+          lines.push(`${p.label}: KEY BAD · ${hit?.error || "no /models"}`);
+          continue;
+        }
+        const ping = await chatPing(db.settings, p);
+        lines.push(`${p.label}: ${ping.ok ? "CHAT OK" : `CHAT FAIL · ${ping.error || ping.text || ""}`}`);
+      }
+      const reply = lines.length
+        ? lines.join("\n")
+        : "No keys on phone. DATA → paste keys → SAVE, or SYNC FROM DESKTOP.";
+      addLog("pip", reply, { brain: "TEST" });
+      db.chat.push({ role: "pip", content: reply, brain: "test" });
+      persist();
+      setStatus(lines.some((l) => /CHAT OK/.test(l)) ? "TEST · CHAT OK" : "TEST · SEE REPLY");
+    } catch (e) {
+      addLog("pip", String(e.message || e));
+      setStatus("TEST ERROR");
+    }
+    return;
+  }
+
+  try {
   const themeHit = tryThemeCommand(text, db.settings);
   if (themeHit) {
     persist();
@@ -1844,6 +1928,12 @@ function boot() {
       deferProbe(async () => {
         try {
           if (desktopConfigured(db.settings)) {
+            try {
+              await ensureCloudKeys(db.settings);
+              persist();
+            } catch {
+              /* optional */
+            }
             try {
               const st = await desktopStatus(db.settings);
               db.settings.desktop_live = Boolean(st.ok);

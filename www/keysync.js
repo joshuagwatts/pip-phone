@@ -29,8 +29,15 @@ export function applyCloudKeys(settings, pack) {
     settings[field] = val;
     n += 1;
   }
-  if (pack.brain_pin) settings.brain_pin = String(pack.brain_pin).trim() || settings.brain_pin;
+  if (pack.brain_pin) {
+    const phonePin = String(settings.brain_pin || "auto").toLowerCase();
+    const deskPin = String(pack.brain_pin).trim().toLowerCase();
+    if (phonePin === "auto" && deskPin && deskPin !== "desktop") {
+      settings.brain_pin = deskPin;
+    }
+  }
   if (pack.operator) settings.operator = String(pack.operator).trim() || settings.operator;
+  if (n > 0) settings.privacy_mode = "leaky";
   settings.keys_synced_at = new Date().toISOString();
   settings.keys_synced_count = n;
   return n;
@@ -87,4 +94,24 @@ export async function pullCloudKeys(settings) {
     return { ...pack, applied: 0, keyed: [], empty: true };
   }
   return { ...pack, applied: n, keyed: keyedSummary(settings), empty: false };
+}
+
+/** Pull desktop keys when phone has none — used on connect / before chat. */
+export async function ensureCloudKeys(settings, { force = false } = {}) {
+  const local = KEY_FIELDS.filter((f) => String(settings[f] || "").trim()).length;
+  if (local >= 1 && !force) return { applied: local, source: "local", keyed: keyedSummary(settings) };
+  if (!desktopConfigured(settings)) {
+    return { applied: local, source: local ? "local" : "none", keyed: keyedSummary(settings) };
+  }
+  try {
+    const out = await pullCloudKeys(settings);
+    return { ...out, source: "desktop" };
+  } catch (e) {
+    return {
+      applied: local,
+      source: local ? "local" : "error",
+      keyed: keyedSummary(settings),
+      error: String(e.message || e).slice(0, 120),
+    };
+  }
 }

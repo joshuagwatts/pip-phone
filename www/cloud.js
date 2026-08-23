@@ -89,7 +89,8 @@ export function keyHint(settings, prov) {
   return `${key.slice(0, 4)}…${key.slice(-4)}`;
 }
 export function privacyOn(settings) {
-  return String(settings.privacy_mode || "secure").toLowerCase() !== "leaky";
+  const mode = String(settings.privacy_mode || "leaky").toLowerCase();
+  return mode !== "leaky" && mode !== "leak" && mode !== "0" && mode !== "false" && mode !== "off";
 }
 
 export function brainPin(settings) {
@@ -185,6 +186,11 @@ function modelFor(prov, lane) {
   return lane === "boost" ? prov.boost : prov.life;
 }
 
+function laneForJob(job) {
+  if (job === "boost" || job === "code") return "boost";
+  return "life";
+}
+
 function modelsFor(prov, lane) {
   const primary = modelFor(prov, lane);
   const extras = Array.isArray(prov.models) ? prov.models : [];
@@ -242,6 +248,24 @@ export function packMessagesForCloud(messages) {
   return out;
 }
 
+/** Minimal payload when full history/system gets rejected by free-tier APIs. */
+export function slimMessagesForCloud(messages) {
+  const packed = packMessagesForCloud(messages);
+  const system = packed.find((m) => m.role === "system")?.content || "";
+  const user = [...packed].reverse().find((m) => m.role === "user");
+  const slimSys =
+    system
+      .split("\n")
+      .filter((line) => !/^Voice examples|^Job:/i.test(line.trim()))
+      .slice(0, 12)
+      .join("\n")
+      .slice(0, 1400) || "You are Pip — direct, warm, honest. Stay in character.";
+  return [
+    { role: "system", content: slimSys },
+    { role: "user", content: String(user?.content || "hey").slice(0, 4000) },
+  ];
+}
+
 async function openaiOnce(prov, key, model, messages, temperature, maxTokens, tools) {
   const packed = packMessagesForCloud(messages);
   const payload = {
@@ -297,11 +321,21 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
 
 async function openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools) {
   const errors = [];
-  for (const model of modelsFor(prov, lane)) {
+  const models = modelsFor(prov, lane);
+  for (const model of models) {
     try {
       return await openaiOnce(prov, key, model, messages, temperature, maxTokens, tools);
     } catch (e) {
       errors.push(String(e.message || e).slice(0, 120));
+    }
+  }
+  const slim = slimMessagesForCloud(messages);
+  for (const model of models.slice(0, 3)) {
+    try {
+      const out = await openaiOnce(prov, key, model, slim, temperature, maxTokens, tools);
+      return { ...out, slim: true };
+    } catch (e) {
+      errors.push(`slim/${model}: ${String(e.message || e).slice(0, 100)}`);
     }
   }
   throw new Error(errors.join(" · ") || `${prov.id} failed`);
@@ -357,7 +391,7 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {
-      const out = await openaiWithFallback(prov, key, "life", messages, temperature, maxTokens);
+      const out = await openaiWithFallback(prov, key, laneForJob(job), messages, temperature, maxTokens);
       markHealth(prov.id, true);
       return out;
     } catch (e) {
@@ -366,6 +400,31 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
     }
   }
   throw new Error(errors.join(" · ") || "no cloud brain keyed");
+}
+
+/** One-shot chat ping — validates key beyond /models. */
+export async function chatPing(settings, prov) {
+  const key = providerKey(settings, prov);
+  if (!key) return { ok: false, id: prov.id, error: "no key" };
+  try {
+    const out = await openaiWithFallback(
+      prov,
+      key,
+      "life",
+      [
+        { role: "system", content: "Reply with exactly: PIP OK" },
+        { role: "user", content: "ping" },
+      ],
+      0,
+      16,
+    );
+    const ok = /pip\s*ok/i.test(out.text || "");
+    markHealth(prov.id, ok, ok ? "" : "chat ping empty");
+    return { ok, id: prov.id, model: out.model, text: out.text };
+  } catch (e) {
+    markHealth(prov.id, false, String(e.message || e).slice(0, 120));
+    return { ok: false, id: prov.id, error: String(e.message || e).slice(0, 160) };
+  }
 }
 
 /**

@@ -386,7 +386,9 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     } else if (hasKeys) {
       // THE MAIN PATH: pasted keys → cloud hierarchy speaks as Pip
       steps.push(["cloud", tryCloud]);
-      steps.push(["desktop", tryDesktop]);
+      // LIVE probed keys = user expects cloud — don't silently fall back to desktop GPU.
+      const cloudOnly = liveCloud.length > 0 && pin === "auto";
+      if (!cloudOnly) steps.push(["desktop", tryDesktop]);
     } else {
       steps.push(["desktop", tryDesktop]);
       steps.push(["lite", tryLite]);
@@ -564,8 +566,11 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   }
 
   if (!hit?.text) {
+    const live = liveProviderIds(settings);
     const tip = errMsg
-      ? `Pip couldn't reach a brain. ${errMsg}. Fix: DATA → SAVE keys → PROBE until LIVE · or CONNECT desktop · or PIN lite for the Guide.`
+      ? live.length && String(settings?.brain_pin || "auto") === "auto"
+        ? `Cloud brains failed (${errMsg}). DATA → PROBE KEYS · check PIN is auto · same Wi‑Fi/data for api.* hosts.`
+        : `Pip couldn't reach a brain. ${errMsg}. Fix: DATA → SAVE keys → PROBE until LIVE · or CONNECT desktop · or PIN lite for the Guide.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "pip", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true };
