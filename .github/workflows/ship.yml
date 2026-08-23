@@ -63,11 +63,14 @@ jobs:
           p.write_text(t)
           print(f"Android {name} ({code})")
           PY
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
-      - uses: android-actions/setup-android@v3
+      # v3 downloads cmdline-tools 12266719 → Google 404. v4 uses current tools.
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
       - name: Build debug APK
         working-directory: android
         run: chmod +x gradlew && ./gradlew assembleDebug
