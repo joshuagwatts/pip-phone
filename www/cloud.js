@@ -138,22 +138,34 @@ export function hydrateHealth(saved) {
 export async function probeModels(settings, prov) {
   const key = providerKey(settings, prov);
   if (!key) {
-    markHealth(prov.id, false, "no key");
     return { ok: false, id: prov.id, error: "no key" };
   }
   try {
-    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 10000, {
+    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 15000, {
       Authorization: `Bearer ${key}`,
       ...(prov.headers || {}),
     });
+    if (!status) throw new Error("network failed (status 0)");
     if (status === 401 || status === 403) throw new Error(`http ${status} unauthorized`);
     if (status >= 400) throw new Error(`http ${status}`);
-    const data = JSON.parse(body || "{}");
-    const n = Array.isArray(data.data) ? data.data.length : Array.isArray(data.models) ? data.models.length : 1;
-    if (!n) throw new Error("empty models");
-    // /models accepted the key → LIVE. Do not require a chat ping (that poisoned good keys).
+    let data = {};
+    try {
+      data = JSON.parse(body || "{}");
+    } catch {
+      throw new Error("bad JSON from /models");
+    }
+    const n = Array.isArray(data.data)
+      ? data.data.length
+      : Array.isArray(data.models)
+        ? data.models.length
+        : data.object === "list" || data.data
+          ? 1
+          : 0;
+    // Empty {} is NOT success — old bug marked LIVE on network failure.
+    if (!n && !Array.isArray(data.data) && body && body.length < 8) throw new Error("empty models");
+    if (!n && !data.data && !data.models && !data.object) throw new Error("empty models body");
     markHealth(prov.id, true);
-    return { ok: true, id: prov.id, models: n };
+    return { ok: true, id: prov.id, models: n || 1 };
   } catch (e) {
     markHealth(prov.id, false, e.message || e);
     return { ok: false, id: prov.id, error: String(e.message || e).slice(0, 160) };
@@ -418,11 +430,11 @@ export async function chatPing(settings, prov) {
       0,
       16,
     );
-    const ok = /pip\s*ok/i.test(out.text || "");
-    markHealth(prov.id, ok, ok ? "" : "chat ping empty");
+    const ok = /pip\s*ok/i.test(out.text || "") || Boolean(String(out.text || "").trim());
+    if (ok) markHealth(prov.id, true);
     return { ok, id: prov.id, model: out.model, text: out.text };
   } catch (e) {
-    markHealth(prov.id, false, String(e.message || e).slice(0, 120));
+    // Do not poison /models LIVE — chat fail is a separate signal.
     return { ok: false, id: prov.id, error: String(e.message || e).slice(0, 160) };
   }
 }

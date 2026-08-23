@@ -8,7 +8,7 @@ import { biometricAvailable, guardSecrets, requireAppUnlock } from "./biometric.
 import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
-import { hasNativeHttp, openUrl, httpLanGet, httpLanPostJson } from "./net.js";
+import { hasNativeHttp, openUrl, httpLanGet, httpLanPostJson, httpDiag } from "./net.js";
 import { openProtonVpn } from "./proton.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
@@ -70,6 +70,8 @@ let lastShot = "";
 let radioClock = 0;
 let radioBusy = false;
 let codeBusy = false;
+let probeBusy = false;
+let lastProbeHtml = "";
 let wxState = { lat: null, lon: null, address: "", data: null };
 let wxWatch = null;
 
@@ -559,6 +561,10 @@ function paintBrainStrip() {
 function softRefresh() {
   if (tab === "opp") renderOpp();
   else if (tab === "data") {
+    if (probeBusy) {
+      paintBrainStrip();
+      return;
+    }
     const ae = document.activeElement;
     const editing = ae && ae.closest && ae.closest("#view") && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName);
     if (editing) paintBrainStrip();
@@ -929,20 +935,24 @@ function renderData() {
     const get = p.keyUrl
       ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener noreferrer">GET KEY</a>`
       : "";
-    const ph = has ? `paste to replace · ${hint || "••••"}` : "paste key";
+    const ph = has ? `paste to replace · ${hint || "••••"}` : "paste key — saves as you type";
     return `<div class="key-row ${esc(info.state)}">
       <div class="key-meta">
         <span class="key-name">${esc(p.label.toUpperCase())}</span>
         <span class="key-tag">${esc(info.tag)}${hint ? ` · ${esc(hint)}` : ""}</span>
       </div>
       <p class="muted key-tip">${esc(p.tip || "")} ${get}${has ? ` · <button type="button" class="key-clear" data-field="${esc(p.field)}">CLEAR</button>` : ""}</p>
-      <input id="set-${esc(p.field)}" type="password" value="" placeholder="${esc(ph)}" autocomplete="off" data-keep="${has ? "1" : "0"}" />
+      <input id="set-${esc(p.field)}" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" value="" placeholder="${esc(ph)}" data-keep="${has ? "1" : "0"}" data-field="${esc(p.field)}" />
     </div>`;
   }).join("");
 
+  const keyedNow = PROVIDERS.filter((p) => String(s[p.field] || "").trim()).map((p) => p.label.toUpperCase());
+  const diag = httpDiag();
+  const httpLine = `HTTP: ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE — cloud may fail"} · ${diag.platform}`;
+
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">Pair desktop for private GPU. Paste cloud keys below — PROBE shows LIVE vs KEY BAD. Coding lives in CHAT.</p>
+    <p class="muted">Pair desktop for private GPU. Paste cloud keys below — they save as you type. PROBE proves chat works.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -969,13 +979,15 @@ function renderData() {
 
     <h3>BRAIN KEYS</h3>
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
-    <p class="muted">Green LIVE = key accepted (/models). Amber KEY SET = pasted, not probed. Red KEY BAD = rejected auth. LEAKY uses the cloud hierarchy (best LIVE first). COMPARE pin or type "compare: …" to tab through all keyed brains once.</p>
+    <p class="muted" id="keys-memory">${keyedNow.length ? `IN MEMORY: ${esc(keyedNow.join(" · "))}` : "NO KEYS IN MEMORY — paste below"}</p>
+    <p class="muted">${esc(httpLine)}</p>
+    <p class="muted">Green LIVE = /models OK. CHAT OK = real completion works. LEAKY + any key = cloud speaks as Pip (desktop will not steal the reply).</p>
     <div class="actions">
       <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
       ${paired ? `<button type="button" id="keys-sync">SYNC FROM DESKTOP</button>` : ""}
     </div>
-    <div id="brain-probe-out" class="probe-out muted">Tap PROBE KEYS after pasting.</div>
-    <p class="muted">PIN auto = hierarchy cascade (not blast-all). compare = parallel tabs. lite/local = Guide only. desktop = GPU first. Cloud ids = that API first.</p>
+    <div id="brain-probe-out" class="probe-out muted">${lastProbeHtml || "Tap PROBE KEYS after pasting."}</div>
+    <p class="muted">PIN auto = cloud hierarchy when keys exist. compare = parallel tabs. lite/local = Guide only. desktop = GPU first.</p>
     <div class="field"><span>PIN</span>
       <select id="brain-pin">
         ${["auto", "compare", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
@@ -998,7 +1010,7 @@ function renderData() {
     </div>
     ${securePosture
       ? `<p class="muted">SECURE: OPP/vision scrapes limited · chat still uses pasted keys when present · desktop if no keys.</p>`
-      : `<p class="muted">LEAKY: cloud hierarchy speaks as Pip first · then desktop · Lite only if PIN=lite.</p>`}
+      : `<p class="muted">LEAKY: cloud hierarchy speaks as Pip first · desktop only if PIN=desktop or no keys.</p>`}
     <div class="key-list">${keyRows}</div>
 
     <h3>LOCK</h3>
@@ -1042,6 +1054,24 @@ function renderData() {
     db.settings.keepalive = Boolean($("#set-keepalive")?.checked);
     persist();
   };
+
+  // Save API keys as you type — don't wait for SAVE / biometric.
+  for (const p of PROVIDERS) {
+    const el = $(`#set-${p.field}`);
+    if (!el) continue;
+    el.addEventListener("input", () => {
+      const v = el.value.trim();
+      if (!v) return;
+      db.settings[p.field] = v;
+      db.settings.privacy_mode = "leaky";
+      persist();
+      const mem = $("#keys-memory");
+      const names = PROVIDERS.filter((x) => String(db.settings[x.field] || "").trim()).map((x) => x.label.toUpperCase());
+      if (mem) mem.textContent = names.length ? `IN MEMORY: ${names.join(" · ")}` : "NO KEYS IN MEMORY — paste below";
+      renderPrivacy();
+      paintBrainStrip();
+    });
+  }
 
   const setDeskMsg = (text, cls) => {
     const msg = $("#desk-msg");
@@ -1197,38 +1227,60 @@ function renderData() {
   const probeBtn = $("#brain-probe");
   if (probeBtn) {
     probeBtn.onclick = async () => {
+      if (probeBusy) return;
       grabSettings();
+      const keyed = PROVIDERS.filter((p) => String(db.settings[p.field] || "").trim());
       const box = $("#brain-probe-out");
-      if (box) box.textContent = "PROBING HOSTS…";
+      const diag = httpDiag();
+      if (!keyed.length) {
+        lastProbeHtml = `<div class="row"><span>NO KEYS IN MEMORY — paste a key above (saves as you type)</span></div><div class="row"><span>HTTP · ${esc(diag.nativeHttp ? "NATIVE" : "MISSING")} · ${esc(diag.platform)}</span></div>`;
+        if (box) box.innerHTML = lastProbeHtml;
+        setStatus("NO KEYS — PASTE FIRST");
+        return;
+      }
+      probeBusy = true;
+      probeBtn.disabled = true;
+      lastProbeHtml = `<div class="row"><span>PROBING ${keyed.length} KEY(S)…</span></div><div class="row"><span>HTTP · ${esc(diag.nativeHttp ? "NATIVE" : "MISSING")} · ${esc(diag.platform)}</span></div>`;
+      if (box) box.innerHTML = lastProbeHtml;
       setStatus("PROBING KEYS…");
       try {
         const hits = await probeKeyed(db.settings);
-        const chatChecks = [];
-        for (const hit of (hits || []).filter((h) => h.ok)) {
-          const prov = PROVIDERS.find((p) => p.id === hit.id);
-          if (!prov) continue;
-          chatChecks.push(chatPing(db.settings, prov));
+        const lines = [];
+        lines.push(`HTTP · ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE"} · ${diag.platform}`);
+        for (const p of PROVIDERS) {
+          const has = String(db.settings[p.field] || "").trim();
+          if (!has) {
+            lines.push(`${p.label.toUpperCase()} // NO KEY`);
+            continue;
+          }
+          const hit = (hits || []).find((h) => h.id === p.id);
+          if (!hit?.ok) {
+            lines.push(`${p.label.toUpperCase()} // KEY BAD · ${hit?.error || "failed"}`);
+            continue;
+          }
+          setStatus(`CHAT PING · ${p.label.toUpperCase()}…`);
+          const ping = await chatPing(db.settings, p);
+          lines.push(
+            ping.ok
+              ? `${p.label.toUpperCase()} // LIVE · CHAT OK`
+              : `${p.label.toUpperCase()} // LIVE · CHAT FAIL · ${ping.error || ping.text || ""}`,
+          );
         }
-        const pings = chatChecks.length ? await Promise.all(chatChecks) : [];
         db.settings.brain_health = providerHealth();
         persist();
         paintBrainStrip();
-        const lines = PROVIDERS.map((p) => {
-          const info = keyTag(db.settings, p, providerHealth()[p.id]);
-          const hit = (hits || []).find((h) => h.id === p.id);
-          const ping = pings.find((x) => x.id === p.id);
-          let err = hit && !hit.ok ? ` · ${hit.error || ""}` : "";
-          if (hit?.ok && ping) {
-            err += ping.ok ? " · CHAT OK" : ` · CHAT FAIL · ${ping.error || ""}`;
-          }
-          return `${p.label.toUpperCase()} // ${info.tag}${err}`;
-        });
-        if (box) box.innerHTML = lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join("");
+        lastProbeHtml = lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join("");
+        if (box) box.innerHTML = lastProbeHtml;
+        const chatOk = lines.some((l) => /CHAT OK/.test(l));
         const live = (hits || []).filter((h) => h.ok).map((h) => h.id.toUpperCase());
-        setStatus(live.length ? `LIVE · ${live.join(" · ")}` : "NO LIVE KEYS — check paste / GET KEY");
+        setStatus(chatOk ? `CHAT OK · ${live.join(" · ")}` : live.length ? `LIVE BUT CHAT FAIL · SEE BELOW` : "NO LIVE KEYS — see errors below");
       } catch (e) {
-        if (box) box.textContent = String(e.message || e);
-        setStatus(String(e.message || e).toUpperCase());
+        lastProbeHtml = `<div class="row"><span>${esc(String(e.message || e))}</span></div>`;
+        if (box) box.innerHTML = lastProbeHtml;
+        setStatus(String(e.message || e).toUpperCase().slice(0, 80));
+      } finally {
+        probeBusy = false;
+        probeBtn.disabled = false;
       }
     };
   }

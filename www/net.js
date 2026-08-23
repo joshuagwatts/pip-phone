@@ -3,13 +3,25 @@ import { withLanBypass } from "./proton.js";
 const UA =
   "Mozilla/5.0 (Linux; Android 14; Pixel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36";
 
+/** CapacitorHttp — core plugin (Bridge always registers it). Prefer request() then get/post. */
 function nativeHttp() {
   const cap = window.Capacitor;
-  return cap && cap.Plugins && cap.Plugins.CapacitorHttp;
+  const plugins = cap && (cap.Plugins || cap.plugins);
+  return (plugins && plugins.CapacitorHttp) || null;
 }
 
 export function hasNativeHttp() {
   return Boolean(nativeHttp());
+}
+
+export function httpDiag() {
+  const cap = window.Capacitor;
+  const http = nativeHttp();
+  return {
+    platform: cap?.getPlatform?.() || (cap ? "native?" : "web"),
+    nativeHttp: Boolean(http),
+    methods: http ? Object.keys(http).filter((k) => typeof http[k] === "function").slice(0, 12) : [],
+  };
 }
 
 function parseCookie(setCookie) {
@@ -55,47 +67,78 @@ function assertLan(url) {
   return u.toString();
 }
 
+function bodyToObject(data) {
+  if (data == null) return {};
+  if (typeof data === "object") return data;
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data || "{}");
+    } catch {
+      return { raw: data };
+    }
+  }
+  return {};
+}
+
+function bodyToText(data) {
+  if (data == null) return "";
+  if (typeof data === "string") return data;
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return String(data);
+  }
+}
+
+async function nativeRequest(method, url, headers, body, timeoutMs) {
+  const http = nativeHttp();
+  if (!http) return null;
+  const req = {
+    url,
+    method: method.toUpperCase(),
+    headers: { "User-Agent": UA, Accept: "application/json,text/html,*/*", ...headers },
+    connectTimeout: timeoutMs,
+    readTimeout: timeoutMs,
+    disableRedirects: false,
+  };
+  if (body !== undefined) {
+    req.data = typeof body === "string" ? body : JSON.stringify(body);
+    req.headers["Content-Type"] = "application/json";
+  }
+  let res;
+  try {
+    if (typeof http.request === "function") {
+      res = await http.request(req);
+    } else if (method === "POST" && typeof http.post === "function") {
+      res = await http.post(req);
+    } else if (method === "GET" && typeof http.get === "function") {
+      res = await http.get(req);
+    } else {
+      return null;
+    }
+  } catch (e) {
+    const err = new Error(String(e?.message || e || "native http failed"));
+    err.status = 0;
+    throw err;
+  }
+  return {
+    status: Number(res?.status) || 0,
+    data: res?.data,
+    headers: res?.headers || {},
+    url: res?.url || url,
+  };
+}
+
 async function request(method, url, headers, body, timeoutMs, assertFn) {
   const target = assertFn(url);
-  const http = nativeHttp();
   const publicCall = assertFn === assertPublic;
-  if (http) {
-    const req = {
-      url: target,
-      headers: { "User-Agent": UA, Accept: "application/json,text/html,*/*", ...headers },
-      connectTimeout: timeoutMs,
-      readTimeout: timeoutMs,
-      disableRedirects: false,
-    };
-    if (body !== undefined) {
-      // CapacitorHttp on Android is happiest with a JSON string body.
-      req.data = typeof body === "string" ? body : JSON.stringify(body);
-      req.headers["Content-Type"] = "application/json";
-    }
-    let res;
-    try {
-      res = method === "POST" ? await http.post(req) : await http.get(req);
-    } catch (e) {
-      const err = new Error(String(e?.message || e || "native http failed"));
-      err.status = 0;
-      throw err;
-    }
-    const status = Number(res.status) || 0;
-    const data =
-      typeof res.data === "string"
-        ? (() => {
-            try {
-              return JSON.parse(res.data || "{}");
-            } catch {
-              return { raw: res.data };
-            }
-          })()
-        : res.data && typeof res.data === "object"
-          ? res.data
-          : {};
+
+  const native = await nativeRequest(method, target, headers, body, timeoutMs);
+  if (native) {
+    const status = native.status;
+    const data = bodyToObject(native.data);
     let cookie = "";
-    const hdrs = res.headers || {};
-    for (const [k, v] of Object.entries(hdrs)) {
+    for (const [k, v] of Object.entries(native.headers || {})) {
       if (/^set-cookie$/i.test(k)) {
         cookie = parseCookie(v);
         if (cookie) break;
@@ -105,7 +148,7 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
     if (!status) {
       const err = new Error(
         publicCall
-          ? "network failed — check data/Wi‑Fi · Proton may be blocking this API"
+          ? "network failed — check mobile data/Wi‑Fi · Proton may be blocking this API"
           : "network failed — Proton: Allow LAN connections · or same Wi‑Fi · Open-Firewall.bat as Admin",
       );
       err.status = 0;
@@ -121,6 +164,8 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
     }
     return data;
   }
+
+  // Web / browser preview — CORS may block cloud APIs.
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -141,9 +186,16 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
     if (!res.ok) {
       const detail =
         (typeof data.error === "string" ? data.error : data.error?.message) || data.detail || `http ${res.status}`;
-      throw new Error(String(detail).slice(0, 180));
+      const err = new Error(String(detail).slice(0, 180));
+      err.status = res.status;
+      throw err;
     }
     return data;
+  } catch (e) {
+    if (e && e.status != null) throw e;
+    const msg = String(e?.message || e || "fetch failed");
+    if (/abort/i.test(msg)) throw new Error("timeout");
+    throw new Error(publicCall ? `fetch failed — ${msg.slice(0, 100)}` : msg);
   } finally {
     clearTimeout(t);
   }
@@ -152,25 +204,26 @@ async function request(method, url, headers, body, timeoutMs, assertFn) {
 export async function httpGet(url, timeoutMs = 14000, extraHeaders = {}) {
   const target = assertPublic(url);
   const headers = { "User-Agent": UA, Accept: "text/html,application/json,*/*", ...extraHeaders };
-  const http = nativeHttp();
-  if (http) {
-    const res = await http.get({
-      url: target,
-      headers,
-      connectTimeout: timeoutMs,
-      readTimeout: timeoutMs,
-      disableRedirects: false,
-    });
-    const status = res.status || 0;
+
+  const native = await nativeRequest("GET", target, headers, undefined, timeoutMs);
+  if (native) {
+    const status = native.status;
+    if (!status) throw new Error("network failed — check data/Wi‑Fi · Proton may block this API");
     if (status >= 400) throw new Error(`fetch ${status}`);
-    return { url: res.url || target, status, body: typeof res.data === "string" ? res.data : JSON.stringify(res.data || "") };
+    return { url: native.url || target, status, body: bodyToText(native.data) };
   }
+
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(target, { signal: ctrl.signal, redirect: "follow", headers });
     if (!res.ok) throw new Error(`fetch ${res.status}`);
     return { url: res.url, status: res.status, body: await res.text() };
+  } catch (e) {
+    const msg = String(e?.message || e || "fetch failed");
+    if (/abort/i.test(msg)) throw new Error("timeout");
+    if (/^fetch \d/.test(msg)) throw e;
+    throw new Error(`fetch failed — ${msg.slice(0, 100)}`);
   } finally {
     clearTimeout(t);
   }

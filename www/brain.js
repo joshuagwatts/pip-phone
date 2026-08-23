@@ -384,11 +384,9 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       steps.push(["cloud", tryCloud]);
       steps.push(["desktop", tryDesktop]);
     } else if (hasKeys) {
-      // THE MAIN PATH: pasted keys → cloud hierarchy speaks as Pip
+      // THE MAIN PATH: any pasted key → cloud only. Desktop must not hijack chat.
       steps.push(["cloud", tryCloud]);
-      // LIVE probed keys = user expects cloud — don't silently fall back to desktop GPU.
-      const cloudOnly = liveCloud.length > 0 && pin === "auto";
-      if (!cloudOnly) steps.push(["desktop", tryDesktop]);
+      if (pin !== "auto") steps.push(["desktop", tryDesktop]);
     } else {
       steps.push(["desktop", tryDesktop]);
       steps.push(["lite", tryLite]);
