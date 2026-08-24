@@ -591,23 +591,24 @@ body.comm #comm { display: flex; }
 
 body.wx-tab #view {
   padding: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
 }
 body.wx-tab main { padding: 0; overflow: visible; }
+/* Block layout so the dossier grows natural height — #view scrolls map away */
 .wx-wrap {
-  display: flex;
-  flex-direction: column;
+  display: block;
   min-height: 100%;
-  height: auto;
-  padding-bottom: calc(var(--tab-h) + var(--safe-bottom) + 0.5rem);
+  padding-bottom: calc(var(--tab-h) + var(--safe-bottom) + 1.75rem);
 }
-.wx-layers { display: flex; gap: 0.25rem; padding: 0.35rem 0.5rem; flex-shrink: 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; background: var(--bg, #050805); }
+.wx-layers { display: flex; gap: 0.25rem; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; background: var(--bg, #050805); }
 .wx-layers button { background: var(--panel); border: 1px solid var(--line); color: var(--muted); font: inherit; font-size: 10px; padding: 0.25rem 0.45rem; }
 .wx-layers button.on { color: var(--phos); border-color: var(--phos); }
 .wx-layers button.wx-product.on, .wx-layers button.overlay.on { color: var(--amber); border-color: var(--amber); }
 .wx-search {
-  display: flex; gap: 0.35rem; padding: 0.4rem 0.5rem; flex-shrink: 0;
+  display: flex; gap: 0.35rem; padding: 0.4rem 0.5rem;
   border-bottom: 1px solid var(--line); background: var(--inset);
   position: sticky; top: 0; z-index: 6;
 }
@@ -624,17 +625,20 @@ body.wx-tab main { padding: 0; overflow: visible; }
 .wx-radar-tag { font-size: 9px; letter-spacing: 0.16em; color: var(--amber); }
 .wx-radar-scrub input[type="range"] { flex: 1; accent-color: var(--phos); }
 .wx-radar-label { font-size: 10px; color: var(--muted); min-width: 5.5rem; text-align: right; }
+.wx-play-btn {
+  background: var(--panel); border: 1px solid var(--phos); color: var(--phos);
+  font: inherit; font-size: 9px; letter-spacing: 0.14em; padding: 0.2rem 0.45rem; flex-shrink: 0;
+}
+.wx-play-btn.on { background: rgba(125,255,90,0.12); }
 .wx-timeline { margin: 0.35rem 0 0.55rem; padding: 0.45rem 0.5rem; border: 1px solid var(--line); background: var(--panel); }
-.wx-timeline-modes { display: flex; gap: 0.25rem; margin-bottom: 0.35rem; }
+.wx-timeline-modes { display: flex; gap: 0.25rem; margin-bottom: 0.35rem; flex-wrap: wrap; align-items: center; }
 .wx-timeline-modes button {
   background: transparent; border: 1px solid var(--line); color: var(--muted);
   font: inherit; font-size: 9px; letter-spacing: 0.12em; padding: 0.2rem 0.4rem;
 }
 .wx-timeline-modes button.on { color: var(--amber); border-color: var(--amber); }
-.wx-timeline-head { display: flex; justify-content: space-between; font-size: 10px; letter-spacing: 0.14em; color: var(--muted); margin-bottom: 0.25rem; }
+.wx-timeline-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; font-size: 10px; letter-spacing: 0.14em; color: var(--muted); margin-bottom: 0.25rem; }
 .wx-timeline-when { color: var(--phos); }
-.wx-timeline-scrub { display: block; font-size: 9px; letter-spacing: 0.12em; color: var(--muted); margin-top: 0.35rem; }
-.wx-timeline-scrub input { width: 100%; accent-color: var(--phos); margin-top: 0.2rem; }
 .wx-timeline-meta { font-size: 9px; letter-spacing: 0.08em; margin-top: 0.25rem; }
 .wx-hour-chart-wrap { height: 56px; margin: 0.35rem 0 0.15rem; border: 1px solid var(--line); background: rgba(0,0,0,0.25); }
 .wx-hour-chart { width: 100%; height: 100%; display: block; cursor: pointer; }
@@ -662,9 +666,13 @@ body.wx-tab main { padding: 0; overflow: visible; }
 }
 .wx-storm-graph-peak { color: var(--amber); }
 .wx-storm-graph svg { width: 100%; min-width: 280px; height: 120px; display: block; }
+.wx-storm-graph .wx-sg-bar { cursor: pointer; }
+.wx-storm-graph .wx-sg-bar.on rect { stroke: var(--phos); stroke-width: 1.8; filter: brightness(1.15); }
 .wx-storm-graph .wx-sg-x { fill: var(--muted); font-size: 7px; }
 .wx-storm-graph .wx-sg-v { fill: var(--text); font-size: 7px; }
 .wx-storm-graph-legend { font-size: 9px; margin-top: 0.2rem; letter-spacing: 0.04em; }
+.wx-hail-row[data-storm-date] { cursor: pointer; }
+.wx-hail-row[data-storm-date].on { background: rgba(125,255,90,0.08); }
 .wx-hail-legend { font-size: 9px; letter-spacing: 0.06em; margin: 0 0 0.35rem; }
 .wx-hail-row {
   display: grid;
@@ -679,21 +687,31 @@ body.wx-tab main { padding: 0; overflow: visible; }
 .wx-hail-row.sev-extreme .size, .wx-hail-row.sev-extreme .sev { color: var(--leak); }
 .wx-hail-row.sev-severe .sev { color: var(--warn); }
 .wx-hail-row .src { color: var(--muted); font-size: 9px; letter-spacing: 0.08em; }
-#wx-map {
-  flex: none;
-  height: 38vh;
-  min-height: 220px;
-  max-height: 320px;
-  z-index: 1;
+.wx-map-shell {
+  position: relative;
+  width: 100%;
+  height: min(40vh, 320px);
+  min-height: 200px;
   border-bottom: 1px solid var(--line);
+  background: #050805;
+}
+#wx-map {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+.wx-hail-heat {
+  pointer-events: none;
+  z-index: 350;
 }
 .wx-panel {
   max-height: none;
   overflow: visible;
-  padding: 0.65rem 0.75rem 1.25rem;
+  padding: 0.75rem 0.85rem 2rem;
   border-top: none;
   background: var(--inset);
   font-size: 12px;
+  line-height: 1.45;
 }
 .wx-addr { color: var(--phos); letter-spacing: 0.06em; margin-bottom: 0.35rem; }
 .wx-links { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.45rem; flex-wrap: wrap; }
