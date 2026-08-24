@@ -356,12 +356,6 @@ body.comm #comm { display: flex; }
   border-top: 1px solid var(--line);
   background: var(--black);
 }
-.composer .lens-modes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  width: 100%;
-}
 .composer textarea {
   min-height: 2.8rem;
   width: 100%;
@@ -427,7 +421,26 @@ body.comm #comm { display: flex; }
   transform: rotate(180deg);
   border-top-color: var(--phos);
 }
-.composer-tools #photo-btn,
+.attach-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.45rem;
+  padding: 0.55rem 0.4rem;
+  background: var(--inset);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.attach-btn:active,
+.attach-btn.on {
+  color: var(--phos);
+  border-color: var(--phos);
+  background: rgba(125,255,90,0.08);
+}
+.attach-ico { display: block; pointer-events: none; }
 .composer-tools #lens-btn,
 .composer-tools #send {
   flex: 0 0 auto;

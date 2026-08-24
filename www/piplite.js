@@ -73,9 +73,9 @@ Survival food stores are under FOOD in this Guide.`,
   },
   {
     id: "lens",
-    title: "LENS · ROCKS & SHINGLES",
+    title: "LENS · POCKET ID",
     tags: ["lens", "rock", "shingle", "identify", "photo", "picture", "google lens", "roof", "mineral"],
-    lead: "Pocket lens. Flip LEAKY, keep a Gemini or OpenRouter key LIVE, then tap LENS in chat and pick ROCK, SHINGLE, or IDENTIFY.",
+    lead: "Pocket lens. Flip LEAKY, keep a Gemini or OpenRouter key LIVE, then tap LENS — auto-detects rock vs roof vs anything. Staple attaches images to your message.",
     body: `Modes: rock · shingle · general identify.
 Vision leaves the device (marked LEAKED). Don't Panic — say when the photo is unclear.
 Heavy chat still prefers desktop GPU / LIVE APIs. Lite stays the field book.`,

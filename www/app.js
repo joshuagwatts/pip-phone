@@ -73,7 +73,7 @@ let radioBusy = false;
 let codeBusy = false;
 let probeBusy = false;
 let probeGen = 0;
-/** Pending chat image (data URL) — PHOTO button or paste. */
+/** Pending chat image (data URL) — attach staple or paste. */
 let pendingChatImage = null;
 let lastProbeHtml = "";
 let wxState = { lat: null, lon: null, address: "", data: null };
@@ -1185,7 +1185,7 @@ function renderData() {
       ${paired ? `<button type="button" id="keys-sync">SYNC FROM DESKTOP</button>` : ""}
     </div>
     <div id="brain-probe-out" class="probe-out">${lastProbeHtml || "<div class=\"row\"><span>Tap PROBE KEYS — proves chat, not just /models</span></div>"}</div>
-    <p class="muted">Paste keys below (save as you type). Who you talk to = agent chip next to LENS / PHOTO in CHAT.</p>
+    <p class="muted">Paste keys below (save as you type). Who you talk to = agent chip next to LENS in CHAT.</p>
     <div class="field"><span>PIN (power override)</span>
       <select id="brain-pin">
         ${["auto", "compare", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].map((id) => {
@@ -1965,6 +1965,8 @@ function markBubbleLeaked(el, reason) {
 function clearChatAttach() {
   pendingChatImage = null;
   const host = $("#chat-attach");
+  const attachBtn = $("#attach-btn");
+  if (attachBtn) attachBtn.classList.remove("on");
   if (host) {
     host.hidden = true;
     host.innerHTML = "";
@@ -1974,6 +1976,8 @@ function clearChatAttach() {
 function setChatAttach(dataUrl) {
   pendingChatImage = dataUrl;
   const host = $("#chat-attach");
+  const attachBtn = $("#attach-btn");
+  if (attachBtn) attachBtn.classList.add("on");
   if (!host) return;
   host.hidden = false;
   host.innerHTML = `<img src="${dataUrl}" alt="attach" /><button type="button" id="chat-attach-clear">✕</button>`;
@@ -1987,7 +1991,7 @@ async function attachChatPhoto({ capture = false } = {}) {
     const dataUrl = await fileToDataUrl(file, 1280, 0.72);
     setChatAttach(dataUrl);
     document.body.classList.add("comm");
-    setStatus("PHOTO READY · ADD A MESSAGE OR SEND");
+    setStatus("ATTACHED · ADD TEXT OR SEND");
   } catch (e) {
     if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 60).toUpperCase());
   }
@@ -2294,8 +2298,8 @@ function boot() {
         };
       }
       $("#send").onclick = sendChat;
-      const photoBtn = $("#photo-btn");
-      if (photoBtn) photoBtn.onclick = () => attachChatPhoto({ capture: false });
+      const attachBtn = $("#attach-btn");
+      if (attachBtn) attachBtn.onclick = () => attachChatPhoto({ capture: false });
       const inputEl = $("#input");
       if (inputEl) {
         inputEl.addEventListener("paste", (e) => {
@@ -2309,7 +2313,7 @@ function boot() {
             fileToDataUrl(file, 1280, 0.72)
               .then((url) => {
                 setChatAttach(url);
-                setStatus("PHOTO PASTED · ADD TEXT OR SEND");
+                setStatus("ATTACHED · ADD TEXT OR SEND");
               })
               .catch(() => setStatus("PASTE IMAGE FAILED"));
             break;
@@ -2317,15 +2321,14 @@ function boot() {
         });
       }
       const lensBtn = $("#lens-btn");
-      const lensModes = $("#lens-modes");
-      const runLens = async (mode) => {
-        if (lensModes) lensModes.hidden = true;
-        setStatus(`LENS · ${mode.toUpperCase()}…`);
+      const runLens = async () => {
+        const mode = detectVisionMode($("#input")?.value || "");
+        setStatus("LENS · SNAP…");
         try {
           const hit = await pickAndIdentify(db.settings, mode);
           document.body.classList.add("comm");
-          addLog("user", `[photo · ${mode}]`);
-          db.chat.push({ role: "user", content: `[photo · ${mode}]`, leaked: true });
+          addLog("user", `[lens · ${mode}]`);
+          db.chat.push({ role: "user", content: `[lens · ${mode}]`, leaked: true });
           addLog("pip", hit.text, { brain: String(hit.provider || "LENS").toUpperCase(), leaked: true });
           db.chat.push({ role: "pip", content: hit.text, leaked: true, provider: hit.provider });
           persist();
@@ -2341,23 +2344,7 @@ function boot() {
           setStatus(msg.slice(0, 60).toUpperCase());
         }
       };
-      if (lensBtn) {
-        lensBtn.onclick = () => {
-          const hinted = detectVisionMode($("#input")?.value || "");
-          if (hinted && hinted !== "lens") {
-            runLens(hinted);
-            return;
-          }
-          if (lensModes) lensModes.hidden = !lensModes.hidden;
-        };
-      }
-      if (lensModes) {
-        lensModes.onclick = (e) => {
-          const b = e.target.closest("button[data-lens]");
-          if (!b) return;
-          runLens(b.dataset.lens);
-        };
-      }
+      if (lensBtn) lensBtn.onclick = () => runLens();
       $("#input").addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
       });
