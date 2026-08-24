@@ -41,6 +41,7 @@ let radarFrames = [];
 let radarFrameIdx = 0;
 let radarPlayTimer = null;
 let hourPlayTimer = null;
+let wxSuppressMapTap = false;
 let radarHost = "https://tilecache.rainviewer.com";
 let radarColor = "2/1_1";
 const WX_PRODUCTS = ["precip", "cloud", "vis", "wind", "hail"];
@@ -859,6 +860,27 @@ function renderHourBars(hours, mode, activeIdx) {
   return `<svg class="wx-hour-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img">${bars}</svg>`;
 }
 
+function renderPrecipStrip(hours, activeIdx, esc) {
+  const slice = hours.slice(Math.max(0, activeIdx - 2), Math.min(hours.length, activeIdx + 7));
+  if (!slice.length) return "";
+  return `<div class="wx-precip-strip">${slice
+    .map((row, j) => {
+      const prob = row.precip_prob != null ? Math.round(row.precip_prob) : 0;
+      const hi = j + Math.max(0, activeIdx - 2) === activeIdx;
+      const hr =
+        row.offsetHr === 0
+          ? "NOW"
+          : row.offsetHr < 0
+            ? `${Math.abs(row.offsetHr)}h`
+            : `+${row.offsetHr}h`;
+      return `<span class="wx-precip-pill${hi ? " on" : ""}${prob >= 50 ? " wet" : ""}">
+        <span class="wx-precip-hr">${esc(hr)}</span>
+        <span class="wx-precip-pct">${prob}%</span>
+      </span>`;
+    })
+    .join("")}</div>`;
+}
+
 /** HailTrace-style storm-date bars — tap a day to paint topo zones on the map. */
 export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate) {
   const rows = [...(hailDays || [])]
@@ -920,7 +942,7 @@ export function bindStormGraph(root, onPick) {
   });
 }
 
-export function selectStormDate(date, { fit = true } = {}) {
+export function selectStormDate(date, { fit = false } = {}) {
   selectedStormDate = date ? String(date).slice(0, 10) : null;
   if (lastHailRows.length || lastWindRows.length) {
     drawHailMarkers(lastHailRows, lastWindRows, { fit });
@@ -928,6 +950,31 @@ export function selectStormDate(date, { fit = true } = {}) {
   if (selectedStormDate && activeWxProduct !== "hail" && activeWxProduct !== "precip") {
     setMapLayer("hail");
   }
+  if (fit) {
+    document.getElementById("wx-map-shell")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
+export function renderDailyForecast(days, esc) {
+  const rows = (days || []).slice(0, 4);
+  if (!rows.length) return "";
+  return `<div class="wx-daily">${rows
+    .map((d, i) => {
+      const label =
+        i === 0 ? "TODAY" : new Date(d.date).toLocaleDateString(undefined, { weekday: "short" }).toUpperCase();
+      const prob = d.precip_prob != null ? `${Math.round(d.precip_prob)}%` : "—";
+      const amt = Number(d.precip_in) > 0 ? `${Number(d.precip_in).toFixed(2)}"` : "";
+      const gust = d.gust_mph != null && d.gust_mph >= 30 ? `${Math.round(d.gust_mph)} gust` : "";
+      return `<div class="wx-day-card">
+        <span class="wx-day-lab">${esc(label)}</span>
+        <span class="wx-day-hilo">${Math.round(d.high_f)}° <span class="wx-day-lo">${Math.round(d.low_f)}°</span></span>
+        <span class="wx-day-precip">${esc(prob)}</span>
+        ${amt ? `<span class="wx-day-amt">${esc(amt)} rain</span>` : ""}
+        ${gust ? `<span class="wx-day-gust">${esc(gust)}</span>` : ""}
+        <span class="wx-day-wx">${esc(d.label)}</span>
+      </div>`;
+    })
+    .join("")}</div>`;
 }
 
 export function weatherSummaryHtml(bundle, hailDays, esc) {
@@ -940,26 +987,52 @@ export function weatherSummaryHtml(bundle, hailDays, esc) {
   const stormHr = next12.find((h) => [95, 96, 99].includes(h.code));
   const recentHail = [...(hailDays || [])].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
   const day0 = (bundle.days || [])[0];
-  const bits = [];
-  bits.push(`<div class="wx-summary-hero">${Math.round(cur.temp_f)}°F · ${esc(cur.label)}</div>`);
-  const sub = [];
-  if (cur.feels_f != null) sub.push(`feels ${Math.round(cur.feels_f)}°`);
-  if (cur.humidity != null) sub.push(`${Math.round(cur.humidity)}% RH`);
-  if (cur.wind_mph != null) sub.push(`wind ${Math.round(cur.wind_mph)} mph`);
-  if (cur.gust_mph != null && cur.gust_mph > cur.wind_mph) sub.push(`gust ${Math.round(cur.gust_mph)}`);
-  bits.push(`<div class="wx-summary-sub">${esc(sub.join(" · "))}</div>`);
+  const nowPrecip = Number(cur.precip_in) || 0;
+  const stats = [];
+  if (cur.feels_f != null) stats.push({ k: "FEELS", v: `${Math.round(cur.feels_f)}°` });
+  if (cur.humidity != null) stats.push({ k: "RH", v: `${Math.round(cur.humidity)}%` });
+  if (cur.wind_mph != null) stats.push({ k: "WIND", v: `${Math.round(cur.wind_mph)} mph` });
+  if (cur.gust_mph != null && cur.gust_mph > (cur.wind_mph || 0)) stats.push({ k: "GUST", v: `${Math.round(cur.gust_mph)}` });
+  if (nowPrecip > 0) stats.push({ k: "NOW", v: `${nowPrecip.toFixed(2)}"` });
+  if (maxProb >= 15) stats.push({ k: "12H RAIN", v: `${Math.round(maxProb)}%` });
   const outlook = [];
   if (day0) {
     outlook.push(`Today ${Math.round(day0.high_f)}°/${Math.round(day0.low_f)}°`);
-    if (day0.precip_prob != null) outlook.push(`${Math.round(day0.precip_prob)}% precip`);
+    if (day0.precip_prob != null) outlook.push(`${Math.round(day0.precip_prob)}% precip chance`);
+    if (Number(day0.precip_in) > 0) outlook.push(`${Number(day0.precip_in).toFixed(2)}" expected`);
   }
-  if (maxProb >= 40) outlook.push(`Next 12h rain risk ${maxProb}%`);
   if (maxGust >= 35) outlook.push(`Gusts to ${Math.round(maxGust)} mph`);
-  if (stormHr) outlook.push(`Thunder possible ~${new Date(stormHr.ts).toLocaleTimeString(undefined, { hour: "numeric" })}`);
-  if (recentHail) outlook.push(`Last hail day ${recentHail.date} · ${recentHail.size_in}"`);
-  else outlook.push("No recent hail near pin");
-  bits.push(`<div class="wx-summary-outlook">${esc(outlook.join(" · "))}</div>`);
-  return `<div class="wx-summary">${bits.join("")}</div>`;
+  if (stormHr) outlook.push(`Thunder ~${new Date(stormHr.ts).toLocaleTimeString(undefined, { hour: "numeric" })}`);
+  if (recentHail) outlook.push(`Hail ${recentHail.date} · ${recentHail.size_in}"`);
+  return `<div class="wx-summary wx-hero">
+    <div class="wx-hero-main">
+      <div class="wx-summary-hero">${Math.round(cur.temp_f)}°</div>
+      <div class="wx-summary-label">${esc(cur.label)}</div>
+    </div>
+    <div class="wx-stat-grid">${stats
+      .map((s) => `<div class="wx-stat"><span class="wx-stat-k">${esc(s.k)}</span><span class="wx-stat-v">${esc(s.v)}</span></div>`)
+      .join("")}</div>
+    ${outlook.length ? `<div class="wx-summary-outlook">${esc(outlook.join(" · "))}</div>` : ""}
+  </div>`;
+}
+
+/** Refresh hero + daily + hourly blocks inside a WX panel root. */
+export function paintLiveWeather(root, bundle, hailDays, esc) {
+  if (!root || !bundle) return;
+  const hail = hailDays || [];
+  const sum =
+    root.querySelector("#wx-summary") ||
+    root.querySelector(".wx-summary-host") ||
+    root.querySelector(".wx-summary");
+  if (sum) {
+    const html = weatherSummaryHtml(bundle, hail, esc);
+    if (sum.id === "wx-summary" || sum.classList.contains("wx-summary-host")) sum.innerHTML = html;
+    else sum.outerHTML = html;
+  }
+  const daily = root.querySelector("#wx-daily");
+  if (daily) daily.innerHTML = renderDailyForecast(bundle.days, esc);
+  const hourly = root.querySelector("#wx-hourly");
+  if (hourly && bundle.hours?.length) renderHourlyTimeline(hourly, bundle, esc);
 }
 
 export function renderHourlyTimeline(root, bundle, esc) {
@@ -1010,6 +1083,7 @@ export function renderHourlyTimeline(root, bundle, esc) {
         </div>
         <div class="wx-now">${focus}</div>
         <div class="wx-hour-chart-wrap">${renderHourBars(hours, mode, i)}</div>
+        ${mode === "precip" ? renderPrecipStrip(hours, i, esc) : ""}
         <div class="wx-timeline-meta muted">${esc(
           `${hours.length} hrs · −12h → +36h · tap a bar to scrub`,
         )}</div>
@@ -1042,15 +1116,20 @@ export function renderWeatherBoot(root, geo, wx, hail, esc) {
   root.innerHTML = `
     <div class="wx-boot">
       <div class="wx-addr">${esc(addr)}</div>
-      ${weatherSummaryHtml(bundleStub, hailRows, esc)}
-      <div id="wx-hourly-slot"></div>
+      <div id="wx-summary" class="wx-summary-host">${weatherSummaryHtml(bundleStub, hailRows, esc)}</div>
+      <div id="wx-daily"></div>
+      <div id="wx-hourly-slot" class="wx-hourly"></div>
       ${renderStormGraph(hailRows, esc, selectedStormDate)}
-      <p class="muted wx-boot-hint">Scroll past the map for the full dossier · tap a storm-date bar for topo zones · search or tap map to pin</p>
+      <p class="muted wx-boot-hint">Scroll for hail dossier · storm-date bar zooms map · double-tap map to expand</p>
     </div>`;
   const slot = root.querySelector("#wx-hourly-slot");
-  if (hourly && slot) slot.replaceWith(hourly);
+  if (hourly && slot) {
+    hourly.id = "wx-hourly";
+    slot.replaceWith(hourly);
+  }
   const onPick = (date) => {
     selectStormDate(date, { fit: true });
+    drawHailMarkers(hail, [], { fit: true });
     const old = root.querySelector(".wx-storm-graph");
     if (!old) return;
     const wrap = document.createElement("div");
@@ -1059,7 +1138,7 @@ export function renderWeatherBoot(root, geo, wx, hail, esc) {
     bindStormGraph(root, onPick);
   };
   bindStormGraph(root, onPick);
-  if (hail?.length) drawHailMarkers(hail, [], { fit: !!selectedStormDate });
+  if (hail?.length) drawHailMarkers(hail, [], { fit: false });
 }
 
 async function searchNews(query, limit = 6) {
@@ -1650,7 +1729,7 @@ export function mountMap(container, config, { onTap, center }) {
     preferCanvas: true,
     scrollWheelZoom: true,
     touchZoom: true,
-    doubleClickZoom: true,
+    doubleClickZoom: false,
     maxZoom: MAP_MAX_ZOOM,
   }).setView([c.lat, c.lon], zoom);
   const all = config.layers || [];
@@ -1678,6 +1757,7 @@ export function mountMap(container, config, { onTap, center }) {
   activeOverlays = new Set([activeWxProduct]);
   applyOverlays();
   map.on("click", (e) => {
+    if (wxSuppressMapTap) return;
     const { lat, lng } = e.latlng;
     if (pin) pin.setLatLng(e.latlng);
     else pin = window.L.marker(e.latlng).addTo(map);
@@ -1722,6 +1802,46 @@ export function flyToPin(lat, lon, zoom = 13) {
   map.setView([lat, lon], zoom);
   if (pin) pin.setLatLng([lat, lon]);
   else pin = window.L.marker([lat, lon]).addTo(map);
+}
+
+/** Double-tap map shell to expand / collapse — keeps address pin zoom separate from hail fit. */
+export function bindWxMapExpand(shell) {
+  if (!shell || shell.dataset.expandBound) return;
+  shell.dataset.expandBound = "1";
+  let lastTap = 0;
+  let suppressClick = false;
+  shell.addEventListener(
+    "click",
+    (e) => {
+      if (e.target.closest(".leaflet-control")) return;
+      const now = Date.now();
+      if (now - lastTap < 360) {
+        e.stopPropagation();
+        e.preventDefault();
+        suppressClick = true;
+        wxSuppressMapTap = true;
+        const on = shell.classList.toggle("expanded");
+        document.body.classList.toggle("wx-map-expanded", on);
+        const hint = shell.querySelector(".wx-map-hint");
+        if (hint) hint.textContent = on ? "DOUBLE-TAP · COLLAPSE" : "DOUBLE-TAP · EXPAND MAP";
+        setTimeout(() => {
+          try {
+            map?.invalidateSize?.(true);
+          } catch {
+            /* ignore */
+          }
+        }, 280);
+        lastTap = 0;
+        setTimeout(() => {
+          suppressClick = false;
+          wxSuppressMapTap = false;
+        }, 400);
+        return;
+      }
+      lastTap = now;
+    },
+    true,
+  );
 }
 
 /** Forward geocode an address/place for WX search. */
@@ -1882,6 +2002,7 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
     <div class="wx-dossier">
       <div class="wx-addr">${esc(addr)}</div>
       <div id="wx-summary" class="wx-summary-host"></div>
+      <div id="wx-daily"></div>
       <div id="wx-hourly" class="wx-hourly"></div>
       ${alert}
       ${renderStormGraph(hail, esc, selectedStormDate)}
@@ -2026,7 +2147,7 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
           if (fresh) {
             renderDossier(root, fresh, esc, onResearch, onRefetch);
             const f = filterDossier(fresh, wxFilters);
-            drawHailMarkers(filterHailRaw(fresh, wxFilters), f.wind, { fit: true });
+            drawHailMarkers(filterHailRaw(fresh, wxFilters), f.wind, { fit: false });
             return;
           }
         } catch {
@@ -2035,7 +2156,7 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
       }
       renderDossier(root, data, esc, onResearch, onRefetch);
       const f = filterDossier(data, wxFilters);
-      drawHailMarkers(filterHailRaw(data, wxFilters), f.wind, { fit: true });
+      drawHailMarkers(filterHailRaw(data, wxFilters), f.wind, { fit: false });
     };
   };
   bind("#wx-f-km", "km", Number);
@@ -2048,11 +2169,7 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
   const lon = Number(data.lon || meta.lon);
   if (Number.isFinite(lat) && Number.isFinite(lon)) {
     fetchWeatherBundle(lat, lon)
-      .then((bundle) => {
-        const sum = root.querySelector("#wx-summary");
-        if (sum) sum.innerHTML = weatherSummaryHtml(bundle, hail, esc);
-        if (bundle?.hours?.length) renderHourlyTimeline(root.querySelector("#wx-hourly"), bundle, esc);
-      })
+      .then((bundle) => paintLiveWeather(root, bundle, hail, esc))
       .catch(() => {});
   }
 }
