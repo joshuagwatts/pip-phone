@@ -9,10 +9,13 @@ export const PROVIDERS = [
     label: "Groq",
     field: "groq",
     base: "https://api.groq.com/openai/v1",
-    life: "llama-3.3-70b-versatile",
-    boost: "llama-3.3-70b-versatile",
+    // llama-3.3-70b-versatile shut down Aug 16 2026 for free/dev tiers.
+    life: "openai/gpt-oss-120b",
+    boost: "openai/gpt-oss-120b",
+    models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"],
+    reasoning: true,
     keyUrl: "https://console.groq.com/keys",
-    tip: "No card. Fast Llama 3.3 70B.",
+    tip: "Fast · openai/gpt-oss-120b (Llama 3.3 retired).",
   },
   {
     id: "openrouter",
@@ -31,13 +34,13 @@ export const PROVIDERS = [
     label: "Cerebras",
     field: "cerebras",
     base: "https://api.cerebras.ai/v1",
-    // llama3.1-8b / llama-3.3-70b deprecated — gpt-oss-120b is current.
+    // Public catalog is gpt-oss-120b + gemma-4-31b. Old Llama IDs 404.
     life: "gpt-oss-120b",
     boost: "gpt-oss-120b",
-    models: ["gpt-oss-120b", "llama3.1-8b", "llama-3.3-70b"],
+    models: ["gpt-oss-120b", "gemma-4-31b"],
     reasoning: true,
     keyUrl: "https://cloud.cerebras.ai",
-    tip: "High speed · gpt-oss-120b.",
+    tip: "High speed · gpt-oss-120b (402 = add credits on Cerebras).",
   },
   {
     id: "mistral",
@@ -366,6 +369,10 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
   };
 }
 
+function isAuthFail(msg) {
+  return /incorrect.?api.?key|invalid.?api.?key|unauthorized|http 401|authentication/i.test(String(msg || ""));
+}
+
 async function openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools) {
   const errors = [];
   const models = modelsFor(prov, lane);
@@ -373,16 +380,23 @@ async function openaiWithFallback(prov, key, lane, messages, temperature, maxTok
     try {
       return await openaiOnce(prov, key, model, messages, temperature, maxTokens, tools);
     } catch (e) {
-      errors.push(String(e.message || e).slice(0, 120));
+      const msg = String(e.message || e);
+      errors.push(msg.slice(0, 120));
+      // Bad key won't magically work on another model ID.
+      if (isAuthFail(msg)) break;
     }
   }
-  const slim = slimMessagesForCloud(messages);
-  for (const model of models.slice(0, 3)) {
-    try {
-      const out = await openaiOnce(prov, key, model, slim, temperature, maxTokens, tools);
-      return { ...out, slim: true };
-    } catch (e) {
-      errors.push(`slim/${model}: ${String(e.message || e).slice(0, 100)}`);
+  if (!errors.some(isAuthFail)) {
+    const slim = slimMessagesForCloud(messages);
+    for (const model of models.slice(0, 3)) {
+      try {
+        const out = await openaiOnce(prov, key, model, slim, temperature, maxTokens, tools);
+        return { ...out, slim: true };
+      } catch (e) {
+        const msg = String(e.message || e);
+        errors.push(`slim/${model}: ${msg.slice(0, 100)}`);
+        if (isAuthFail(msg)) break;
+      }
     }
   }
   throw new Error(errors.join(" · ") || `${prov.id} failed`);
