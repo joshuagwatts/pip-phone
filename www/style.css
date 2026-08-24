@@ -568,7 +568,7 @@ body.wx-tab main { padding: 0; overflow: visible; }
   height: auto;
   padding-bottom: calc(var(--tab-h) + var(--safe-bottom) + 0.5rem);
 }
-.wx-layers { display: flex; gap: 0.25rem; padding: 0.35rem 0.5rem; flex-shrink: 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; position: sticky; top: 0; z-index: 5; background: var(--bg, #050805); }
+.wx-layers { display: flex; gap: 0.25rem; padding: 0.35rem 0.5rem; flex-shrink: 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; background: var(--bg, #050805); }
 .wx-layers button { background: var(--panel); border: 1px solid var(--line); color: var(--muted); font: inherit; font-size: 10px; padding: 0.25rem 0.45rem; }
 .wx-layers button.on { color: var(--phos); border-color: var(--phos); }
 .wx-layers button.wx-product.on, .wx-layers button.overlay.on { color: var(--amber); border-color: var(--amber); }
