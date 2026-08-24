@@ -272,8 +272,19 @@ body.comm #comm { display: flex; }
   cursor: pointer;
 }
 .key-clear:active { color: var(--leak); }
-.probe-out { margin: 0.4rem 0 0.8rem; font-size: 11px; }
-.probe-out .row { display: flex; justify-content: space-between; padding: 0.15rem 0; border-bottom: 1px solid var(--line); }
+.probe-out {
+  margin: 0.4rem 0 1.2rem;
+  font-size: 12px;
+  border: 1px solid var(--phos);
+  background: var(--panel);
+  padding: 0.55rem 0.65rem;
+  min-height: 2.5rem;
+  color: var(--text);
+}
+.probe-out.probe-active { border-color: var(--amber); }
+.probe-out .row { display: flex; justify-content: space-between; padding: 0.25rem 0; border-bottom: 1px solid var(--line); word-break: break-word; }
+.probe-out .row:last-child { border-bottom: 0; }
+.probe-actions { margin-bottom: 0.35rem; }
 #log { flex: 1; overflow: auto; padding: 0.8rem; }
 .bubble .who { color: var(--phos); font-size: 10px; letter-spacing: 0.2em; margin-bottom: 0.25rem; }
 .bubble.user .who { color: var(--you); }
