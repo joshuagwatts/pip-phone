@@ -30,12 +30,13 @@ export const PROVIDERS = [
     label: "Cerebras",
     field: "cerebras",
     base: "https://api.cerebras.ai/v1",
-    life: "llama3.1-8b",
-    boost: "llama3.1-8b",
-    models: ["llama3.1-8b", "gpt-oss-120b", "llama-3.3-70b", "gemma-4-31b"],
+    // llama3.1-8b / llama-3.3-70b deprecated — gpt-oss-120b is current.
+    life: "gpt-oss-120b",
+    boost: "gpt-oss-120b",
+    models: ["gpt-oss-120b", "llama3.1-8b", "llama-3.3-70b"],
     reasoning: true,
     keyUrl: "https://cloud.cerebras.ai",
-    tip: "High speed · ~1M tok/day.",
+    tip: "High speed · gpt-oss-120b.",
   },
   {
     id: "mistral",
@@ -52,9 +53,10 @@ export const PROVIDERS = [
     label: "Gemini",
     field: "gemini",
     base: "https://generativelanguage.googleapis.com/v1beta/openai",
-    life: "gemini-2.0-flash",
-    boost: "gemini-2.0-flash",
-    models: ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
+    // gemini-2.0-flash shut down Jun 2026 → 404. Docs now use gemini-3.6-flash.
+    life: "gemini-3.6-flash",
+    boost: "gemini-3.6-flash",
+    models: ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-3-flash-preview", "gemini-flash-latest"],
     fishy: true,
     keyUrl: "https://aistudio.google.com/apikey",
     tip: "Google AI Studio key · vision OK for rocks/shingles.",
@@ -212,9 +214,9 @@ function modelsFor(prov, lane) {
 function messageText(msg) {
   if (!msg || typeof msg !== "object") return "";
   const c = msg.content;
-  if (typeof c === "string") return c.trim();
+  if (typeof c === "string" && c.trim()) return c.trim();
   if (Array.isArray(c)) {
-    return c
+    const joined = c
       .map((p) => {
         if (typeof p === "string") return p;
         if (!p || typeof p !== "object") return "";
@@ -222,8 +224,17 @@ function messageText(msg) {
       })
       .join("")
       .trim();
+    if (joined) return joined;
   }
-  return String(msg.reasoning || msg.reasoning_content || msg.refusal || "").trim();
+  // gpt-oss / reasoning models often put the answer in reasoning fields with empty content.
+  const reasoned = String(msg.reasoning || msg.reasoning_content || msg.refusal || "").trim();
+  if (!reasoned) return "";
+  // Prefer last non-empty paragraph after thinking markers.
+  const cleaned = reasoned
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^thinking[:\s].*$/gim, "")
+    .trim();
+  return cleaned || reasoned;
 }
 
 /** LIVE cloud ids (probe ok) — chat should prefer these. */
