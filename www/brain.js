@@ -382,8 +382,14 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       // Pinned cloud agent — that API only. No desktop/other-API steal.
       steps.push(["cloud", tryCloud]);
     } else if (hasKeys) {
-      // THE MAIN PATH: any pasted key → cloud only. Desktop must not hijack chat.
-      steps.push(["cloud", tryCloud]);
+      if (secure) {
+        if (desktopConfigured(settings)) steps.push(["desktop", tryDesktop]);
+        steps.push(["cloud", tryCloud]);
+      } else {
+        steps.push(["cloud", tryCloud]);
+        if (desktopConfigured(settings)) steps.push(["desktop", tryDesktop]);
+      }
+      steps.push(["lite", tryLite]);
     } else {
       steps.push(["desktop", tryDesktop]);
       steps.push(["lite", tryLite]);

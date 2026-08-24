@@ -37,7 +37,9 @@ export function applyCloudKeys(settings, pack) {
     }
   }
   if (pack.operator) settings.operator = String(pack.operator).trim() || settings.operator;
-  if (n > 0) settings.privacy_mode = "leaky";
+  if (n > 0) {
+    /* Keys synced — user toggles SECURE/LEAKY in header when they want cloud. */
+  }
   settings.keys_synced_at = new Date().toISOString();
   settings.keys_synced_count = n;
   return n;

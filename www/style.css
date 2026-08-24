@@ -304,9 +304,55 @@ body.comm #comm { display: flex; }
 .probe-out .row:last-child { border-bottom: 0; }
 .probe-actions { margin-bottom: 0.35rem; }
 #log { flex: 1; overflow: auto; padding: 0.8rem; }
-.bubble .who { color: var(--phos); font-size: 10px; letter-spacing: 0.2em; margin-bottom: 0.25rem; }
+.bubble .who-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+.bubble .who { color: var(--pip, var(--phos)); font-size: 10px; letter-spacing: 0.2em; margin-bottom: 0; }
 .bubble.user .who { color: var(--you); }
-.bubble.user { border-left-color: var(--you); color: var(--you); }
+.bubble.pip {
+  border-left-color: var(--pip, var(--phos));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--pip, var(--phos)) 55%, transparent);
+}
+.bubble.user {
+  border-left-color: var(--you);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--you) 55%, transparent);
+  color: var(--text);
+}
+.route-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  padding: 0.1rem 0.42rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  text-transform: uppercase;
+  line-height: 1.2;
+}
+.route-pill.leaked {
+  border-color: rgba(255, 58, 58, 0.45);
+  color: #ff9a9a;
+}
+.route-pill.secure,
+.route-pill.local {
+  border-color: rgba(125, 255, 90, 0.35);
+  color: var(--phos);
+}
+.route-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.route-pill.leaked .route-dot { background: var(--leak); }
+.route-pill.secure .route-dot,
+.route-pill.local .route-dot { background: var(--phos); }
 .bubble .body { white-space: pre-wrap; word-break: break-word; }
 .bubble .chat-text { white-space: pre-wrap; }
 .bubble .chat-code {
@@ -342,12 +388,6 @@ body.comm #comm { display: flex; }
   letter-spacing: 0.14em;
   color: var(--muted);
 }
-.bubble.user.leaked {
-  border-color: var(--leak);
-  box-shadow: inset 3px 0 0 var(--leak);
-}
-.bubble.user.leaked .who { color: var(--leak); }
-.bubble.user.leaked .body { color: #ff8a8a; }
 .composer {
   display: flex;
   flex-direction: column;

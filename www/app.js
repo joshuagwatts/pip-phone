@@ -1232,12 +1232,8 @@ function renderData() {
       // Blank field = keep existing key (so re-open DATA doesn't wipe).
       if (v) db.settings[p.field] = v;
     }
-    // Pasting keys means you want them used — flip to LEAKY so chat hierarchy prefers cloud.
-    if (PROVIDERS.some((p) => String(db.settings[p.field] || "").trim())) {
-      if (privacyOn(db.settings)) {
-        db.settings.privacy_mode = "leaky";
-        renderPrivacy();
-      }
+    if (PROVIDERS.some((p) => String(db.settings[p.field] || "").trim()) && privacyOn(db.settings)) {
+      setStatus("KEYS SAVED · TAP LEAKY TO USE CLOUD");
     }
     db.settings.desktop_url = normalizeUrl($("#set-durl").value.trim());
     if ($("#set-durl")) $("#set-durl").value = db.settings.desktop_url;
@@ -1254,7 +1250,6 @@ function renderData() {
       const v = el.value.trim();
       if (!v) return;
       db.settings[p.field] = v;
-      db.settings.privacy_mode = "leaky";
       persist();
       const mem = $("#keys-memory");
       const names = PROVIDERS.filter((x) => String(db.settings[x.field] || "").trim()).map((x) => x.label.toUpperCase());
@@ -1729,15 +1724,46 @@ function formatChatBody(text) {
     .join("");
 }
 
+function routeKind(opts = {}) {
+  if (opts.local || opts.provider === "lite" || opts.provider === "qwen") return "local";
+  if (opts.leaked) return "leaked";
+  if (opts.route) return opts.route;
+  return "secure";
+}
+
+function routePillHtml(kind) {
+  if (!kind) return "";
+  const label = kind === "leaked" ? "LEAKED" : kind === "local" ? "LOCAL" : "SECURE";
+  return `<span class="route-pill ${kind}"><span class="route-dot" aria-hidden="true"></span>${label}</span>`;
+}
+
+function markBubbleRoute(el, kind) {
+  if (!el || !kind) return;
+  el.dataset.route = kind;
+  let row = el.querySelector(".who-row");
+  if (!row) {
+    const who = el.querySelector(".who");
+    if (!who) return;
+    row = document.createElement("div");
+    row.className = "who-row";
+    who.replaceWith(row);
+    row.appendChild(who);
+  }
+  const old = row.querySelector(".route-pill");
+  if (old) old.remove();
+  row.insertAdjacentHTML("beforeend", routePillHtml(kind));
+}
+
 function addLog(role, text, opts = {}) {
   const div = document.createElement("div");
-  const leaked = Boolean(opts.leaked);
-  div.className = `bubble ${role}${leaked ? " leaked" : ""}`;
+  const route =
+    role === "user"
+      ? opts.route || (opts.leaked ? "leaked" : opts.local ? "local" : opts.secure ? "secure" : "")
+      : routeKind(opts);
+  div.className = `bubble ${role}`;
   const who =
     role === "user"
-      ? leaked
-        ? `YOU · LEAKED`
-        : "YOU"
+      ? "YOU"
       : opts.agent === "compare"
         ? "COMPARE"
         : opts.agent && opts.agent !== "pip" && opts.agent !== "auto"
@@ -1756,60 +1782,67 @@ function addLog(role, text, opts = {}) {
       : opts.toolLine
         ? `<div class="chat-tools">${esc(opts.toolLine)}</div>`
         : "";
-  div.innerHTML = `<div class="who">${esc(who)}</div><div class="body">${formatChatBody(text)}</div>${toolsHtml}${metaHtml}`;
+  const pill = routePillHtml(route);
+  div.innerHTML = `<div class="who-row"><span class="who">${esc(who)}</span>${pill}</div><div class="body">${formatChatBody(text)}</div>${toolsHtml}${metaHtml}`;
   $("#log").appendChild(div);
   $("#log").scrollTop = $("#log").scrollHeight;
   return div;
 }
 
-/** Build overview text from compare rows (ok + fail). */
+/** Clean compare overview — stats + ok summaries only (fail syntax lives on ERRORS tab). */
 function compareOverview(compare) {
   const rows = Array.isArray(compare) ? compare : [];
   const ok = rows.filter((c) => c && c.ok && c.text);
   const bad = rows.filter((c) => c && !c.ok);
   const lines = [];
-  lines.push(`COMPARE · ${ok.length} answered · ${bad.length} failed · ${rows.length} total`);
-  lines.push("");
-  for (const c of rows) {
-    const name = String(c.label || c.provider || "?").toUpperCase();
-    if (c.ok && c.text) {
-      const snip = String(c.text).replace(/\s+/g, " ").trim().slice(0, 140);
-      lines.push(`• ${name} · OK · ~${String(c.text).length} chars${c.tokens ? ` · ${c.tokens} tok` : ""}`);
-      lines.push(`  ${snip}${String(c.text).length > 140 ? "…" : ""}`);
-    } else {
-      lines.push(`• ${name} · FAIL · ${c.error || "no reply"}`);
-    }
-  }
+  lines.push(`${ok.length} answered · ${bad.length} failed · ${rows.length} brains keyed`);
   if (ok.length >= 2) {
-    lines.push("");
     const lens = ok.map((c) => String(c.text).length);
     const spread = Math.max(...lens) - Math.min(...lens);
-    if (spread > 120) {
-      lines.push("Variance: reply lengths differ a lot — open each tab; don't assume they agree.");
-    } else {
-      lines.push("Variance: similar length — still skim each tab; tone and facts can diverge.");
-    }
-    const firsts = ok.map((c) => {
-      const t = String(c.text).trim().split(/(?<=[.!?])\s+/)[0] || "";
-      return `${String(c.label || c.provider).toUpperCase()}: ${t.slice(0, 100)}`;
-    });
+    lines.push("");
+    lines.push(
+      spread > 120
+        ? "Variance: reply lengths differ — tab each brain; don't assume they agree."
+        : "Variance: similar length — still skim each tab; tone and facts can diverge.",
+    );
     lines.push("");
     lines.push("Opening lines:");
-    for (const f of firsts) lines.push(`  ${f}`);
+    for (const c of ok) {
+      const name = String(c.label || c.provider || "?").toUpperCase();
+      const t = String(c.text).trim().split(/(?<=[.!?])\s+/)[0] || "";
+      lines.push(`  ${name}: ${t.slice(0, 100)}${t.length > 100 ? "…" : ""}`);
+    }
   } else if (ok.length === 1) {
     lines.push("");
-    lines.push("Only one brain answered — check FAIL tabs / keys / PROBE.");
+    lines.push(
+      `Only ${String(ok[0].label || ok[0].provider).toUpperCase()} answered${bad.length ? " — errors on last tab" : ""}.`,
+    );
+  } else if (bad.length) {
+    lines.push("");
+    lines.push("No clean answers — open ERRORS tab.");
   }
   return lines.join("\n");
 }
 
-/** One compare bubble: OVERVIEW tab + every agent tab (success and fail). */
+function compareErrorsText(bad) {
+  if (!bad.length) return "No failures.";
+  return bad
+    .map((c) => {
+      const name = String(c.label || c.provider || "?").toUpperCase();
+      return `${name}\n${c.error || "no reply"}`;
+    })
+    .join("\n\n");
+}
+
+/** One compare bubble: OVERVIEW → each ok reply → ERRORS last. */
 function addCompareLog(compare, opts = {}) {
   const rows = (compare || []).filter(Boolean);
   if (!rows.length) {
     addLog("pip", "Compare found no replies.", opts);
     return;
   }
+  const okRows = rows.filter((r) => r.ok && r.text);
+  const badRows = rows.filter((r) => !r.ok);
   const overview = {
     provider: "overview",
     label: "OVERVIEW",
@@ -1817,16 +1850,25 @@ function addCompareLog(compare, opts = {}) {
     ok: true,
     overview: true,
   };
-  const tabs = [overview, ...rows];
+  const tabs = [overview, ...okRows];
+  if (badRows.length) {
+    tabs.push({
+      provider: "errors",
+      label: "ERRORS",
+      text: compareErrorsText(badRows),
+      ok: false,
+      errors: true,
+    });
+  }
   const div = document.createElement("div");
-  div.className = `bubble pip leaked compare-bubble`;
+  div.className = "bubble pip compare-bubble";
   let idx = 0;
   const paint = () => {
     const row = tabs[idx] || tabs[0];
     const tabHtml = tabs
       .map((c, i) => {
         const name = String(c.label || c.provider || "?").toUpperCase();
-        const mark = c.overview ? "" : c.ok ? "" : " fail";
+        const mark = c.errors ? " fail" : "";
         return `<button type="button" class="compare-tab ${i === idx ? "on" : ""}${mark}" data-ci="${i}">${esc(name)}</button>`;
       })
       .join("");
@@ -1834,15 +1876,18 @@ function addCompareLog(compare, opts = {}) {
     let meta;
     if (row.overview) {
       body = formatChatBody(row.text);
-      meta = `${rows.filter((r) => r.ok).length}/${rows.length} answered`;
+      meta = `${okRows.length}/${rows.length} answered`;
+    } else if (row.errors) {
+      body = formatChatBody(row.text);
+      meta = `${badRows.length} failed`;
     } else if (row.ok && row.text) {
       body = formatChatBody(row.text);
       meta = `${esc(String(row.model || row.provider || ""))}${row.tokens ? ` · ~${row.tokens} TOK` : ""}`;
     } else {
-      body = formatChatBody(`Failed.\n${row.error || "no reply"}`);
+      body = formatChatBody(row.text || row.error || "no reply");
       meta = "FAIL";
     }
-    div.innerHTML = `<div class="who">COMPARE</div><div class="compare-tabs">${tabHtml}</div><div class="body">${body}</div><div class="chat-meta">${meta}</div>`;
+    div.innerHTML = `<div class="who-row"><span class="who">COMPARE</span>${routePillHtml("leaked")}</div><div class="compare-tabs">${tabHtml}</div><div class="body">${body}</div><div class="chat-meta">${meta}</div>`;
     div.querySelectorAll(".compare-tab").forEach((b) => {
       b.onclick = () => {
         idx = Number(b.dataset.ci) || 0;
@@ -1941,11 +1986,8 @@ async function runChatCode(text, userBubble) {
 }
 
 
-function markBubbleLeaked(el, reason) {
-  if (!el) return;
-  el.classList.add("leaked");
-  const who = el.querySelector(".who");
-  if (who) who.textContent = reason ? `YOU · LEAKED` : "YOU · LEAKED";
+function markBubbleLeaked(el) {
+  markBubbleRoute(el, "leaked");
 }
 
 function clearChatAttach() {
@@ -2163,10 +2205,13 @@ async function sendChat() {
       render();
       renderPrivacy();
     }
+    const local = typeof out === "object" ? Boolean(out.local) : false;
     if (leaked) {
       markBubbleLeaked(userBubble);
       const last = db.chat.filter((m) => m.role === "user").pop();
       if (last) last.leaked = true;
+    } else {
+      markBubbleRoute(userBubble, local ? "local" : "secure");
     }
     const tokens = typeof out === "object" ? Number(out.tokens) || 0 : 0;
     if (compare && Array.isArray(compare) && compare.length) {
@@ -2189,6 +2234,7 @@ async function sendChat() {
         provider,
         agent,
         leaked,
+        local,
         tokens,
       });
       // If user pinned X but Y answered, surface it (shouldn't happen after strict pin).
@@ -2227,11 +2273,8 @@ function boot() {
     hydrateHealth(db.settings.brain_health);
     // Drop stale KEY BAD poison from the old chat-ping probe.
     db.settings.brain_health = providerHealth();
+    // Keys on device — user chooses SECURE vs LEAKY via header toggle.
     if (!db.settings.chat_agent) db.settings.chat_agent = "pip";
-    // Keys on device = use them. Don't leave people stuck in SECURE + desktop-only.
-    if (PROVIDERS.some((p) => String(db.settings[p.field] || "").trim())) {
-      db.settings.privacy_mode = "leaky";
-    }
     persist();
     if (db.settings.biometric_lock === undefined) {
       db.settings.biometric_lock = true;
@@ -2242,6 +2285,7 @@ function boot() {
       db.chat.slice(-20).forEach((m) =>
         addLog(m.role === "user" ? "user" : "pip", m.content, {
           leaked: Boolean(m.leaked),
+          route: m.role === "user" && m.leaked ? "leaked" : "",
           brain: m.brain || "",
           agent: m.agent || "",
         }),
@@ -2249,7 +2293,7 @@ function boot() {
       if (!db.chat.length) {
         addLog(
           "pip",
-          "Pip on deck. Tap the agent chip next to LENS for PIP / AUTO / COMPARE / GEMINI…. COMPARE gives one bubble with tabs + an overview.",
+          "Pip on deck. Tap the agent chip next to LENS for PIP / AUTO / COMPARE / GEMINI…. COMPARE: overview first, tab each brain, errors last.",
         );
       }
       try {
