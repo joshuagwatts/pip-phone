@@ -795,6 +795,21 @@ export function compareProviders(settings, health = null) {
 export function parseCrossAgentIntent(text) {
   const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt";
   const t = String(text || "").trim();
+  const relay = parseAgentRelay(t);
+  if (relay?.from && relay?.to) {
+    const fromProv = PROVIDERS.find((p) => p.id === relay.from);
+    const toProv = PROVIDERS.find((p) => p.id === relay.to);
+    return {
+      from: relay.from,
+      to: relay.to,
+      fromLabel: fromProv?.label || relay.from,
+      toLabel: toProv?.label || relay.to,
+      target: relay.to,
+      targetLabel: toProv?.label || relay.to,
+      speak: Boolean(relay.speak),
+      raw: t,
+    };
+  }
   let m = t.match(
     new RegExp(
       `\\b(?:say|tell|talk|message|ask|welcome|greet|introduce)\\s+(?:something\\s+)?(?:to\\s+)?(${agents})\\b`,
@@ -818,25 +833,72 @@ export function parseCrossAgentIntent(text) {
 function compareUserContent(prov, operator, ask, crossHint, prior) {
   const name = prov.label || prov.id;
   let userContent = ask;
-  if (crossHint?.target) {
+  const crewLines = [];
+  for (const m of prior || []) {
+    if (!m?.content) continue;
+    if (Array.isArray(m.compare)) {
+      for (const c of m.compare) {
+        if (c?.ok && c.text) {
+          crewLines.push(`${String(c.label || c.provider || "?").toUpperCase()}: ${String(c.text).slice(0, 500)}`);
+        }
+      }
+    } else if (m.agent && m.agent !== "pip" && m.agent !== "auto" && m.agent !== "compare") {
+      crewLines.push(`${String(m.agent).toUpperCase()}: ${String(m.content).slice(0, 500)}`);
+    }
+  }
+  const listenBlock =
+    crewLines.length > 0
+      ? `\n\nCrew floor (you can hear them — one conversation, do not start a loop):\n${crewLines.slice(-6).join("\n")}`
+      : "";
+
+  if (crossHint?.from && crossHint?.to) {
+    if (crossHint.to === prov.id) {
+      userContent =
+        `Joshua to the crew: "${ask}"\n\n` +
+        `You're ${name}. ${crossHint.fromLabel || "A crewmate"} may speak to you. ` +
+        `Listen. When they address you, answer them briefly as yourself, then include Joshua. ` +
+        `Do not demand another round.${listenBlock}`;
+    } else if (crossHint.from === prov.id) {
+      userContent =
+        `Joshua to the crew: "${ask}"\n\n` +
+        `You're ${name}. Speak directly to ${crossHint.toLabel || "your crewmate"} — first impression / message. ` +
+        `Address them by name. Joshua is listening.${listenBlock}`;
+    } else {
+      userContent =
+        `Joshua to the crew: "${ask}"\n\n` +
+        `You're ${name}. ${crossHint.fromLabel || "Someone"} is speaking to ${crossHint.toLabel || "another agent"}. ` +
+        `Stay brief; you may react once if useful. No pile-on.${listenBlock}`;
+    }
+  } else if (crossHint?.target) {
     if (crossHint.target === prov.id) {
       userContent =
         `Joshua to the crew: "${ask}"\n\n` +
-        `You're ${name}. This is directed at you — first impression, make it count. Reply as yourself to Joshua.`;
+        `You're ${name}. This is directed at you — first impression, make it count. Reply as yourself to Joshua.${listenBlock}`;
     } else {
       userContent =
         `Joshua to the crew: "${ask}"\n\n` +
         `You're ${name}. Part of this is for ${crossHint.targetLabel}. ` +
-        `Reply to Joshua; you may acknowledge ${crossHint.targetLabel} naturally if it fits.`;
+        `Reply to Joshua; you may acknowledge ${crossHint.targetLabel} naturally if it fits.${listenBlock}`;
     }
+  } else if (listenBlock) {
+    userContent = `Joshua: "${ask}"${listenBlock}\n\nReply as ${name} in the shared conversation.`;
   }
+
   const priorMsgs = (prior || [])
-    .filter((m) => m && m.content && !m.image)
+    .filter((m) => m && m.content && !m.image && !m.compare)
     .slice(-8)
-    .map((m) => ({
-      role: m.role === "user" ? "user" : "assistant",
-      content: String(m.content).slice(0, 1200),
-    }));
+    .map((m) => {
+      const who =
+        m.role === "user"
+          ? null
+          : m.agent && m.agent !== "pip" && m.agent !== "auto" && m.agent !== "compare"
+            ? String(m.agent).toUpperCase()
+            : null;
+      return {
+        role: m.role === "user" ? "user" : "assistant",
+        content: who ? `[${who}]: ${String(m.content).slice(0, 1200)}` : String(m.content).slice(0, 1200),
+      };
+    });
   return [
     { role: "system", content: agentSystem(prov.id, operator) },
     ...priorMsgs,

@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
-import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders } from "./cloud.js";
+import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent } from "./cloud.js";
 import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
@@ -1671,6 +1671,65 @@ async function runHunt(allTypes = false) {
   }
 }
 
+function formatInlineMd(s) {
+  let t = esc(s);
+  t = t.replace(/`([^`]+)`/g, "<code class=\"chat-inline\">$1</code>");
+  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
+  t = t.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener">$1</a>',
+  );
+  return t;
+}
+
+/** Markdown-ish → HTML (lists, headers, bold) so compare tabs aren't raw ** walls. */
+function formatMdBlocks(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let list = null;
+  const flushList = () => {
+    if (!list) return;
+    out.push(`<${list.tag}>${list.items.join("")}</${list.tag}>`);
+    list = null;
+  };
+  for (const line of lines) {
+    const h = line.match(/^(#{1,3})\s+(.+)$/);
+    if (h) {
+      flushList();
+      const n = h[1].length;
+      out.push(`<h${n} class="chat-h">${formatInlineMd(h[2])}</h${n}>`);
+      continue;
+    }
+    const ul = line.match(/^\s*[-*•]\s+(.+)$/);
+    if (ul) {
+      if (!list || list.tag !== "ul") {
+        flushList();
+        list = { tag: "ul", items: [] };
+      }
+      list.items.push(`<li>${formatInlineMd(ul[1])}</li>`);
+      continue;
+    }
+    const ol = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (ol) {
+      if (!list || list.tag !== "ol") {
+        flushList();
+        list = { tag: "ol", items: [] };
+      }
+      list.items.push(`<li>${formatInlineMd(ol[1])}</li>`);
+      continue;
+    }
+    flushList();
+    if (!line.trim()) {
+      out.push("<br/>");
+      continue;
+    }
+    out.push(`<p class="chat-p">${formatInlineMd(line)}</p>`);
+  }
+  flushList();
+  return out.join("");
+}
+
 function formatChatBody(text) {
   const raw = String(text || "");
   const parts = [];
@@ -1683,14 +1742,14 @@ function formatChatBody(text) {
     last = m.index + m[0].length;
   }
   if (last < raw.length) parts.push({ type: "text", v: raw.slice(last) });
-  if (!parts.length) return esc(raw);
+  if (!parts.length) return `<div class="chat-md">${formatMdBlocks(raw)}</div>`;
   return parts
     .map((p) => {
       if (p.type === "code") {
         const lang = p.lang ? `<span class="code-lang">${esc(p.lang)}</span>` : "";
         return `<pre class="chat-code">${lang}<code>${esc(p.v.replace(/\s+$/, ""))}</code></pre>`;
       }
-      return `<span class="chat-text">${esc(p.v)}</span>`;
+      return `<div class="chat-md">${formatMdBlocks(p.v)}</div>`;
     })
     .join("");
 }
@@ -1929,7 +1988,114 @@ function finalizeCompareLog(state, rows) {
     leaked: true,
     compare: state.rows,
   });
+  // Seed crew floor into history so the next turn everyone can hear each other.
+  for (const c of state.rows.filter((r) => r.ok && r.text)) {
+    db.chat.push({
+      role: "pip",
+      content: c.text,
+      brain: c.provider,
+      agent: c.provider,
+      leaked: true,
+      crewLine: true,
+    });
+  }
   return state.div;
+}
+
+/** One-shot crew listen: addressed agent answers the speaker once. CANCEL stops it. */
+const crewFloor = { abort: false, busy: false };
+
+function showCrewBar(msg) {
+  const bar = document.getElementById("crew-bar");
+  const lab = document.getElementById("crew-msg");
+  if (!bar) return;
+  bar.hidden = false;
+  bar.classList.add("on");
+  if (lab) lab.textContent = msg || "CREW";
+}
+
+function hideCrewBar() {
+  const bar = document.getElementById("crew-bar");
+  if (!bar) return;
+  bar.hidden = true;
+  bar.classList.remove("on");
+}
+
+function bindCrewCancel() {
+  const btn = document.getElementById("crew-cancel");
+  if (!btn || btn.dataset.bound) return;
+  btn.dataset.bound = "1";
+  btn.onclick = () => {
+    crewFloor.abort = true;
+    hideCrewBar();
+    setStatus("CREW · CANCELLED");
+  };
+}
+
+async function maybeCrewHandoff(userText, compareRows) {
+  const hint = parseCrossAgentIntent(userText) || parseAgentRelay(userText);
+  const fromId = hint?.from || null;
+  const toId = hint?.to || hint?.target || null;
+  if (!fromId || !toId || fromId === toId) return;
+  const fromRow = (compareRows || []).find((r) => r.ok && r.text && r.provider === fromId);
+  if (!fromRow?.text) return;
+
+  crewFloor.abort = false;
+  crewFloor.busy = true;
+  bindCrewCancel();
+  showCrewBar(`${agentLabel(fromId)} spoke · ${agentLabel(toId)} listening…`);
+  setStatus(`CREW · ${agentLabel(toId).toUpperCase()}…`);
+
+  // Brief beat so CANCEL is usable before the call fires.
+  await new Promise((r) => setTimeout(r, 900));
+  if (crewFloor.abort) {
+    crewFloor.busy = false;
+    hideCrewBar();
+    return;
+  }
+
+  try {
+    const out = await agentRelayComplete(db.settings, {
+      fromId: null,
+      toId,
+      payload:
+        `${agentLabel(fromId)} said to you:\n\n${fromRow.text}\n\n` +
+        `Joshua's ask was: ${userText}\n\n` +
+        `Answer ${agentLabel(fromId)} briefly as yourself, then include Joshua. One turn only — do not request another reply.`,
+      operator: db.settings?.operator || "Joshua",
+      speak: false,
+    });
+    if (crewFloor.abort) {
+      crewFloor.busy = false;
+      hideCrewBar();
+      return;
+    }
+    const reply = out.text;
+    db.chat.push({
+      role: "pip",
+      content: reply,
+      brain: out.provider,
+      agent: toId,
+      leaked: true,
+    });
+    persist();
+    addLog("pip", reply, {
+      brain: out.provider,
+      provider: out.provider,
+      agent: toId,
+      leaked: true,
+      tokens: out.tokens,
+    });
+    setStatus(`CREW · ${agentLabel(toId).toUpperCase()} · DONE`);
+  } catch (e) {
+    if (!crewFloor.abort) {
+      addLog("pip", String(e.message || e));
+      setStatus("CREW FAIL");
+    }
+  } finally {
+    crewFloor.busy = false;
+    hideCrewBar();
+  }
 }
 
 /** One compare bubble: OVERVIEW → each ok reply → ERRORS last. */
@@ -2354,6 +2520,8 @@ async function sendChat() {
       persist();
       rememberReply(db, reply);
       setStatus(`COMPARE · ${compare.filter((c) => c.ok).length}/${compare.length}`);
+      // One-shot listen: addressed agent answers the speaker (CANCEL stops). No loop.
+      await maybeCrewHandoff(text, compare);
     } else {
       db.chat.push({
         role: "pip",
@@ -2417,7 +2585,7 @@ function boot() {
     }
     const startUi = () => {
       paintBrainStrip();
-      db.chat.slice(-20).forEach((m) =>
+      db.chat.slice(-40).filter((m) => !m.crewLine).forEach((m) =>
         addLog(m.role === "user" ? "user" : "pip", m.content, {
           leaked: Boolean(m.leaked),
           route: m.role === "user" && m.leaked ? "leaked" : "",

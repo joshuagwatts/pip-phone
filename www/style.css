@@ -341,8 +341,68 @@ body.comm #comm { display: flex; }
 .route-pill.leaked .route-dot { background: var(--leak); }
 .route-pill.secure .route-dot,
 .route-pill.local .route-dot { background: var(--phos); }
-.bubble .body { white-space: pre-wrap; word-break: break-word; }
+.bubble .body { word-break: break-word; }
+.bubble .chat-md {
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+}
+.bubble .chat-md .chat-p {
+  margin: 0 0 0.45rem;
+  white-space: normal;
+}
+.bubble .chat-md .chat-h {
+  margin: 0.55rem 0 0.35rem;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--phos);
+  font-weight: 700;
+}
+.bubble .chat-md h1.chat-h { font-size: 15px; }
+.bubble .chat-md h2.chat-h { font-size: 14px; }
+.bubble .chat-md ul,
+.bubble .chat-md ol {
+  margin: 0.25rem 0 0.55rem;
+  padding-left: 1.15rem;
+}
+.bubble .chat-md li {
+  margin: 0.2rem 0;
+  white-space: normal;
+}
+.bubble .chat-md strong { color: var(--fg, #e8ffe0); font-weight: 700; }
+.bubble .chat-md em { color: var(--muted); }
+.bubble .chat-md a { color: var(--phos); }
+.bubble .chat-inline {
+  font-family: "Cascadia Code", "Fira Code", "Consolas", ui-monospace, monospace;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 0.05rem 0.28rem;
+  border: 1px solid rgba(125, 255, 90, 0.18);
+}
 .bubble .chat-text { white-space: pre-wrap; }
+.crew-bar {
+  display: none;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.65rem;
+  border-top: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.crew-bar.on { display: flex; }
+.crew-bar .crew-msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--phos); }
+.crew-bar #crew-cancel {
+  border: 1px solid var(--leak);
+  background: transparent;
+  color: var(--leak);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  padding: 0.35rem 0.55rem;
+  cursor: pointer;
+}
 .bubble .chat-code {
   margin: 0.55rem 0;
   padding: 0.65rem 0.75rem;
