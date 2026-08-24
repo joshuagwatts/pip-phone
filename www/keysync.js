@@ -27,9 +27,11 @@ export function applyCloudKeys(settings, pack, { replace = false } = {}) {
   for (const field of KEY_FIELDS) {
     const val = normalizeApiKey(keys[field]);
     if (!val) continue;
+    if (!replace && settings[`${field}_cleared`]) continue;
     const existing = normalizeApiKey(settings[field]);
     // Phone keys win unless user explicitly SYNC FROM DESKTOP (replace).
     if (existing && !replace) continue;
+    delete settings[`${field}_cleared`];
     settings[field] = val;
     n += 1;
   }

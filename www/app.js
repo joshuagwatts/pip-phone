@@ -89,6 +89,30 @@ function paintKeyRows() {
   }
 }
 
+/** Wipe a pasted API key from memory — block desktop from refilling until user pastes again. */
+function clearProviderKey(field) {
+  if (!field) return;
+  clearTimeout(keyCheckTimers[field]);
+  db.settings[field] = "";
+  db.settings[`${field}_cleared`] = Date.now();
+  const prov = PROVIDERS.find((p) => p.field === field);
+  if (prov) {
+    clearHealth(prov.id);
+    if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
+      delete db.settings.brain_health[prov.id];
+    }
+    const pin = String(db.settings.brain_pin || "auto").toLowerCase();
+    const agent = String(db.settings.chat_agent || "pip").toLowerCase();
+    if (pin === prov.id) db.settings.brain_pin = "auto";
+    if (agent === prov.id) setChatAgent("pip", true);
+  }
+  persist();
+  setStatus(`CLEARED · ${String(field).toUpperCase()}`);
+  renderPrivacy();
+  paintBrainStrip();
+  renderData();
+}
+
 function queueKeyValidate(field) {
   clearTimeout(keyCheckTimers[field]);
   keyCheckTimers[field] = setTimeout(async () => {
@@ -1158,7 +1182,7 @@ function renderData() {
   const keyRows = PROVIDERS.map((p) => {
     const info = keyTag(s, p, health[p.id]);
     const hint = keyHint(s, p);
-    const has = Boolean(String(s[p.field] || "").trim());
+    const has = Boolean(normalizeApiKey(s[p.field]));
     const get = p.keyUrl
       ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener noreferrer">GET KEY</a>`
       : "";
@@ -1173,7 +1197,7 @@ function renderData() {
     </div>`;
   }).join("");
 
-  const keyedNow = PROVIDERS.filter((p) => String(s[p.field] || "").trim()).map((p) => p.label.toUpperCase());
+  const keyedNow = PROVIDERS.filter((p) => normalizeApiKey(s[p.field])).map((p) => p.label.toUpperCase());
   const diag = httpDiag();
   const httpLine = `HTTP: ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE — cloud may fail"} · ${diag.platform}`;
 
@@ -1296,6 +1320,7 @@ function renderData() {
     el.addEventListener("input", () => {
       const v = normalizeApiKey(el.value);
       if (!v) return;
+      delete db.settings[`${p.field}_cleared`];
       db.settings[p.field] = v;
       clearHealth(p.id);
       if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
@@ -1416,25 +1441,6 @@ function renderData() {
       e.preventDefault();
       const href = a.getAttribute("href");
       if (href) openUrl(href, { system: true }).catch(() => window.open(href, "_blank"));
-    });
-  });
-
-  document.querySelectorAll(".key-clear").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const field = btn.getAttribute("data-field");
-      if (!field) return;
-      db.settings[field] = "";
-      const prov = PROVIDERS.find((p) => p.field === field);
-      if (prov) {
-        markHealth(prov.id, false, "cleared");
-        if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
-          delete db.settings.brain_health[prov.id];
-        }
-      }
-      persist();
-      setStatus(`CLEARED · ${String(field).toUpperCase()}`);
-      paintBrainStrip();
-      renderData();
     });
   });
 
@@ -2431,6 +2437,13 @@ function boot() {
         document.body.classList.remove("comm");
         render();
       };
+      $("#view")?.addEventListener("click", (e) => {
+        const btn = e.target.closest(".key-clear");
+        if (!btn || tab !== "data") return;
+        e.preventDefault();
+        e.stopPropagation();
+        clearProviderKey(btn.getAttribute("data-field"));
+      });
       $("#comm-tog").onclick = () => document.body.classList.add("comm");
       $("#comm-close").onclick = () => {
         closeAgentSheet();
