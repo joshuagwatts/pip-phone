@@ -1647,11 +1647,14 @@ function addLog(role, text, opts = {}) {
       ? leaked
         ? `YOU · LEAKED`
         : "YOU"
-      : opts.agent && opts.agent !== "pip"
-        ? `${agentLabel(opts.agent)}${opts.brain && String(opts.brain).toLowerCase() !== String(opts.agent).toLowerCase() ? ` · ${String(opts.brain).toUpperCase()}` : ""}`
-        : opts.brain
-          ? `PIP · ${String(opts.brain).toUpperCase()}`
-          : "PIP";
+      : opts.agent === "compare"
+        ? "COMPARE"
+        : opts.agent && opts.agent !== "pip" && opts.agent !== "auto"
+          ? // Show who actually answered. Never "CEREBRAS · GEMINI" mashups.
+            agentLabel(opts.brain || opts.provider || opts.agent)
+          : opts.brain
+            ? `PIP · ${String(opts.brain).toUpperCase()}`
+            : "PIP";
   const meta = [];
   if (opts.tokens) meta.push(`~${opts.tokens} TOK`);
   if (opts.tools && opts.tools.length) meta.push(opts.tools.join(" · "));
@@ -2031,13 +2034,28 @@ async function sendChat() {
       persist();
       addLog("pip", reply, {
         brain: provider || activeBrain().label,
+        provider,
         agent,
         leaked,
         tokens,
       });
-      const label = agentLabel(agent === "pip" || agent === "auto" ? provider || agent : agent);
-      const tokBit = tokens ? ` · ~${tokens} TOK` : "";
-      setStatus((leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`) + tokBit);
+      // If user pinned X but Y answered, surface it (shouldn't happen after strict pin).
+      if (
+        agent &&
+        agent !== "pip" &&
+        agent !== "auto" &&
+        agent !== "compare" &&
+        provider &&
+        String(provider).toLowerCase() !== String(agent).toLowerCase()
+      ) {
+        setStatus(`WANTED ${agentLabel(agent)} · GOT ${String(provider).toUpperCase()}`);
+      } else {
+        const label = agentLabel(
+          agent === "pip" || agent === "auto" ? provider || agent : provider || agent,
+        );
+        const tokBit = tokens ? ` · ~${tokens} TOK` : "";
+        setStatus((leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`) + tokBit);
+      }
     }
     updateBrainChip();
   } catch (e) {

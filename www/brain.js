@@ -372,21 +372,18 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       steps.push(["local", tryQwen]);
       steps.push(["lite", tryLite]);
     } else if (pin === "compare" || pin === "all") {
+      // COMPARE is all-or-show-tabs — never quietly degrade into a single cascaded cloud reply.
       steps.push(["compare", tryCompare]);
-      steps.push(["cloud", tryCloud]);
-      steps.push(["desktop", tryDesktop]);
     } else if (pin === "desktop") {
       steps.push(["desktop", tryDesktop]);
       if (hasKeys) steps.push(["cloud", tryCloud]);
       steps.push(["lite", tryLite]);
     } else if (pin !== "auto") {
-      // Pinned provider family
+      // Pinned cloud agent — that API only. No desktop/other-API steal.
       steps.push(["cloud", tryCloud]);
-      steps.push(["desktop", tryDesktop]);
     } else if (hasKeys) {
       // THE MAIN PATH: any pasted key → cloud only. Desktop must not hijack chat.
       steps.push(["cloud", tryCloud]);
-      if (pin !== "auto") steps.push(["desktop", tryDesktop]);
     } else {
       steps.push(["desktop", tryDesktop]);
       steps.push(["lite", tryLite]);
@@ -600,8 +597,8 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     const live = liveProviderIds(settings);
     const tip = errMsg
       ? live.length && routePin === "auto"
-        ? `Cloud brains failed (${errMsg}). DATA → PROBE · or tap an agent in the CHAT strip.`
-        : `Couldn't reach ${agentLabel(asSelf ? agent : "pip")}. ${errMsg}. Tap another agent or fix keys in DATA.`
+        ? `Cloud brains failed (${errMsg}). DATA → PROBE · or pick another agent next to LENS.`
+        : `Couldn't reach ${agentLabel(asSelf ? agent : "pip")}. ${errMsg}. Pick another agent or fix keys in DATA.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true, agent: asSelf ? agent : "pip" };

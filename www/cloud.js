@@ -396,9 +396,14 @@ export function chatCloudEnabled(settings) {
 export function chatChain(settings, job = "life") {
   const pin = brainPin(settings);
   if (pin === "local" || pin === "lite" || pin === "qwen") return [];
-  // compare uses auto hierarchy order, then fans out
-  const effectivePin = pin === "compare" || pin === "all" ? "auto" : pin;
   const keyedIds = keyedProviders(settings).map((p) => p.id);
+  // Explicit agent pick (groq/gemini/cerebras/…) — ONLY that brain. Never silent-fallback to another API.
+  if (pin && pin !== "auto" && pin !== "compare" && pin !== "all" && pin !== "desktop") {
+    const only = PROVIDERS.find((p) => p.id === pin);
+    if (only && keyedIds.includes(pin)) return [only];
+    return [];
+  }
+  const effectivePin = pin === "compare" || pin === "all" ? "auto" : pin;
   const ids = orderFor(job, keyedIds, liveHealth, effectivePin);
   return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
 }
@@ -432,8 +437,14 @@ export async function cloudCompleteTools(settings, messages, tools, lane = "boos
 
 export async function chatComplete(settings, messages, temperature = 0.7, maxTokens = 1024, job = "life") {
   const errors = [];
+  const pin = brainPin(settings);
+  const pinned =
+    pin && pin !== "auto" && pin !== "compare" && pin !== "all" && pin !== "desktop" && pin !== "local" && pin !== "lite" && pin !== "qwen";
   const chainList = chatChain(settings, job);
-  if (!chainList.length) throw new Error("no keyed chat brains — paste keys in DATA or unpin");
+  if (!chainList.length) {
+    if (pinned) throw new Error(`${pin.toUpperCase()} not keyed — paste key in DATA or pick another agent`);
+    throw new Error("no keyed chat brains — paste keys in DATA or unpin");
+  }
   for (const prov of chainList) {
     const key = providerKey(settings, prov);
     if (!key) continue;
@@ -445,6 +456,9 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
       // Soft miss — keep prior LIVE so hierarchy isn't poisoned by one timeout.
       errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
     }
+  }
+  if (pinned) {
+    throw new Error(errors[0] || `${pin.toUpperCase()} failed`);
   }
   throw new Error(errors.join(" · ") || "no cloud brain keyed");
 }
