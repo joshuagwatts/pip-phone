@@ -2032,13 +2032,34 @@ function bindCrewCancel() {
   };
 }
 
-async function maybeCrewHandoff(userText, compareRows) {
+function findCrewRow(rows, agentId) {
+  const id = String(agentId || "").toLowerCase();
+  if (!id) return null;
+  const wantLabel = String(agentLabel(id) || "").toLowerCase();
+  return (rows || []).find((r) => {
+    if (!r?.ok || !r.text) return false;
+    const pid = String(r.provider || "").toLowerCase();
+    const lab = String(r.label || "").toLowerCase();
+    return pid === id || lab === wantLabel || lab === id;
+  }) || null;
+}
+
+/**
+ * One-shot listen: addressed agent answers the speaker once. CANCEL stops it.
+ * Works after COMPARE or after a speak-mode relay (speakerText already known).
+ */
+async function maybeCrewHandoff(userText, compareRows, forced = null) {
+  if (crewFloor.busy) return;
   const hint = parseCrossAgentIntent(userText) || parseAgentRelay(userText);
-  const fromId = hint?.from || null;
-  const toId = hint?.to || hint?.target || null;
+  const fromId = forced?.fromId || hint?.from || null;
+  const toId = forced?.toId || hint?.to || hint?.target || null;
   if (!fromId || !toId || fromId === toId) return;
-  const fromRow = (compareRows || []).find((r) => r.ok && r.text && r.provider === fromId);
-  if (!fromRow?.text) return;
+
+  const spoken =
+    String(forced?.speakerText || "").trim() ||
+    findCrewRow(compareRows, fromId)?.text ||
+    "";
+  if (!spoken) return;
 
   crewFloor.abort = false;
   crewFloor.busy = true;
@@ -2059,7 +2080,7 @@ async function maybeCrewHandoff(userText, compareRows) {
       fromId: null,
       toId,
       payload:
-        `${agentLabel(fromId)} said to you:\n\n${fromRow.text}\n\n` +
+        `${agentLabel(fromId)} said to you:\n\n${spoken}\n\n` +
         `Joshua's ask was: ${userText}\n\n` +
         `Answer ${agentLabel(fromId)} briefly as yourself, then include Joshua. One turn only — do not request another reply.`,
       operator: db.settings?.operator || "Joshua",
@@ -2070,13 +2091,15 @@ async function maybeCrewHandoff(userText, compareRows) {
       hideCrewBar();
       return;
     }
-    const reply = out.text;
+    const reply = String(out.text || "").trim();
+    if (!reply) throw new Error(`${agentLabel(toId)} returned empty`);
     db.chat.push({
       role: "pip",
       content: reply,
       brain: out.provider,
       agent: toId,
       leaked: true,
+      crewLine: true,
     });
     persist();
     addLog("pip", reply, {
@@ -2352,6 +2375,14 @@ async function sendChat() {
         tokens: out.tokens,
       });
       setStatus(`RELAY · ${via}`);
+      // Speak mode only runs the speaker — give the addressed agent one reply (CANCEL stops).
+      if (out.speak && fromId && relay.to && reply) {
+        await maybeCrewHandoff(text, null, {
+          fromId,
+          toId: relay.to,
+          speakerText: reply,
+        });
+      }
     } catch (e) {
       addLog("pip", String(e.message || e));
       setStatus("RELAY FAIL");
