@@ -41,6 +41,8 @@ function blank() {
       mistral: "",
       gemini: "",
       xai: "",
+      deepseek: "",
+      openai: "",
       desktop_url: "",
       desktop_token: "",
       desktop_password: "",

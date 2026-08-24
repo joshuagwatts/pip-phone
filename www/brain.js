@@ -1,5 +1,5 @@
 /** Phone brain — privacy-first chain, cloud only when needed, leak tags for the UI. */
-import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS, agentSystem, pipOrchestratorSystem, agentLabel } from "./crew.js";
+import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS, agentSystem, pipOrchestratorSystem, agentLabel, autoSystem } from "./crew.js";
 import {
   chatChain,
   chatComplete,
@@ -491,13 +491,18 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   const agent = String(settings?.chat_agent || "pip").toLowerCase();
   const asSelf =
     Boolean(extras.asSelf) ||
-    (agent !== "pip" && agent !== "auto" && agent !== "lite" && agent !== "local" && agent !== "qwen");
+    (agent !== "pip" &&
+      agent !== "auto" &&
+      agent !== "compare" &&
+      agent !== "lite" &&
+      agent !== "local" &&
+      agent !== "qwen");
 
   let routePin = String(settings?.brain_pin || "auto").toLowerCase();
   if (forceCompare || agent === "compare") routePin = "compare";
   else if (agent === "desktop") routePin = "desktop";
   else if (asSelf) routePin = agent;
-  else if (agent === "pip" || agent === "auto") routePin = routePin === "desktop" ? "desktop" : "auto";
+  else if (agent === "pip" || agent === "auto") routePin = "auto";
 
   const routeSettings = { ...settings, brain_pin: routePin };
   const job = pickJob(askText);
@@ -530,10 +535,15 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   }
 
   let system;
-  if (asSelf) {
+  if (forceCompare || agent === "compare") {
+    // compareComplete rebuilds per-agent native prompts; keep a thin placeholder here.
+    system = [autoSystem(operator), momentLine, context].filter(Boolean).join("\n");
+  } else if (asSelf) {
     system = [agentSystem(agent === "desktop" ? "desktop" : agent, operator), momentLine, context]
       .filter(Boolean)
       .join("\n");
+  } else if (agent === "auto") {
+    system = [autoSystem(operator), momentLine, context].filter(Boolean).join("\n");
   } else {
     const voiceExamples =
       "Voice examples (stay in this register):\n" +
@@ -598,12 +608,19 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   }
 
   const leaked = Boolean(hit.leaked || webUsed);
-  const outAgent = asSelf ? agent : "pip";
+  const outAgent =
+    forceCompare || agent === "compare" ? "compare" : asSelf ? agent : agent === "auto" ? "auto" : "pip";
   setTurn({
     leaked,
     provider: hit.provider,
     via: hit.model || "",
-    reason: asSelf ? `${agentLabel(agent)} as themselves` : leaked ? "cloud via Pip" : "local/desktop",
+    reason: outAgent === "compare"
+      ? "compare tabs"
+      : asSelf
+        ? `${agentLabel(agent)} as themselves`
+        : leaked
+          ? "cloud via Pip"
+          : "local/desktop",
     tokens: hit.tokens || 0,
   });
   return {

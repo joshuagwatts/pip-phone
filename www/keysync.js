@@ -2,7 +2,7 @@
 import { desktopConfigured, desktopLogin } from "./desktop.js";
 import { httpLanGet } from "./net.js";
 
-export const KEY_FIELDS = ["groq", "openrouter", "cerebras", "mistral", "gemini", "xai"];
+export const KEY_FIELDS = ["groq", "openrouter", "cerebras", "mistral", "gemini", "xai", "deepseek", "openai"];
 
 function lan(settings) {
   return String(settings.desktop_url || "").replace(/\/+$/, "");

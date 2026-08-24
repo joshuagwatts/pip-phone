@@ -537,36 +537,30 @@ function chatAgent() {
 function setChatAgent(id, silent = false) {
   const next = String(id || "pip").toLowerCase();
   db.settings.chat_agent = next;
-  // Keep brain_pin aligned for routing; pip uses auto cascade under the hood.
-  if (next === "pip") db.settings.brain_pin = "auto";
+  if (next === "pip" || next === "auto") db.settings.brain_pin = "auto";
   else if (next === "compare") db.settings.brain_pin = "compare";
   else db.settings.brain_pin = next;
   persist();
   paintBrainStrip();
   if (!silent) {
     const meta = AGENT_META[next] || { label: agentLabel(next), blurb: "" };
-    setStatus(`TALKING TO · ${meta.label}`);
-    const line = $("#agent-line");
-    if (line) {
-      line.textContent = next === "pip"
-        ? "PIP · your crew — tap a keyed agent to talk to them as themselves"
-        : `${meta.label} · ${meta.blurb || "native voice"}`;
-    }
+    setStatus(`AGENT · ${meta.label}`);
   }
 }
 
 function tryAgentSwitch(text) {
   const t = String(text || "").trim();
   const m = t.match(
-    /^\s*(?:talk to|switch to|use|ask)\s+(pip|groq|openrouter|cerebras|mistral|gemini|grok|xai|desktop|compare)\b\s*$/i,
+    /^\s*(?:talk to|switch to|use|ask)\s+(pip|auto|compare|groq|openrouter|cerebras|mistral|gemini|grok|xai|deepseek|openai|chatgpt|desktop)\b\s*$/i,
   );
   if (!m) return null;
   let id = m[1].toLowerCase();
   if (id === "grok") id = "xai";
-  if (id !== "pip" && id !== "desktop" && id !== "compare") {
+  if (id === "chatgpt") id = "openai";
+  if (id !== "pip" && id !== "auto" && id !== "desktop" && id !== "compare") {
     const keyed = cloudStatus(db.settings).keyed || [];
     if (!keyed.includes(id)) {
-      return { ok: false, reply: `No ${agentLabel(id)} key on this phone yet. DATA → paste key → PROBE, then tap ${agentLabel(id)}.` };
+      return { ok: false, reply: `No ${agentLabel(id)} key yet. DATA → paste key → PROBE, then pick ${agentLabel(id)}.` };
     }
   }
   if (id === "desktop" && !desktopConfigured(db.settings)) {
@@ -578,8 +572,12 @@ function tryAgentSwitch(text) {
     ok: true,
     reply:
       id === "pip"
-        ? "Back with Pip — your crew. Tap a green agent chip when you want their native voice."
-        : `You're with ${meta.label} now. ${meta.blurb || "Their voice, not Pip's."}`,
+        ? "Back with Pip — your crew. Use the dropdown next to LENS for other agents or COMPARE."
+        : id === "compare"
+          ? "COMPARE on — every keyed API answers; one bubble with tabs + overview."
+          : id === "auto"
+            ? "AUTO on — best keyed brain, light voice, cascade if one fails."
+            : `You're with ${meta.label}. ${meta.blurb || "Their voice, not Pip's."}`,
   };
 }
 
@@ -588,67 +586,54 @@ function updateBrainChip() {
   paintBrainStrip();
 }
 
-function agentChipsHtml() {
+function fillAgentPick() {
+  const sel = $("#agent-pick");
+  if (!sel) return;
   const keyed = new Set(cloudStatus(db.settings).keyed || []);
-  const health = providerHealth();
   const active = chatAgent();
-  const desk = desktopConfigured(db.settings);
-  const live = db.settings.desktop_live;
-  const rows = [{ id: "pip", label: "PIP", state: "on" }];
-  for (const id of ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"]) {
-    if (!keyed.has(id)) continue;
-    const ok = health[id]?.ok;
-    rows.push({
-      id,
-      label: id === "xai" ? "GROK" : id.toUpperCase(),
-      state: ok === true ? "on" : ok === false ? "bad" : "key",
-    });
+  const opts = [
+    { id: "pip", label: "PIP" },
+    { id: "auto", label: "AUTO" },
+    { id: "compare", label: "COMPARE" },
+  ];
+  for (const id of ["groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
+    if (keyed.has(id)) opts.push({ id, label: agentLabel(id) });
   }
-  if (desk) {
-    rows.push({
-      id: "desktop",
-      label: "DESKTOP",
-      state: live === true ? "on" : live === false ? "bad" : "key",
-    });
+  if (desktopConfigured(db.settings)) opts.push({ id: "desktop", label: "DESKTOP" });
+  // Keep current selection even if key cleared, so UI doesn't jump.
+  if (active && !opts.some((o) => o.id === active)) {
+    opts.push({ id: active, label: `${agentLabel(active)} (no key)` });
   }
-  if (keyed.size > 1) rows.push({ id: "compare", label: "COMPARE", state: "key" });
-  return rows
-    .map((r) => {
-      const sel = active === r.id || (active === "auto" && r.id === "pip") ? " sel" : "";
-      return `<button type="button" class="brain-chip ${esc(r.state)}${sel}" data-agent="${esc(r.id)}">${esc(r.label)}</button>`;
+  const prev = sel.value;
+  sel.innerHTML = opts
+    .map((o) => `<option value="${esc(o.id)}" ${o.id === active ? "selected" : ""}>${esc(o.label)}</option>`)
+    .join("");
+  if (!sel.dataset.bound) {
+    sel.dataset.bound = "1";
+    sel.onchange = () => setChatAgent(sel.value);
+  }
+  if (prev && opts.some((o) => o.id === prev) && prev !== active) {
+    /* keep paint in sync */
+  }
+}
+
+function dataChainHtml() {
+  const keyed = cloudStatus(db.settings).keyed || [];
+  const health = providerHealth();
+  if (!keyed.length) return `<span class="brain-chip off">NO KEYS</span>`;
+  return keyed
+    .map((id) => {
+      const ok = health[id]?.ok;
+      const state = ok === true ? "on" : ok === false ? "bad" : "key";
+      return `<span class="brain-chip ${state}">${esc(agentLabel(id))}</span>`;
     })
     .join("");
 }
 
 function paintBrainStrip() {
-  const html = agentChipsHtml();
-  const chat = $("#brain-strip");
-  if (chat) {
-    chat.innerHTML = html;
-    chat.querySelectorAll("[data-agent]").forEach((btn) => {
-      btn.onclick = () => {
-        const id = btn.getAttribute("data-agent");
-        const keyed = cloudStatus(db.settings).keyed || [];
-        if (id !== "pip" && id !== "desktop" && id !== "compare" && !keyed.includes(id)) {
-          setStatus(`NO KEY · ${agentLabel(id)}`);
-          return;
-        }
-        setChatAgent(id);
-        document.body.classList.add("comm");
-      };
-    });
-  }
+  fillAgentPick();
   const data = $("#data-chain");
-  if (data) data.innerHTML = html;
-  const line = $("#agent-line");
-  if (line) {
-    const id = chatAgent();
-    const meta = AGENT_META[id] || { label: agentLabel(id), blurb: "" };
-    line.textContent =
-      id === "pip"
-        ? "PIP · your crew — tap a keyed agent for their native voice"
-        : `WITH ${meta.label} · ${meta.blurb || "native voice"}`;
-  }
+  if (data) data.innerHTML = dataChainHtml();
 }
 
 function softRefresh() {
@@ -1079,7 +1064,7 @@ function renderData() {
     <p class="muted">Paste keys below (save as you type). Pick who you talk to in the CHAT strip — not here.</p>
     <div class="field"><span>PIN (power override)</span>
       <select id="brain-pin">
-        ${["auto", "compare", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
+        ${["auto", "compare", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].map((id) => {
           const on = (s.brain_pin || "auto") === id;
           const label =
             id === "xai"
@@ -1134,7 +1119,7 @@ function renderData() {
     db.settings.brain_pin = ($("#brain-pin") && $("#brain-pin").value) || db.settings.brain_pin;
     const pinNow = String(db.settings.brain_pin || "auto").toLowerCase();
     if (pinNow === "auto") db.settings.chat_agent = db.settings.chat_agent || "pip";
-    else if (["compare", "desktop", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].includes(pinNow)) {
+    else if (["compare", "desktop", "auto", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].includes(pinNow)) {
       db.settings.chat_agent = pinNow;
     }
     for (const p of PROVIDERS) {
@@ -1683,25 +1668,87 @@ function addLog(role, text, opts = {}) {
   return div;
 }
 
-/** Parallel compare replies — tab through brains (opt-in only). */
+/** Build overview text from compare rows (ok + fail). */
+function compareOverview(compare) {
+  const rows = Array.isArray(compare) ? compare : [];
+  const ok = rows.filter((c) => c && c.ok && c.text);
+  const bad = rows.filter((c) => c && !c.ok);
+  const lines = [];
+  lines.push(`COMPARE · ${ok.length} answered · ${bad.length} failed · ${rows.length} total`);
+  lines.push("");
+  for (const c of rows) {
+    const name = String(c.label || c.provider || "?").toUpperCase();
+    if (c.ok && c.text) {
+      const snip = String(c.text).replace(/\s+/g, " ").trim().slice(0, 140);
+      lines.push(`• ${name} · OK · ~${String(c.text).length} chars${c.tokens ? ` · ${c.tokens} tok` : ""}`);
+      lines.push(`  ${snip}${String(c.text).length > 140 ? "…" : ""}`);
+    } else {
+      lines.push(`• ${name} · FAIL · ${c.error || "no reply"}`);
+    }
+  }
+  if (ok.length >= 2) {
+    lines.push("");
+    const lens = ok.map((c) => String(c.text).length);
+    const spread = Math.max(...lens) - Math.min(...lens);
+    if (spread > 120) {
+      lines.push("Variance: reply lengths differ a lot — open each tab; don't assume they agree.");
+    } else {
+      lines.push("Variance: similar length — still skim each tab; tone and facts can diverge.");
+    }
+    const firsts = ok.map((c) => {
+      const t = String(c.text).trim().split(/(?<=[.!?])\s+/)[0] || "";
+      return `${String(c.label || c.provider).toUpperCase()}: ${t.slice(0, 100)}`;
+    });
+    lines.push("");
+    lines.push("Opening lines:");
+    for (const f of firsts) lines.push(`  ${f}`);
+  } else if (ok.length === 1) {
+    lines.push("");
+    lines.push("Only one brain answered — check FAIL tabs / keys / PROBE.");
+  }
+  return lines.join("\n");
+}
+
+/** One compare bubble: OVERVIEW tab + every agent tab (success and fail). */
 function addCompareLog(compare, opts = {}) {
-  const ok = (compare || []).filter((c) => c && c.ok && c.text);
-  if (!ok.length) {
+  const rows = (compare || []).filter(Boolean);
+  if (!rows.length) {
     addLog("pip", "Compare found no replies.", opts);
     return;
   }
+  const overview = {
+    provider: "overview",
+    label: "OVERVIEW",
+    text: compareOverview(rows),
+    ok: true,
+    overview: true,
+  };
+  const tabs = [overview, ...rows];
   const div = document.createElement("div");
   div.className = `bubble pip leaked compare-bubble`;
   let idx = 0;
   const paint = () => {
-    const row = ok[idx];
-    const tabs = ok
-      .map(
-        (c, i) =>
-          `<button type="button" class="compare-tab ${i === idx ? "on" : ""}" data-ci="${i}">${esc(String(c.label || c.provider).toUpperCase())}</button>`,
-      )
+    const row = tabs[idx] || tabs[0];
+    const tabHtml = tabs
+      .map((c, i) => {
+        const name = String(c.label || c.provider || "?").toUpperCase();
+        const mark = c.overview ? "" : c.ok ? "" : " fail";
+        return `<button type="button" class="compare-tab ${i === idx ? "on" : ""}${mark}" data-ci="${i}">${esc(name)}</button>`;
+      })
       .join("");
-    div.innerHTML = `<div class="who">PIP · COMPARE</div><div class="compare-tabs">${tabs}</div><div class="body">${formatChatBody(row.text)}</div><div class="chat-meta">${esc(String(row.model || row.provider || ""))}${row.tokens ? ` · ~${row.tokens} TOK` : ""}</div>`;
+    let body;
+    let meta;
+    if (row.overview) {
+      body = formatChatBody(row.text);
+      meta = `${rows.filter((r) => r.ok).length}/${rows.length} answered`;
+    } else if (row.ok && row.text) {
+      body = formatChatBody(row.text);
+      meta = `${esc(String(row.model || row.provider || ""))}${row.tokens ? ` · ~${row.tokens} TOK` : ""}`;
+    } else {
+      body = formatChatBody(`Failed.\n${row.error || "no reply"}`);
+      meta = "FAIL";
+    }
+    div.innerHTML = `<div class="who">COMPARE</div><div class="compare-tabs">${tabHtml}</div><div class="body">${body}</div><div class="chat-meta">${meta}</div>`;
     div.querySelectorAll(".compare-tab").forEach((b) => {
       b.onclick = () => {
         idx = Number(b.dataset.ci) || 0;
@@ -1712,6 +1759,14 @@ function addCompareLog(compare, opts = {}) {
   paint();
   $("#log").appendChild(div);
   $("#log").scrollTop = $("#log").scrollHeight;
+  db.chat.push({
+    role: "pip",
+    content: overview.text,
+    brain: "compare",
+    agent: "compare",
+    leaked: true,
+    compare: rows,
+  });
   return div;
 }
 
@@ -1958,28 +2013,29 @@ async function sendChat() {
       const last = db.chat.filter((m) => m.role === "user").pop();
       if (last) last.leaked = true;
     }
-    db.chat.push({
-      role: "pip",
-      content: reply,
-      brain: provider || "",
-      agent: agent || "pip",
-      leaked,
-      compare: compare || undefined,
-    });
-    rememberReply(db, reply);
-    persist();
     const tokens = typeof out === "object" ? Number(out.tokens) || 0 : 0;
-    if (compare && Array.isArray(compare) && compare.some((c) => c.ok)) {
+    if (compare && Array.isArray(compare) && compare.length) {
       addCompareLog(compare, { leaked, tokens });
-      setStatus(`COMPARE · ${compare.filter((c) => c.ok).length} BRAINS`);
+      persist();
+      rememberReply(db, reply);
+      setStatus(`COMPARE · ${compare.filter((c) => c.ok).length}/${compare.length}`);
     } else {
+      db.chat.push({
+        role: "pip",
+        content: reply,
+        brain: provider || "",
+        agent: agent || "pip",
+        leaked,
+      });
+      rememberReply(db, reply);
+      persist();
       addLog("pip", reply, {
         brain: provider || activeBrain().label,
         agent,
         leaked,
         tokens,
       });
-      const label = agentLabel(agent === "pip" ? provider || "pip" : agent);
+      const label = agentLabel(agent === "pip" || agent === "auto" ? provider || agent : agent);
       const tokBit = tokens ? ` · ~${tokens} TOK` : "";
       setStatus((leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`) + tokBit);
     }
@@ -2012,16 +2068,18 @@ function boot() {
       persist();
     }
     const startUi = () => {
+      paintBrainStrip();
       db.chat.slice(-20).forEach((m) =>
         addLog(m.role === "user" ? "user" : "pip", m.content, {
           leaked: Boolean(m.leaked),
           brain: m.brain || "",
+          agent: m.agent || "",
         }),
       );
       if (!db.chat.length) {
         addLog(
           "pip",
-          "Pip on deck — your crew. Paste keys in DATA, then tap GEMINI / CEREBRAS / GROQ in this strip to talk to them as themselves. Or say talk to grok.",
+          "Pip on deck. Pick PIP / AUTO / COMPARE / GEMINI… in the dropdown next to LENS. COMPARE gives one bubble with tabs + an overview.",
         );
       }
       try {

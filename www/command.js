@@ -3,23 +3,23 @@
 export const JOBS = {
   life: {
     label: "CHAT",
-    brains: ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"],
+    brains: ["groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"],
   },
   boost: {
     label: "DRAFT",
-    brains: ["groq", "openrouter", "cerebras", "mistral", "gemini"],
+    brains: ["groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini"],
   },
   code: {
     label: "CODE",
-    brains: ["openrouter", "groq", "cerebras", "mistral"],
+    brains: ["deepseek", "openrouter", "openai", "groq", "cerebras", "mistral"],
   },
   wx: {
     label: "WX",
-    brains: ["gemini", "cerebras", "openrouter", "groq", "mistral"],
+    brains: ["gemini", "cerebras", "openrouter", "groq", "deepseek", "mistral"],
   },
   vision: {
     label: "LENS",
-    brains: ["gemini", "openrouter"],
+    brains: ["gemini", "openai", "openrouter"],
   },
   theme: {
     label: "THEME",
@@ -27,7 +27,7 @@ export const JOBS = {
   },
   meal: {
     label: "MEALS",
-    brains: ["gemini", "groq", "openrouter", "cerebras", "mistral"],
+    brains: ["gemini", "groq", "openrouter", "cerebras", "deepseek", "mistral"],
   },
 };
 
@@ -80,7 +80,7 @@ export function orderFor(job, keyedIds, health = {}, pin = "auto") {
 export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto", desktopLive = null, leaky = false) {
   const rows = [];
   const cloudRows = [];
-  for (const id of ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"]) {
+  for (const id of ["groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
     const keyed = keyedIds.includes(id);
     const ok = health[id]?.ok;
     let state = "off";

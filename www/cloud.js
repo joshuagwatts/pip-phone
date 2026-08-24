@@ -1,5 +1,6 @@
 import { orderFor } from "./command.js";
 import { httpPostJson, httpGet } from "./net.js";
+import { agentSystem } from "./crew.js";
 
 /** @type {Array<{id:string, label:string, field:string, base:string, life:string, boost:string, fishy?:boolean, headers?:Record<string,string>}>} */
 export const PROVIDERS = [
@@ -72,6 +73,29 @@ export const PROVIDERS = [
     fishy: true,
     keyUrl: "https://console.x.ai/",
     tip: "xAI console key.",
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    field: "deepseek",
+    base: "https://api.deepseek.com",
+    life: "deepseek-chat",
+    boost: "deepseek-chat",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+    keyUrl: "https://platform.deepseek.com/api_keys",
+    tip: "Efficient · strong coding · OpenAI-compatible.",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    field: "openai",
+    base: "https://api.openai.com/v1",
+    life: "gpt-4o-mini",
+    boost: "gpt-4o",
+    models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
+    keyUrl: "https://platform.openai.com/api-keys",
+    tip: "ChatGPT family · strong vision via gpt-4o.",
+    vision: true,
   },
 ];
 
@@ -451,20 +475,29 @@ export async function chatPing(settings, prov) {
 }
 
 /**
- * Opt-in parallel compare — all keyed chat brains at once (pin=compare or "compare …").
- * Does not run on every message.
+ * Parallel compare — every keyed cloud brain at once.
+ * Each agent gets its own native system prompt (not Pip's voice).
+ * Returns one primary text plus full compare[] for the tabbed UI (ok + fail).
  */
 export async function compareComplete(settings, messages, temperature = 0.7, maxTokens = 1024, job = "life") {
-  const chainList = chatChain(
-    { ...settings, brain_pin: "auto" },
-    job,
-  );
-  if (!chainList.length) throw new Error("no keyed chat brains — paste keys in DATA");
-  const jobs = chainList.map(async (prov) => {
+  void job;
+  const keyed = keyedProviders(settings);
+  if (!keyed.length) throw new Error("no keyed chat brains — paste keys in DATA");
+  const user = [...(messages || [])].reverse().find((m) => m && m.role === "user");
+  const ask = String((user && user.content) || "").trim() || "hey";
+  const operator = settings?.operator || "Joshua";
+
+  const jobs = keyed.map(async (prov) => {
     const key = providerKey(settings, prov);
-    if (!key) return null;
+    if (!key) {
+      return { provider: prov.id, label: prov.label || prov.id, text: "", error: "no key", ok: false };
+    }
     try {
-      const out = await openaiWithFallback(prov, key, "life", messages, temperature, maxTokens);
+      const perAgent = [
+        { role: "system", content: agentSystem(prov.id, operator) },
+        { role: "user", content: ask },
+      ];
+      const out = await openaiWithFallback(prov, key, "life", perAgent, temperature, maxTokens);
       markHealth(prov.id, true);
       return {
         provider: out.provider,
@@ -484,10 +517,11 @@ export async function compareComplete(settings, messages, temperature = 0.7, max
       };
     }
   });
-  const settled = (await Promise.all(jobs)).filter(Boolean);
-  const ok = settled.filter((r) => r.ok && r.text);
+
+  const settled = await Promise.all(jobs);
+  const ok = settled.filter((r) => r && r.ok && r.text);
   if (!ok.length) {
-    throw new Error(settled.map((r) => r.error || r.provider).join(" · ") || "compare failed");
+    throw new Error(settled.map((r) => `${r.label || r.provider}: ${r.error || "fail"}`).join(" · ") || "compare failed");
   }
   return {
     text: ok[0].text,
@@ -495,6 +529,7 @@ export async function compareComplete(settings, messages, temperature = 0.7, max
     model: ok[0].model,
     tokens: ok[0].tokens,
     compare: settled,
+    leaked: true,
   };
 }
 

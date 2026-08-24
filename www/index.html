@@ -40,8 +40,6 @@
       <span class="spacer"></span>
       <button type="button" id="comm-close">CLOSE</button>
     </header>
-    <div id="brain-strip" class="brain-strip" aria-label="agents"></div>
-    <p id="agent-line" class="agent-line">PIP · your crew — tap a keyed agent for their native voice</p>
     <div id="log"></div>
     <div class="composer">
       <div class="lens-modes" id="lens-modes" hidden>
@@ -49,9 +47,12 @@
         <button type="button" data-lens="shingle">SHINGLE</button>
         <button type="button" data-lens="lens">IDENTIFY</button>
       </div>
-      <textarea id="input" rows="2" placeholder="Pip is happy to help!"></textarea>
-      <button type="button" id="lens-btn" title="Photo lens — rock / shingle / identify">LENS</button>
-      <button type="button" id="send" class="primary">SEND</button>
+      <textarea id="input" rows="2" placeholder="Message Pip…"></textarea>
+      <div class="composer-tools">
+        <select id="agent-pick" title="Who answers" aria-label="Agent"></select>
+        <button type="button" id="lens-btn" title="Photo lens — rock / shingle / identify">LENS</button>
+        <button type="button" id="send" class="primary">SEND</button>
+      </div>
     </div>
   </aside>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>

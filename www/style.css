@@ -348,13 +348,76 @@ body.comm #comm { display: flex; }
 .bubble.user.leaked .body { color: #ff8a8a; }
 .composer {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  padding: 0.6rem 0.6rem calc(0.6rem + var(--safe-bottom));
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.55rem 0.65rem calc(0.55rem + var(--safe-bottom));
   border-top: 1px solid var(--line);
+  background: var(--black);
 }
-.composer .lens-modes { order: -1; width: 100%; }
-.composer textarea { min-height: 2.6rem; flex: 1; }
+.composer .lens-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  width: 100%;
+}
+.composer textarea {
+  min-height: 2.8rem;
+  width: 100%;
+  flex: none;
+  border-radius: 0;
+  resize: none;
+}
+.composer-tools {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+  width: 100%;
+}
+.composer-tools #agent-pick {
+  flex: 1;
+  min-width: 0;
+  max-width: 42%;
+  background: var(--inset);
+  color: var(--text);
+  border: 1px solid var(--line);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 0.55rem 0.45rem;
+}
+.composer-tools #lens-btn,
+.composer-tools #send {
+  flex: 0 0 auto;
+  padding: 0.55rem 0.75rem;
+}
+.compare-bubble .compare-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.35rem 0 0.45rem;
+}
+.compare-tab {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  padding: 0.28rem 0.5rem;
+}
+.compare-tab.on {
+  color: var(--black);
+  background: var(--phos);
+  border-color: var(--phos);
+}
+.compare-tab.fail {
+  color: var(--leak);
+  border-color: var(--leak);
+}
+.compare-tab.fail.on {
+  background: var(--leak);
+  color: var(--black);
+}
 .warn { color: var(--warn); }
 .due-note.tight { color: var(--warn); }
 .vibe {
@@ -552,14 +615,6 @@ body.wx-tab main { padding: 0; overflow: hidden; }
 .wx-hail-row.sev-extreme .size, .wx-hail-row.sev-extreme .sev { color: var(--leak); }
 .wx-hail-row.sev-severe .sev { color: var(--warn); }
 .wx-hail-row .src { color: var(--muted); font-size: 9px; letter-spacing: 0.08em; }
-.compare-bubble .compare-tabs {
-  display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 0.35rem 0 0.45rem;
-}
-.compare-tab {
-  background: var(--panel); border: 1px solid var(--line); color: var(--muted);
-  font: inherit; font-size: 9px; letter-spacing: 0.1em; padding: 0.25rem 0.45rem;
-}
-.compare-tab.on { color: var(--amber); border-color: var(--amber); }
 #wx-map { flex: 1; min-height: 40vh; z-index: 1; }
 .wx-panel { max-height: 34vh; overflow: auto; padding: 0.5rem 0.65rem calc(0.5rem + var(--safe-bottom)); border-top: 1px solid var(--line); background: var(--inset); font-size: 12px; }
 .wx-addr { color: var(--phos); letter-spacing: 0.06em; margin-bottom: 0.35rem; }
