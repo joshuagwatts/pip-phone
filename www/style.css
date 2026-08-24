@@ -295,6 +295,8 @@ body.comm #comm { display: flex; }
   background: var(--panel);
   padding: 0.55rem 0.65rem;
   min-height: 2.5rem;
+  max-height: 40vh;
+  overflow: auto;
   color: var(--text);
 }
 .probe-out.probe-active { border-color: var(--amber); }
@@ -385,10 +387,42 @@ body.comm #comm { display: flex; }
   letter-spacing: 0.08em;
   padding: 0.55rem 0.45rem;
 }
+.composer-tools #photo-btn,
 .composer-tools #lens-btn,
 .composer-tools #send {
   flex: 0 0 auto;
-  padding: 0.55rem 0.75rem;
+  padding: 0.55rem 0.65rem;
+}
+.chat-attach {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.35rem 0.45rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--inset);
+}
+.chat-attach[hidden] { display: none !important; }
+.chat-attach img {
+  max-height: 72px;
+  max-width: 40%;
+  object-fit: cover;
+  border: 1px solid var(--line);
+}
+.chat-attach button {
+  font: inherit;
+  font-size: 11px;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+.bubble .chat-thumb {
+  display: block;
+  max-width: 55%;
+  max-height: 140px;
+  margin-top: 0.4rem;
+  border: 1px solid var(--line);
+  object-fit: cover;
 }
 .compare-bubble .compare-tabs {
   display: flex;

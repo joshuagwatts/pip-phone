@@ -170,7 +170,7 @@ export async function probeModels(settings, prov) {
     return { ok: false, id: prov.id, error: "no key" };
   }
   try {
-    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 15000, {
+    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 12000, {
       Authorization: `Bearer ${key}`,
       ...(prov.headers || {}),
     });
@@ -190,24 +190,63 @@ export async function probeModels(settings, prov) {
         : data.object === "list" || data.data
           ? 1
           : 0;
-    // Empty {} is NOT success — old bug marked LIVE on network failure.
     if (!n && !Array.isArray(data.data) && body && body.length < 8) throw new Error("empty models");
     if (!n && !data.data && !data.models && !data.object) throw new Error("empty models body");
-    markHealth(prov.id, true);
     return { ok: true, id: prov.id, models: n || 1 };
   } catch (e) {
-    markHealth(prov.id, false, e.message || e);
     return { ok: false, id: prov.id, error: String(e.message || e).slice(0, 160) };
   }
 }
 
+/**
+ * Real probe: /models is nice-to-have; a chat ping is the truth.
+ * Many hosts (or VPNs) break /models while chat still works — never mark KEY BAD on models alone.
+ */
 export async function probeKeyed(settings) {
   const keyed = keyedProviders(settings);
-  const out = [];
-  for (const prov of keyed) {
-    out.push(await probeModels(settings, prov));
-  }
-  return out;
+  const jobs = keyed.map(async (prov) => {
+    const models = await probeModels(settings, prov);
+    let ping = { ok: false, error: "" };
+    try {
+      ping = await chatPing(settings, prov);
+    } catch (e) {
+      ping = { ok: false, error: String(e.message || e).slice(0, 120) };
+    }
+    if (ping.ok) {
+      markHealth(prov.id, true);
+      return {
+        ok: true,
+        id: prov.id,
+        models: models.ok ? models.models || 1 : 0,
+        modelsOk: Boolean(models.ok),
+        chatOk: true,
+        detail: models.ok ? "CHAT OK" : "CHAT OK · /models skipped",
+      };
+    }
+    // Auth fail on models is definitive.
+    if (/401|403|unauthorized|incorrect.?api/i.test(models.error || "")) {
+      markHealth(prov.id, false, models.error);
+      return {
+        ok: false,
+        id: prov.id,
+        modelsOk: false,
+        chatOk: false,
+        error: models.error,
+        detail: models.error,
+      };
+    }
+    const err = ping.error || models.error || "chat fail";
+    markHealth(prov.id, false, err);
+    return {
+      ok: false,
+      id: prov.id,
+      modelsOk: Boolean(models.ok),
+      chatOk: false,
+      error: err,
+      detail: models.ok ? `models OK · chat fail · ${err}` : err,
+    };
+  });
+  return Promise.all(jobs);
 }
 
 export function cloudStatus(settings) {
@@ -282,9 +321,29 @@ export function packMessagesForCloud(messages) {
   const systems = [];
   const turns = [];
   for (const m of list) {
-    if (!m || !m.content) continue;
+    if (!m) continue;
     const role = m.role === "assistant" || m.role === "pip" ? "assistant" : m.role === "system" ? "system" : "user";
-    const content = String(m.content).trim();
+    if (Array.isArray(m.content)) {
+      // Multimodal (text + image_url) — keep structure for vision APIs.
+      const parts = m.content
+        .map((p) => {
+          if (!p || typeof p !== "object") return null;
+          if (p.type === "text" && p.text) return { type: "text", text: String(p.text).slice(0, 6000) };
+          if (p.type === "image_url" && p.image_url?.url) {
+            return { type: "image_url", image_url: { url: String(p.image_url.url) } };
+          }
+          return null;
+        })
+        .filter(Boolean);
+      if (!parts.length) continue;
+      if (role === "system") {
+        systems.push(parts.map((p) => (p.type === "text" ? p.text : "")).join("\n"));
+      } else {
+        turns.push({ role, content: parts });
+      }
+      continue;
+    }
+    const content = String(m.content || "").trim();
     if (!content) continue;
     if (role === "system") systems.push(content);
     else turns.push({ role, content: content.slice(0, 6000) });
@@ -302,17 +361,32 @@ export function packMessagesForCloud(messages) {
 export function slimMessagesForCloud(messages) {
   const packed = packMessagesForCloud(messages);
   const system = packed.find((m) => m.role === "system")?.content || "";
-  const user = [...packed].reverse().find((m) => m.role === "user");
+  const user = [...packed].reverse().find((m) => m && m.role === "user");
   const slimSys =
-    system
-      .split("\n")
-      .filter((line) => !/^Voice examples|^Job:/i.test(line.trim()))
-      .slice(0, 12)
-      .join("\n")
-      .slice(0, 1400) || "You are Pip — direct, warm, honest. Stay in character.";
+    (typeof system === "string"
+      ? system
+          .split("\n")
+          .filter((line) => !/^Voice examples|^Job:/i.test(line.trim()))
+          .slice(0, 12)
+          .join("\n")
+          .slice(0, 1400)
+      : "") || "You are Pip — direct, warm, honest. Stay in character.";
+  let userContent = "hey";
+  if (user) {
+    if (Array.isArray(user.content)) {
+      userContent = user.content.map((p) => {
+        if (p?.type === "text") return { type: "text", text: String(p.text || "").slice(0, 4000) };
+        if (p?.type === "image_url") return p;
+        return null;
+      }).filter(Boolean);
+      if (!userContent.length) userContent = "hey";
+    } else {
+      userContent = String(user.content || "hey").slice(0, 4000);
+    }
+  }
   return [
     { role: "system", content: slimSys },
-    { role: "user", content: String(user?.content || "hey").slice(0, 4000) },
+    { role: "user", content: userContent },
   ];
 }
 
@@ -416,6 +490,11 @@ export function chatChain(settings, job = "life") {
     const only = PROVIDERS.find((p) => p.id === pin);
     if (only && keyedIds.includes(pin)) return [only];
     return [];
+  }
+  // Vision pin — only providers that accept image_url.
+  if (pin === "vision") {
+    const order = ["gemini", "openai", "openrouter"];
+    return order.map((id) => PROVIDERS.find((p) => p.id === id)).filter((p) => p && keyedIds.includes(p.id));
   }
   const effectivePin = pin === "compare" || pin === "all" ? "auto" : pin;
   const ids = orderFor(job, keyedIds, liveHealth, effectivePin);

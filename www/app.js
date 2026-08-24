@@ -20,7 +20,7 @@ import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } fr
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
 import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier, bindRadarScrubber, fetchWeatherBundle, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml, weatherSummaryHtml, collapseHailByDate } from "./wx.js";
-import { pickAndIdentify, detectVisionMode } from "./vision.js";
+import { pickAndIdentify, detectVisionMode, pickImageFile, fileToDataUrl } from "./vision.js";
 import { looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
   mealSnapshot,
@@ -73,6 +73,8 @@ let radioBusy = false;
 let codeBusy = false;
 let probeBusy = false;
 let probeGen = 0;
+/** Pending chat image (data URL) — PHOTO button or paste. */
+let pendingChatImage = null;
 let lastProbeHtml = "";
 let wxState = { lat: null, lon: null, address: "", data: null };
 let wxWatch = null;
@@ -1071,7 +1073,12 @@ function renderData() {
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
     <p class="muted" id="keys-memory">${keyedNow.length ? `IN MEMORY: ${esc(keyedNow.join(" · "))}` : "NO KEYS IN MEMORY — paste below"}</p>
     <p class="muted">${esc(httpLine)}</p>
-    <p class="muted">Paste keys below (save as you type). Pick who you talk to in the CHAT strip — not here.</p>
+    <div class="actions probe-actions">
+      <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
+      ${paired ? `<button type="button" id="keys-sync">SYNC FROM DESKTOP</button>` : ""}
+    </div>
+    <div id="brain-probe-out" class="probe-out">${lastProbeHtml || "<div class=\"row\"><span>Tap PROBE KEYS — proves chat, not just /models</span></div>"}</div>
+    <p class="muted">Paste keys below (save as you type). Who you talk to = dropdown next to LENS / PHOTO in CHAT.</p>
     <div class="field"><span>PIN (power override)</span>
       <select id="brain-pin">
         ${["auto", "compare", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].map((id) => {
@@ -1088,7 +1095,7 @@ function renderData() {
                     : id === "compare"
                       ? "compare (all tabs)"
                       : id === "auto"
-                        ? "auto (CHAT strip decides)"
+                        ? "auto (CHAT dropdown decides)"
                         : id;
           return `<option value="${id}" ${on ? "selected" : ""}>${label}</option>`;
         }).join("")}
@@ -1098,13 +1105,6 @@ function renderData() {
       ? `<p class="muted">SECURE: OPP/vision scrapes limited · chat still uses pasted keys when present · desktop if no keys.</p>`
       : `<p class="muted">LEAKY: cloud hierarchy speaks as Pip first · desktop only if PIN=desktop or no keys.</p>`}
     <div class="key-list">${keyRows}</div>
-
-    <h3>PROBE</h3>
-    <div class="actions probe-actions">
-      <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
-      ${paired ? `<button type="button" id="keys-sync">SYNC FROM DESKTOP</button>` : ""}
-    </div>
-    <div id="brain-probe-out" class="probe-out">${lastProbeHtml || "<div class=\"row\"><span>Tap PROBE KEYS — status will change here</span></div>"}</div>
 
     <h3>LOCK</h3>
     <p class="muted" id="bio-help">Press & hold the phosphor print until the ring fills. Pip-themed lock — no Android popup.</p>
@@ -1369,34 +1369,22 @@ function renderData() {
 
       try {
         writeProbe(
-          `<div class="row"><span>PROBE #${gen} · checking ${keyed.length} key(s)…</span></div><div class="row"><span>HTTP · ${esc(diag.nativeHttp ? "NATIVE OK" : "NO NATIVE")} · ${esc(diag.platform)}</span></div>`,
+          `<div class="row"><span>PROBE #${gen} · checking ${keyed.length} key(s) in parallel…</span></div><div class="row"><span>HTTP · ${esc(diag.nativeHttp ? "NATIVE OK" : "NO NATIVE")} · ${esc(diag.platform)}</span></div>`,
         );
         const hits = await probeKeyed(db.settings);
         if (!alive()) return;
-        const lines = [];
-        lines.push(`PROBE #${gen} · HTTP · ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE"} · ${diag.platform}`);
+        const lines = [`PROBE #${gen} · HTTP · ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE"} · ${diag.platform}`];
         for (const p of PROVIDERS) {
-          if (!alive()) return;
           const has = String(db.settings[p.field] || "").trim();
           if (!has) continue;
           const hit = (hits || []).find((h) => h.id === p.id);
-          if (!hit?.ok) {
-            lines.push(`${p.label.toUpperCase()} // KEY BAD · ${hit?.error || "failed"}`);
-            writeProbe(lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join(""));
-            continue;
+          if (hit?.chatOk || (hit?.ok && hit?.detail && /CHAT OK/i.test(hit.detail))) {
+            lines.push(`${p.label.toUpperCase()} // LIVE · CHAT OK`);
+          } else if (hit?.ok) {
+            lines.push(`${p.label.toUpperCase()} // LIVE · ${hit.detail || "OK"}`);
+          } else {
+            lines.push(`${p.label.toUpperCase()} // KEY BAD · ${hit?.detail || hit?.error || "failed"}`);
           }
-          setStatus(`PROBE #${gen} · ${p.label.toUpperCase()} chat…`);
-          lines.push(`${p.label.toUpperCase()} // models OK — chat ping…`);
-          writeProbe(lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join(""));
-          const ping = await chatPing(db.settings, p);
-          if (!alive()) return;
-          lines.pop();
-          lines.push(
-            ping.ok
-              ? `${p.label.toUpperCase()} // LIVE · CHAT OK`
-              : `${p.label.toUpperCase()} // LIVE · CHAT FAIL · ${ping.error || ping.text || ""}`,
-          );
-          writeProbe(lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join(""));
         }
         if (!alive()) return;
         db.settings.brain_health = providerHealth();
@@ -1867,19 +1855,65 @@ function markBubbleLeaked(el, reason) {
   if (who) who.textContent = reason ? `YOU · LEAKED` : "YOU · LEAKED";
 }
 
+function clearChatAttach() {
+  pendingChatImage = null;
+  const host = $("#chat-attach");
+  if (host) {
+    host.hidden = true;
+    host.innerHTML = "";
+  }
+}
+
+function setChatAttach(dataUrl) {
+  pendingChatImage = dataUrl;
+  const host = $("#chat-attach");
+  if (!host) return;
+  host.hidden = false;
+  host.innerHTML = `<img src="${dataUrl}" alt="attach" /><button type="button" id="chat-attach-clear">✕</button>`;
+  const clr = $("#chat-attach-clear");
+  if (clr) clr.onclick = () => clearChatAttach();
+}
+
+async function attachChatPhoto({ capture = false } = {}) {
+  try {
+    const file = await pickImageFile({ capture });
+    const dataUrl = await fileToDataUrl(file, 1280, 0.72);
+    setChatAttach(dataUrl);
+    document.body.classList.add("comm");
+    setStatus("PHOTO READY · ADD A MESSAGE OR SEND");
+  } catch (e) {
+    if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 60).toUpperCase());
+  }
+}
+
 let chatBusy = false;
 
 async function sendChat() {
   const box = $("#input");
   const text = (box.value || "").trim();
-  if (!text || chatBusy) return;
+  const image = pendingChatImage;
+  if ((!text && !image) || chatBusy) return;
   chatBusy = true;
   const sendBtn = $("#send");
   if (sendBtn) sendBtn.disabled = true;
   box.value = "";
-  db.chat.push({ role: "user", content: text });
-  const userBubble = addLog("user", text);
-  captureMoment(db, text);
+  const userLine = image ? (text ? `${text}\n[photo attached]` : "[photo attached]") : text;
+  db.chat.push({ role: "user", content: userLine, image: Boolean(image) });
+  const userBubble = addLog("user", userLine);
+  if (image) {
+    // Keep a thumb in the bubble for clarity.
+    try {
+      const img = document.createElement("img");
+      img.src = image;
+      img.className = "chat-thumb";
+      img.alt = "attached";
+      userBubble.querySelector(".body")?.appendChild(img);
+    } catch {
+      /* ignore */
+    }
+  }
+  clearChatAttach();
+  captureMoment(db, text || "photo");
   persist();
   setStatus(pipStatus());
 
@@ -1894,6 +1928,8 @@ async function sendChat() {
     /* optional */
   }
 
+  try {
+  if (!image) {
   const switchHit = tryAgentSwitch(text);
   if (switchHit) {
     addLog("pip", switchHit.reply, { agent: "pip" });
@@ -1902,8 +1938,9 @@ async function sendChat() {
     setStatus(switchHit.ok ? `WITH · ${agentLabel(chatAgent())}` : "AGENT");
     return;
   }
+  }
 
-  if (/^\s*(test\s+(brain|keys?|cloud)|\/test)\s*$/i.test(text)) {
+  if (!image && /^\s*(test\s+(brain|keys?|cloud)|\/test)\s*$/i.test(text)) {
     setStatus("TESTING BRAINS…");
     try {
       const hits = await probeKeyed(db.settings);
@@ -1913,11 +1950,10 @@ async function sendChat() {
         if (!key) continue;
         const hit = (hits || []).find((h) => h.id === p.id);
         if (!hit?.ok) {
-          lines.push(`${p.label}: KEY BAD · ${hit?.error || "no /models"}`);
+          lines.push(`${p.label}: KEY BAD · ${hit?.detail || hit?.error || "failed"}`);
           continue;
         }
-        const ping = await chatPing(db.settings, p);
-        lines.push(`${p.label}: ${ping.ok ? "CHAT OK" : `CHAT FAIL · ${ping.error || ping.text || ""}`}`);
+        lines.push(`${p.label}: ${hit.chatOk !== false ? "CHAT OK" : `CHAT FAIL · ${hit.error || ""}`}`);
       }
       const reply = lines.length
         ? lines.join("\n")
@@ -1933,7 +1969,7 @@ async function sendChat() {
     return;
   }
 
-  try {
+  if (!image) {
   const themeHit = tryThemeCommand(text, db.settings);
   if (themeHit) {
     persist();
@@ -2007,9 +2043,18 @@ async function sendChat() {
     }
     return;
   }
+  }
 
   try {
-    const out = await chat(db.settings, db.chat, text, (msg) => setStatus(msg), db.kit, db);
+    const out = await chat(
+      db.settings,
+      db.chat,
+      text || (image ? "What's in this image?" : ""),
+      (msg) => setStatus(msg),
+      db.kit,
+      db,
+      image ? { image } : {},
+    );
     const reply = typeof out === "string" ? out : out.text;
     const leaked = typeof out === "object" ? Boolean(out.leaked) : false;
     const provider = typeof out === "object" ? out.provider : "";
@@ -2139,6 +2184,28 @@ function boot() {
         };
       }
       $("#send").onclick = sendChat;
+      const photoBtn = $("#photo-btn");
+      if (photoBtn) photoBtn.onclick = () => attachChatPhoto({ capture: false });
+      const inputEl = $("#input");
+      if (inputEl) {
+        inputEl.addEventListener("paste", (e) => {
+          const items = e.clipboardData && e.clipboardData.items;
+          if (!items) return;
+          for (const item of items) {
+            if (!/^image\//.test(item.type)) continue;
+            e.preventDefault();
+            const file = item.getAsFile();
+            if (!file) return;
+            fileToDataUrl(file, 1280, 0.72)
+              .then((url) => {
+                setChatAttach(url);
+                setStatus("PHOTO PASTED · ADD TEXT OR SEND");
+              })
+              .catch(() => setStatus("PASTE IMAGE FAILED"));
+            break;
+          }
+        });
+      }
       const lensBtn = $("#lens-btn");
       const lensModes = $("#lens-modes");
       const runLens = async (mode) => {

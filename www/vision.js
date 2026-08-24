@@ -6,8 +6,8 @@ import { httpPostJson } from "./net.js";
 const VISION_ORDER = ["gemini", "openrouter"];
 
 const VISION_MODELS = {
-  gemini: "gemini-2.5-flash",
-  openrouter: "google/gemini-2.0-flash-exp:free",
+  gemini: "gemini-3.6-flash",
+  openrouter: "google/gemini-2.5-flash:free",
 };
 
 const PROMPTS = {

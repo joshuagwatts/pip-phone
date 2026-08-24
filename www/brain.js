@@ -498,6 +498,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   let routePin = String(settings?.brain_pin || "auto").toLowerCase();
   if (forceCompare || agent === "compare") routePin = "compare";
   else if (agent === "desktop") routePin = "desktop";
+  else if (extras.image) routePin = "vision";
   else if (asSelf) routePin = agent;
   else if (agent === "pip" || agent === "auto") routePin = "auto";
 
@@ -553,19 +554,31 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   }
 
   const prior = (history || []).filter((m) => m && m.content && m.content !== text).slice(-10);
+  const userContent = extras.image
+    ? [
+        { type: "text", text: askText || "What's in this image? Be direct." },
+        { type: "image_url", image_url: { url: String(extras.image) } },
+      ]
+    : askText;
   const messages = [
     { role: "system", content: system },
-    ...prior.map((m) => ({
-      role: m.role === "user" ? "user" : "assistant",
-      content: m.content,
-    })),
-    { role: "user", content: askText },
+    ...prior
+      .filter((m) => !m.image)
+      .map((m) => ({
+        role: m.role === "user" ? "user" : "assistant",
+        content: m.content,
+      })),
+    { role: "user", content: userContent },
   ];
+
+  if (extras.image) {
+    emit("VISION…");
+  }
 
   let hit = null;
   let errMsg = "";
   try {
-    hit = await routedComplete(routeSettings, messages, "life", 0.7, 1024, onProgress, job);
+    hit = await routedComplete(routeSettings, messages, "life", 0.7, extras.image ? 800 : 1024, onProgress, job);
   } catch (e) {
     errMsg = String(e.message || e);
   }
@@ -580,7 +593,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
               ? agentSystem(agent === "desktop" ? "desktop" : agent, operator)
               : pipOrchestratorSystem(operator, settings.humor, settings.honesty, kit),
           },
-          { role: "user", content: askText },
+          { role: "user", content: userContent },
         ],
         "life",
         0.55,
@@ -596,9 +609,11 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   if (!hit?.text) {
     const live = liveProviderIds(settings);
     const tip = errMsg
-      ? live.length && routePin === "auto"
-        ? `Cloud brains failed (${errMsg}). DATA → PROBE · or pick another agent next to LENS.`
-        : `Couldn't reach ${agentLabel(asSelf ? agent : "pip")}. ${errMsg}. Pick another agent or fix keys in DATA.`
+      ? extras.image
+        ? `Vision failed (${errMsg}). Need Gemini / OpenAI / OpenRouter key · LEAKY on.`
+        : live.length && routePin === "auto"
+          ? `Cloud brains failed (${errMsg}). DATA → PROBE · or pick another agent next to LENS.`
+          : `Couldn't reach ${agentLabel(asSelf ? agent : "pip")}. ${errMsg}. Pick another agent or fix keys in DATA.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true, agent: asSelf ? agent : "pip" };
