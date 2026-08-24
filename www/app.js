@@ -55,8 +55,8 @@ import {
   fullMorningSync,
   fetchBriefing,
   getBriefing,
-  pingPresence,
 } from "./morning.js";
+import { pingNudge, markChatUser } from "./nudge.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -2250,6 +2250,7 @@ async function sendChat() {
   box.value = "";
   const userLine = image ? (text ? `${text}\n[photo attached]` : "[photo attached]") : text;
   db.chat.push({ role: "user", content: userLine, image: Boolean(image) });
+  markChatUser();
   const userBubble = addLog("user", userLine);
   if (image) {
     // Keep a thumb in the bubble for clarity.
@@ -2710,14 +2711,14 @@ function boot() {
       runMorning();
       setInterval(() => {
         if (document.hidden) return;
-        pingPresence(db.settings).then(injectNudge).catch(() => {});
+        pingNudge(db.settings, db).then(injectNudge).catch(() => {});
       }, 20000);
       const cap = window.Capacitor;
       if (cap?.Plugins?.App?.addListener) {
         cap.Plugins.App.addListener("appStateChange", ({ isActive }) => {
           if (!isActive) return;
           runMorning();
-          pingPresence(db.settings).then(injectNudge).catch(() => {});
+          pingNudge(db.settings, db).then(injectNudge).catch(() => {});
         });
       }
       // Map / weather watch only while WX tab is open (see renderWx / leaveWx).

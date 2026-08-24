@@ -331,7 +331,9 @@ function localBriefingFallback() {
   return `Good morning. ${shot} Then take the day one honest move at a time.`;
 }
 
-/** Desktop presence nudge (wake lines) when paired; local wake line otherwise. */
+/** Desktop presence nudge when paired; local wake line otherwise.
+ *  Phone chat reminders (meals / life jazz / motiv) live in nudge.js → pingNudge.
+ */
 export async function pingPresence(settings) {
   if (desktopConfigured(settings)) {
     try {

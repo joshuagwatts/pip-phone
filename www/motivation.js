@@ -29,9 +29,9 @@ const BEATS = {
     act: ["Eat like you matter.", "Sit down. Eat. Then return.", "Fuel first. Then Holowatts.", "One real meal. Then one real move."],
   },
   grind: {
-    inspire: ["The days compound.", "Success is a few simple disciplines.", "Volume. Then skill. Then volume.", "Keep going."],
+    inspire: ["The days compound.", "Success is a few simple disciplines.", "Volume. Then skill. Then volume.", "Keep going.", "Take a leap of faith."],
     audit: ["Don't wish it easier. Wish you better.", "You don't need more information.", "Work a little on yourself too.", "Document the work. The rest is noise."],
-    act: ["One more honest hour.", "Do what you can with this hour.", "Stay with the next inch.", "Put in the time."],
+    act: ["One more honest hour.", "Do what you can with this hour.", "Stay with the next inch.", "Put in the time.", "Send it. Apply. Ask."],
   },
   still: {
     inspire: ["Happy little progress.", "Patience is a skill.", "The garden doesn't shout. It grows.", "Macro patience. Micro care."],
@@ -92,6 +92,10 @@ const POOL = {
     "Plant. Water. Don't shout at the soil.",
     "One true sentence, then another.",
     "The work will wait for a glass of water.",
+    "Drink water. Then the next move.",
+    "Smell the roses.",
+    "Go smell the roses.",
+    "Take a leap of faith.",
     "Show up small. Stay anyway.",
     "Protect the hour you already opened.",
     "Done kindly beats perfect later.",
