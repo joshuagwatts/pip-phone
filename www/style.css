@@ -695,6 +695,17 @@ body.comm #comm { display: flex; }
   background: var(--leak);
   color: var(--black);
 }
+.compare-tab.live:not(.on) {
+  color: var(--phos);
+  border-color: color-mix(in srgb, var(--phos) 55%, var(--line));
+}
+.compare-tab.wait {
+  opacity: 0.55;
+  font-style: italic;
+}
+.compare-bubble.compare-live .body {
+  min-height: 2.5rem;
+}
 .warn { color: var(--warn); }
 .due-note.tight { color: var(--warn); }
 .vibe {

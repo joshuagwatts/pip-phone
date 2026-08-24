@@ -211,6 +211,10 @@ export function parseAgentRelay(text) {
     new RegExp(`\\b(${agents})\\b[\\s\\S]{0,50}?\\b(?:share|send|pass|relay)\\b[\\s\\S]{0,50}?\\b(?:with|to)\\s+(${agents})\\b`, "i"),
   );
   if (m) return { from: norm(m[1]), to: norm(m[2]), raw: t };
+  m = t.match(
+    new RegExp(`\\b(?:say|tell|talk|message|ask)\\s+(?:something\\s+)?(?:to\\s+)?(${agents})\\b`, "i"),
+  );
+  if (m) return { from: null, to: norm(m[1]), raw: t, direct: true };
   return null;
 }
 
@@ -670,48 +674,161 @@ export async function chatPing(settings, prov) {
   }
 }
 
+const AGENT_ALIASES = {
+  grok: "xai",
+  chatgpt: "openai",
+};
+
+function normAgentId(id) {
+  const x = String(id || "").toLowerCase();
+  return AGENT_ALIASES[x] || x;
+}
+
+/** Brains with keys attached — skip known-bad (KEY BAD) until re-paste/re-validate. */
+export function compareProviders(settings, health = null) {
+  const h = health || liveHealth;
+  return keyedProviders(settings).filter((p) => h[p.id]?.ok !== false);
+}
+
+/** "Say something to Gemini" / crew cross-talk in COMPARE. */
+export function parseCrossAgentIntent(text) {
+  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt";
+  const t = String(text || "").trim();
+  let m = t.match(
+    new RegExp(
+      `\\b(?:say|tell|talk|message|ask|welcome|greet|introduce)\\s+(?:something\\s+)?(?:to\\s+)?(${agents})\\b`,
+      "i",
+    ),
+  );
+  if (m) {
+    const target = normAgentId(m[1]);
+    const prov = PROVIDERS.find((p) => p.id === target);
+    return { target, targetLabel: prov?.label || target, raw: t };
+  }
+  m = t.match(new RegExp(`\\b(?:for|to)\\s+(${agents})\\b`, "i"));
+  if (m) {
+    const target = normAgentId(m[1]);
+    const prov = PROVIDERS.find((p) => p.id === target);
+    return { target, targetLabel: prov?.label || target, raw: t };
+  }
+  return null;
+}
+
+function compareUserContent(prov, operator, ask, crossHint, prior) {
+  const name = prov.label || prov.id;
+  let userContent = ask;
+  if (crossHint?.target) {
+    if (crossHint.target === prov.id) {
+      userContent =
+        `Joshua to the crew: "${ask}"\n\n` +
+        `You're ${name}. This is directed at you — first impression, make it count. Reply as yourself to Joshua.`;
+    } else {
+      userContent =
+        `Joshua to the crew: "${ask}"\n\n` +
+        `You're ${name}. Part of this is for ${crossHint.targetLabel}. ` +
+        `Reply to Joshua; you may acknowledge ${crossHint.targetLabel} naturally if it fits.`;
+    }
+  }
+  const priorMsgs = (prior || [])
+    .filter((m) => m && m.content && !m.image)
+    .slice(-8)
+    .map((m) => ({
+      role: m.role === "user" ? "user" : "assistant",
+      content: String(m.content).slice(0, 1200),
+    }));
+  return [
+    { role: "system", content: agentSystem(prov.id, operator) },
+    ...priorMsgs,
+    { role: "user", content: userContent },
+  ];
+}
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timeout`)), ms);
+    }),
+  ]);
+}
+
 /**
- * Parallel compare — every keyed cloud brain at once.
+ * Parallel compare — streams each brain as it finishes (no waiting on slow/dead APIs).
  * Each agent gets its own native system prompt (not Pip's voice).
- * Returns one primary text plus full compare[] for the tabbed UI (ok + fail).
  */
-export async function compareComplete(settings, messages, temperature = 0.7, maxTokens = 1024, job = "life") {
+export async function compareComplete(
+  settings,
+  messages,
+  temperature = 0.7,
+  maxTokens = 1024,
+  job = "life",
+  { onPartial, timeoutMs = 26000, crossHint, health, prior } = {},
+) {
   void job;
-  const keyed = keyedProviders(settings);
+  const keyed = compareProviders(settings, health);
   if (!keyed.length) throw new Error("no keyed chat brains — paste keys in DATA");
   const user = [...(messages || [])].reverse().find((m) => m && m.role === "user");
   const ask = String((user && user.content) || "").trim() || "hey";
   const operator = settings?.operator || "Joshua";
+  const history = prior || (messages || []).filter((m) => m.role === "user" || m.role === "assistant" || m.role === "pip");
+  const slots = keyed.map((prov) => ({
+    provider: prov.id,
+    label: prov.label || prov.id,
+    text: "",
+    ok: false,
+    pending: true,
+  }));
 
-  const jobs = keyed.map(async (prov) => {
+  const emitPartial = (row, index) => {
+    slots[index] = { ...row, pending: false };
+    const snap = slots.map((r) => ({ ...r }));
+    if (onPartial) onPartial(row, snap, { done: snap.filter((r) => !r.pending).length, total: keyed.length });
+  };
+
+  if (onPartial) onPartial(null, [...slots], { done: 0, total: keyed.length });
+
+  const jobs = keyed.map((prov, index) => {
     const key = providerKey(settings, prov);
     if (!key) {
-      return { provider: prov.id, label: prov.label || prov.id, text: "", error: "no key", ok: false };
+      const row = { provider: prov.id, label: prov.label || prov.id, text: "", error: "no key", ok: false };
+      emitPartial(row, index);
+      return Promise.resolve(row);
     }
-    try {
-      const perAgent = [
-        { role: "system", content: agentSystem(prov.id, operator) },
-        { role: "user", content: ask },
-      ];
-      const out = await openaiWithFallback(prov, key, "life", perAgent, temperature, maxTokens);
-      markHealth(prov.id, true);
-      return {
-        provider: out.provider,
-        label: prov.label || prov.id,
-        model: out.model,
-        text: out.text,
-        tokens: Number(out.tokens) || 0,
-        ok: true,
-      };
-    } catch (e) {
-      return {
+    const run = async () => {
+      try {
+        const perAgent = compareUserContent(prov, operator, ask, crossHint, history);
+        const out = await openaiWithFallback(prov, key, "life", perAgent, temperature, maxTokens);
+        markHealth(prov.id, true);
+        return {
+          provider: out.provider,
+          label: prov.label || prov.id,
+          model: out.model,
+          text: out.text,
+          tokens: Number(out.tokens) || 0,
+          ok: true,
+        };
+      } catch (e) {
+        return {
+          provider: prov.id,
+          label: prov.label || prov.id,
+          text: "",
+          error: String(e.message || e).slice(0, 160),
+          ok: false,
+        };
+      }
+    };
+    return withTimeout(run(), timeoutMs, prov.label || prov.id)
+      .catch((e) => ({
         provider: prov.id,
         label: prov.label || prov.id,
         text: "",
         error: String(e.message || e).slice(0, 160),
         ok: false,
-      };
-    }
+      }))
+      .then((row) => {
+        emitPartial(row, index);
+        return row;
+      });
   });
 
   const settled = await Promise.all(jobs);

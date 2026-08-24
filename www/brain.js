@@ -9,7 +9,9 @@ import {
   compareComplete,
   liveProviderIds,
   markHealth,
+  parseCrossAgentIntent,
   privacyOn,
+  providerHealth,
 } from "./cloud.js";
 import { desktopChat, desktopConfigured, desktopReachable } from "./desktop.js";
 import { draftVoice } from "./kind.js";
@@ -277,7 +279,7 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
  * SECURE still limits OPP/CODE/vision scrapes; chat with pasted keys is intentional.
  * Pin compare/all: parallel tabs. Pin lite/local: Guide only.
  */
-async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life") {
+async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life", callbacks = {}) {
   track(onProgress);
   const errors = [];
   const cloud = cloudStatus(settings);
@@ -332,7 +334,13 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     if (!hasKeys) throw new Error("compare needs cloud keys in DATA");
     if (secure && !isChat) throw new Error("SECURE blocks compare for OPP — flip LEAKY");
     emit("COMPARE…");
-    const out = await compareComplete(settings, messages, temperature, maxTokens, routeJob);
+    const crossHint = callbacks.crossHint || null;
+    const out = await compareComplete(settings, messages, temperature, maxTokens, routeJob, {
+      onPartial: callbacks.onComparePartial,
+      crossHint,
+      health: providerHealth(),
+      prior: callbacks.prior,
+    });
     const cleaned = sanitizeReply(out.text) || String(out.text || "").trim();
     if (!cleaned) throw new Error("compare blank");
     return {
@@ -583,8 +591,13 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
 
   let hit = null;
   let errMsg = "";
+  const chatCallbacks = {
+    onComparePartial: extras.onComparePartial,
+    crossHint: parseCrossAgentIntent(askText),
+    prior: history,
+  };
   try {
-    hit = await routedComplete(routeSettings, messages, "life", 0.7, extras.image ? 800 : 1024, onProgress, job);
+    hit = await routedComplete(routeSettings, messages, "life", 0.7, extras.image ? 800 : 1024, onProgress, job, chatCallbacks);
   } catch (e) {
     errMsg = String(e.message || e);
   }
@@ -606,6 +619,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
         768,
         onProgress,
         job,
+        chatCallbacks,
       );
     } catch (e) {
       errMsg = errMsg || String(e.message || e);

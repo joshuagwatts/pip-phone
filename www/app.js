@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
-import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete } from "./cloud.js";
+import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders } from "./cloud.js";
 import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
@@ -650,8 +650,9 @@ function agentOptions() {
   }
   if (desktopConfigured(db.settings)) apis.push({ id: "desktop", section: "apis" });
   const opts = [...modes, ...apis];
-  if (active && !opts.some((o) => o.id === active)) {
-    opts.push({ id: active, section: "apis", missing: true });
+  // Only show the active agent if it is keyed (or a mode like pip/auto/compare).
+  if (active && !opts.some((o) => o.id === active) && (active === "pip" || active === "auto" || active === "compare" || active === "desktop" || keyed.has(active))) {
+    opts.push({ id: active, section: "apis", missing: !keyed.has(active) && active !== "desktop" });
   }
   return { opts, keyed, active, health: providerHealth() };
 }
@@ -1176,6 +1177,13 @@ function renderData() {
   const diag = httpDiag();
   const httpLine = `HTTP: ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE — cloud may fail"} · ${diag.platform}`;
 
+  const pinModes = ["auto", "compare", "desktop", "lite", "local", "qwen"];
+  const pinKeyed = ["groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].filter((id) =>
+    String(s[id] || "").trim(),
+  );
+  const pinIds = [...pinModes, ...pinKeyed];
+  if ((s.brain_pin || "auto") && !pinIds.includes(s.brain_pin)) pinIds.push(s.brain_pin);
+
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
     <p class="muted">Pair desktop for private GPU. Paste cloud keys below — they save as you type. Bad keys turn red automatically.</p>
@@ -1213,7 +1221,7 @@ function renderData() {
     <p class="muted">Paste keys below (save as you type). Who you talk to = agent chip next to LENS in CHAT.</p>
     <div class="field"><span>PIN (power override)</span>
       <select id="brain-pin">
-        ${["auto", "compare", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].map((id) => {
+        ${pinIds.map((id) => {
           const on = (s.brain_pin || "auto") === id;
           const label =
             id === "xai"
@@ -1225,7 +1233,7 @@ function renderData() {
                   : id === "qwen"
                     ? "qwen (slow)"
                     : id === "compare"
-                      ? "compare (all tabs)"
+                      ? "compare (keyed only)"
                       : id === "auto"
                         ? "auto (CHAT dropdown decides)"
                         : id;
@@ -1757,9 +1765,12 @@ function addLog(role, text, opts = {}) {
 function compareOverview(compare) {
   const rows = Array.isArray(compare) ? compare : [];
   const ok = rows.filter((c) => c && c.ok && c.text);
-  const bad = rows.filter((c) => c && !c.ok);
+  const bad = rows.filter((c) => c && !c.ok && !c.pending);
+  const pending = rows.filter((c) => c && c.pending);
   const lines = [];
-  lines.push(`${ok.length} answered · ${bad.length} failed · ${rows.length} keyed`);
+  lines.push(
+    `${ok.length} answered${pending.length ? ` · ${pending.length} waiting` : ""} · ${bad.length} failed · ${rows.length} keyed`,
+  );
   if (ok.length >= 2) {
     const lens = ok.map((c) => String(c.text).length);
     const spread = Math.max(...lens) - Math.min(...lens);
@@ -1798,15 +1809,10 @@ function compareErrorsText(bad) {
     .join("\n\n");
 }
 
-/** One compare bubble: OVERVIEW → each ok reply → ERRORS last. */
-function addCompareLog(compare, opts = {}) {
-  const rows = (compare || []).filter(Boolean);
-  if (!rows.length) {
-    addLog("pip", "Compare found no replies.", opts);
-    return;
-  }
+function buildCompareTabs(rows) {
   const okRows = rows.filter((r) => r.ok && r.text);
-  const badRows = rows.filter((r) => !r.ok);
+  const badRows = rows.filter((r) => !r.ok && !r.pending);
+  const pendingRows = rows.filter((r) => r.pending);
   const overview = {
     provider: "overview",
     label: "OVERVIEW",
@@ -1815,6 +1821,15 @@ function addCompareLog(compare, opts = {}) {
     overview: true,
   };
   const tabs = [overview, ...okRows];
+  for (const p of pendingRows) {
+    tabs.push({
+      provider: p.provider,
+      label: p.label || p.provider,
+      text: "Waiting for reply…",
+      ok: false,
+      pending: true,
+    });
+  }
   if (badRows.length) {
     tabs.push({
       provider: "errors",
@@ -1824,47 +1839,115 @@ function addCompareLog(compare, opts = {}) {
       errors: true,
     });
   }
-  const div = document.createElement("div");
-  div.className = "bubble pip compare-bubble";
-  let idx = 0;
-  const paint = () => {
-    const row = tabs[idx] || tabs[0];
-    const tabHtml = tabs
-      .map((c, i) => {
-        const name = String(c.label || c.provider || "?").toUpperCase();
-        const mark = c.errors ? " fail" : "";
-        return `<button type="button" class="compare-tab ${i === idx ? "on" : ""}${mark}" data-ci="${i}">${esc(name)}</button>`;
-      })
-      .join("");
-    let body;
-    let meta;
-    if (row.overview) {
-      body = formatChatBody(row.text);
-      meta = `${okRows.length}/${rows.length} answered`;
-    } else if (row.errors) {
-      body = formatChatBody(row.text);
-      meta = `${badRows.length} failed`;
-    } else if (row.ok && row.text) {
-      body = formatChatBody(row.text);
-      meta = `${esc(String(row.model || row.provider || ""))}${row.tokens ? ` · ~${row.tokens} TOK` : ""}`;
-    } else {
-      body = formatChatBody(row.text || row.error || "no reply");
-      meta = "FAIL";
-    }
-    div.innerHTML = `<div class="who-row"><span class="who">COMPARE</span>${routePillHtml("leaked")}</div><div class="compare-tabs">${tabHtml}</div><div class="body">${body}</div><div class="chat-meta">${meta}</div>`;
-    div.querySelectorAll(".compare-tab").forEach((b) => {
-      b.onclick = () => {
-        idx = Number(b.dataset.ci) || 0;
-        paint();
-      };
-    });
-  };
-  paint();
-  $("#log").appendChild(div);
+  return { tabs, okRows, badRows, pendingRows, rows };
+}
+
+function paintCompareBubble(div, state) {
+  const { tabs, okRows, badRows, rows } = buildCompareTabs(state.rows);
+  let idx = state.idx;
+  if (idx >= tabs.length) idx = 0;
+  state.idx = idx;
+  const row = tabs[idx] || tabs[0];
+  const tabHtml = tabs
+    .map((c, i) => {
+      const name = String(c.label || c.provider || "?").toUpperCase();
+      const mark = c.errors ? " fail" : c.pending ? " wait" : "";
+      const live = c.ok && c.text && !c.overview && !c.errors ? " live" : "";
+      return `<button type="button" class="compare-tab ${i === idx ? "on" : ""}${mark}${live}" data-ci="${i}">${esc(name)}</button>`;
+    })
+    .join("");
+  let body;
+  let meta;
+  if (row.overview) {
+    body = formatChatBody(row.text);
+    meta = `${okRows.length}/${rows.length} answered`;
+  } else if (row.errors) {
+    body = formatChatBody(row.text);
+    meta = `${badRows.length} failed`;
+  } else if (row.pending) {
+    body = `<p class="muted">Waiting for ${esc(String(row.label || row.provider || "?").toUpperCase())}…</p>`;
+    meta = "IN FLIGHT";
+  } else if (row.ok && row.text) {
+    body = formatChatBody(row.text);
+    meta = `${esc(String(row.model || row.provider || ""))}${row.tokens ? ` · ~${row.tokens} TOK` : ""}`;
+  } else {
+    body = formatChatBody(row.text || row.error || "no reply");
+    meta = "FAIL";
+  }
+  div.innerHTML = `<div class="who-row"><span class="who">COMPARE</span>${routePillHtml("leaked")}</div><div class="compare-tabs">${tabHtml}</div><div class="body">${body}</div><div class="chat-meta">${meta}</div>`;
+  div.querySelectorAll(".compare-tab").forEach((b) => {
+    b.onclick = () => {
+      state.idx = Number(b.dataset.ci) || 0;
+      paintCompareBubble(div, state);
+    };
+  });
   $("#log").scrollTop = $("#log").scrollHeight;
+}
+
+/** Live compare bubble — updates as each API returns. */
+function beginCompareLog(providers) {
+  const rows = (providers || []).map((p) => ({
+    provider: p.id,
+    label: p.label || p.id,
+    text: "",
+    ok: false,
+    pending: true,
+  }));
+  const div = document.createElement("div");
+  div.className = "bubble pip compare-bubble compare-live";
+  const state = { rows, idx: 0, div, finalized: false };
+  paintCompareBubble(div, state);
+  $("#log").appendChild(div);
+  return state;
+}
+
+function updateCompareLog(state, allRows, meta = {}, latestRow = null) {
+  if (!state || state.finalized) return;
+  state.rows = (allRows || []).map((r) => ({ ...r, pending: Boolean(r.pending) }));
+  if (latestRow && latestRow.ok && latestRow.text) {
+    const { tabs } = buildCompareTabs(state.rows);
+    const ci = tabs.findIndex((t) => t.provider === latestRow.provider && !t.overview && !t.errors);
+    if (ci >= 0) state.idx = ci;
+  }
+  paintCompareBubble(state.div, state);
+  const ok = state.rows.filter((r) => r.ok && r.text).length;
+  const done = meta.done != null ? meta.done : state.rows.filter((r) => !r.pending).length;
+  const total = meta.total != null ? meta.total : state.rows.length;
+  setStatus(`COMPARE · ${ok}/${total}${done < total ? " · streaming" : ""}`);
+}
+
+function finalizeCompareLog(state, rows) {
+  if (!state) return null;
+  state.finalized = true;
+  state.rows = (rows || state.rows).map((r) => ({ ...r, pending: false }));
+  paintCompareBubble(state.div, state);
+  const overview = compareOverview(state.rows);
   db.chat.push({
     role: "pip",
-    content: overview.text,
+    content: overview,
+    brain: "compare",
+    agent: "compare",
+    leaked: true,
+    compare: state.rows,
+  });
+  return state.div;
+}
+
+/** One compare bubble: OVERVIEW → each ok reply → ERRORS last. */
+function addCompareLog(compare, opts = {}) {
+  const rows = (compare || []).filter(Boolean);
+  if (!rows.length) {
+    addLog("pip", "Compare found no replies.", opts);
+    return;
+  }
+  const div = document.createElement("div");
+  div.className = "bubble pip compare-bubble";
+  const state = { rows, idx: 0 };
+  paintCompareBubble(div, state);
+  $("#log").appendChild(div);
+  db.chat.push({
+    role: "pip",
+    content: compareOverview(rows),
     brain: "compare",
     agent: "compare",
     leaked: true,
@@ -2043,12 +2126,12 @@ async function sendChat() {
   }
   }
 
-  if (!image) {
+  if (!image && chatAgent() !== "compare" && String(db.settings.brain_pin || "").toLowerCase() !== "compare") {
   const relay = parseAgentRelay(text);
   if (relay) {
     setStatus("RELAY…");
     const lastPip = [...db.chat].reverse().find((m) => m.role === "pip" && m.content);
-    const payload = lastPip?.content || text;
+    const payload = relay.direct ? text : lastPip?.content || text;
     let fromId = relay.from;
     if (!fromId) {
       const cur = chatAgent();
@@ -2198,15 +2281,34 @@ async function sendChat() {
   }
 
   try {
-    const out = await chat(
-      db.settings,
-      db.chat,
-      text || (image ? "What's in this image?" : ""),
-      (msg) => setStatus(msg),
-      db.kit,
-      db,
-      image ? { image } : {},
-    );
+  const isCompare =
+    !image &&
+    (chatAgent() === "compare" ||
+      String(db.settings.brain_pin || "").toLowerCase() === "compare" ||
+      /^\s*(compare|ask all|all brains?)\s*[:\-]?\s*/i.test(text));
+  let compareLive = null;
+  if (isCompare) {
+    const provs = compareProviders(db.settings, providerHealth());
+    if (provs.length) {
+      compareLive = beginCompareLog(provs);
+      setStatus(`COMPARE · 0/${provs.length} · streaming`);
+    }
+  }
+
+  const out = await chat(
+    db.settings,
+    db.chat,
+    text || (image ? "What's in this image?" : ""),
+    (msg) => setStatus(msg),
+    db.kit,
+    db,
+    {
+      ...(image ? { image } : {}),
+      onComparePartial: compareLive
+        ? (row, allRows, meta) => updateCompareLog(compareLive, allRows, meta, row)
+        : undefined,
+    },
+  );
     const reply = typeof out === "string" ? out : out.text;
     const leaked = typeof out === "object" ? Boolean(out.leaked) : false;
     const provider = typeof out === "object" ? out.provider : "";
@@ -2228,7 +2330,11 @@ async function sendChat() {
     }
     const tokens = typeof out === "object" ? Number(out.tokens) || 0 : 0;
     if (compare && Array.isArray(compare) && compare.length) {
-      addCompareLog(compare, { leaked, tokens });
+      if (compareLive) {
+        finalizeCompareLog(compareLive, compare);
+      } else {
+        addCompareLog(compare, { leaked, tokens });
+      }
       persist();
       rememberReply(db, reply);
       setStatus(`COMPARE · ${compare.filter((c) => c.ok).length}/${compare.length}`);
