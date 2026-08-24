@@ -2130,7 +2130,7 @@ async function sendChat() {
   if (relay) {
     setStatus("RELAY…");
     const lastPip = [...db.chat].reverse().find((m) => m.role === "pip" && m.content);
-    const payload = relay.direct ? text : lastPip?.content || text;
+    const payload = relay.direct && !relay.from ? text : relay.speak ? text : lastPip?.content || text;
     let fromId = relay.from;
     if (!fromId) {
       const cur = chatAgent();
@@ -2138,24 +2138,41 @@ async function sendChat() {
       else fromId = lastPip?.brain || lastPip?.agent || null;
       if (fromId === "pip" || fromId === "auto" || fromId === "compare") fromId = null;
     }
-    if (fromId === relay.to) fromId = null;
+    if (fromId && relay.to && fromId === relay.to) fromId = null;
+    // Speak needs a speaker; if only target named, use current keyed agent or fail clear.
+    if (relay.speak && !fromId && relay.to) {
+      addLog("pip", `Name who should speak — e.g. "tell Gemini to say something to Groq".`);
+      setStatus("RELAY · NEED SPEAKER");
+      return;
+    }
+    if (!relay.to && !relay.speak) {
+      addLog("pip", `Name the target agent — e.g. "share with Groq".`);
+      setStatus("RELAY · NEED TARGET");
+      return;
+    }
     try {
       const out = await agentRelayComplete(db.settings, {
         fromId,
         toId: relay.to,
         payload,
         operator: db.settings?.operator || "Joshua",
+        speak: Boolean(relay.speak && fromId),
       });
       markBubbleLeaked(userBubble);
       const last = db.chat.filter((m) => m.role === "user").pop();
       if (last) last.leaked = true;
-      const via = fromId ? `${agentLabel(fromId)} → ${agentLabel(relay.to)}` : agentLabel(relay.to);
+      const speaker = out.speaker || out.to || fromId;
+      const via = out.speak && fromId && relay.to
+        ? `${agentLabel(fromId)} → ${agentLabel(relay.to)}`
+        : fromId && relay.to
+          ? `${agentLabel(fromId)} → ${agentLabel(relay.to)}`
+          : agentLabel(speaker);
       const reply = out.text;
       db.chat.push({
         role: "pip",
         content: reply,
         brain: out.provider,
-        agent: relay.to,
+        agent: speaker,
         leaked: true,
       });
       rememberReply(db, reply);
@@ -2163,7 +2180,7 @@ async function sendChat() {
       addLog("pip", reply, {
         brain: out.provider,
         provider: out.provider,
-        agent: relay.to,
+        agent: speaker,
         leaked: true,
         tokens: out.tokens,
       });

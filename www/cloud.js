@@ -188,7 +188,7 @@ function isAuthFail(msg) {
   return /incorrect.?api.?key|invalid.?api.?key|unauthorized|http 401|authentication/i.test(String(msg || ""));
 }
 
-/** Parse "tell Gemini to share with Groq" style relay intents. */
+/** Parse "tell Gemini to share with Groq" / "Gemini say something to Groq" relay intents. */
 export function parseAgentRelay(text) {
   const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt";
   const norm = (id) => {
@@ -198,7 +198,49 @@ export function parseAgentRelay(text) {
     return x;
   };
   const t = String(text || "").trim();
+  const speakVerb = "say|tell|talk|message|ask|greet|welcome|introduce|impress";
+  // "I want Gemini to say something to Groq" / "have Gemini greet Groq"
   let m = t.match(
+    new RegExp(
+      `\\b(?:want|tell|ask|have|get|let)\\s+(${agents})\\s+to\\s+(?:(?:${speakVerb})\\s+)?(?:something\\s+)?(?:to\\s+)?(${agents})\\b`,
+      "i",
+    ),
+  );
+  if (m && norm(m[1]) !== norm(m[2])) {
+    return { from: norm(m[1]), to: norm(m[2]), raw: t, speak: true };
+  }
+  // "have Gemini greet Groq" (no "to" after speaker)
+  m = t.match(
+    new RegExp(
+      `\\b(?:want|tell|ask|have|get|let)\\s+(${agents})\\s+(?:${speakVerb})\\s+(?:something\\s+)?(?:to\\s+)?(${agents})\\b`,
+      "i",
+    ),
+  );
+  if (m && norm(m[1]) !== norm(m[2])) {
+    return { from: norm(m[1]), to: norm(m[2]), raw: t, speak: true };
+  }
+  // "Gemini greet Groq" / "Gemini say something to Groq"
+  m = t.match(
+    new RegExp(
+      `\\b(${agents})\\s+(?:${speakVerb})\\s+(?:something\\s+)?(?:to\\s+|with\\s+|at\\s+)?(${agents})\\b`,
+      "i",
+    ),
+  );
+  if (m && norm(m[1]) !== norm(m[2])) {
+    return { from: norm(m[1]), to: norm(m[2]), raw: t, speak: true };
+  }
+  // "Gemini … first impression … to Groq"
+  m = t.match(
+    new RegExp(
+      `\\b(${agents})\\b[\\s\\S]{0,80}?\\b(?:${speakVerb}|make\\s+(?:a\\s+)?(?:good\\s+)?(?:first\\s+)?impression)\\b[\\s\\S]{0,60}?\\b(?:to|with|at)\\s+(${agents})\\b`,
+      "i",
+    ),
+  );
+  if (m && norm(m[1]) !== norm(m[2])) {
+    return { from: norm(m[1]), to: norm(m[2]), raw: t, speak: true };
+  }
+  // "tell Gemini to share/send with Groq"
+  m = t.match(
     new RegExp(
       `\\b(?:tell|ask|have|get)\\s+(${agents})\\b[\\s\\S]{0,140}?\\b(?:share|send|pass|relay|forward|give)\\b[\\s\\S]{0,100}?\\b(?:with|to)\\s+(${agents})\\b`,
       "i",
@@ -211,26 +253,83 @@ export function parseAgentRelay(text) {
     new RegExp(`\\b(${agents})\\b[\\s\\S]{0,50}?\\b(?:share|send|pass|relay)\\b[\\s\\S]{0,50}?\\b(?:with|to)\\s+(${agents})\\b`, "i"),
   );
   if (m) return { from: norm(m[1]), to: norm(m[2]), raw: t };
+  // "Tell Gemini to make a good first impression" + earlier "to Groq"
+  m = t.match(new RegExp(`\\b(?:tell|ask|have|get)\\s+(${agents})\\s+to\\b`, "i"));
+  if (m) {
+    const from = norm(m[1]);
+    const toHit = t.match(new RegExp(`\\b(?:to|with|at)\\s+(${agents})\\b`, "i"));
+    const to = toHit ? norm(toHit[1]) : null;
+    if (to && to !== from) return { from, to, raw: t, speak: true };
+    return { from, to: null, raw: t, speak: true };
+  }
+  // last: bare "say something to Groq" (no speaker named)
   m = t.match(
     new RegExp(`\\b(?:say|tell|talk|message|ask)\\s+(?:something\\s+)?(?:to\\s+)?(${agents})\\b`, "i"),
   );
-  if (m) return { from: null, to: norm(m[1]), raw: t, direct: true };
+  if (m) return { from: null, to: norm(m[1]), raw: t, direct: true, speak: true };
   return null;
 }
 
-/** Source agent prepares a handoff; target agent continues the task. */
+/**
+ * Crew relay.
+ * speak=true → source agent addresses the target (bubble = source). Used for greetings / first impressions.
+ * speak=false → source prepares a handoff; target continues (bubble = target).
+ */
 export async function agentRelayComplete(
   settings,
-  { fromId, toId, payload, operator = "Joshua", temperature = 0.7, maxTokens = 1200 } = {},
+  {
+    fromId,
+    toId,
+    payload,
+    operator = "Joshua",
+    temperature = 0.7,
+    maxTokens = 1200,
+    speak = false,
+  } = {},
 ) {
-  const toProv = PROVIDERS.find((p) => p.id === toId);
-  if (!toProv) throw new Error(`Unknown agent: ${toId}`);
+  const toProv = toId ? PROVIDERS.find((p) => p.id === toId) : null;
+  const fromProv = fromId ? PROVIDERS.find((p) => p.id === fromId) : null;
+  let handoff = String(payload || "").trim();
+  let fromLabel = "";
+
+  // Speak mode: FROM talks TO the other agent — that speech is the deliverable.
+  if (speak && fromProv) {
+    const fromKey = providerKey(settings, fromProv);
+    if (!fromKey) throw new Error(`No ${fromProv.label} key — paste in DATA`);
+    fromLabel = fromProv.label || fromId;
+    const toLabel = toProv?.label || toId || "the other agent";
+    const out = await openaiWithFallback(fromProv, fromKey, "life", [
+      {
+        role: "system",
+        content:
+          `${agentSystem(fromId, operator)}\n` +
+          `You are speaking directly to ${toLabel} (another AI on Joshua's crew). ` +
+          `Address them by name. First impression — clear, sharp, no meta ("as an AI…"). ` +
+          `Do not reply to Joshua; speak to ${toLabel}.`,
+      },
+      {
+        role: "user",
+        content: `Joshua's instruction:\n${handoff}\n\nNow speak to ${toLabel}.`,
+      },
+    ], temperature, Math.min(maxTokens, 600));
+    markHealth(fromId, true);
+    return {
+      text: out.text,
+      provider: out.provider,
+      model: out.model,
+      from: fromId,
+      to: toId || null,
+      speaker: fromId,
+      handoff: String(out.text || "").trim(),
+      tokens: Number(out.tokens) || 0,
+      speak: true,
+    };
+  }
+
+  if (!toProv) throw new Error(`Unknown agent: ${toId || "?"}`);
   const toKey = providerKey(settings, toProv);
   if (!toKey) throw new Error(`No ${toProv.label} key — paste in DATA`);
 
-  let handoff = String(payload || "").trim();
-  let fromLabel = "";
-  const fromProv = fromId ? PROVIDERS.find((p) => p.id === fromId) : null;
   if (fromProv && fromId !== toId) {
     const fromKey = providerKey(settings, fromProv);
     if (!fromKey) throw new Error(`No ${fromProv.label} key — paste in DATA`);
@@ -264,8 +363,10 @@ export async function agentRelayComplete(
     model: out.model,
     from: fromId || null,
     to: toId,
+    speaker: toId,
     handoff,
     tokens: Number(out.tokens) || 0,
+    speak: false,
   };
 }
 
