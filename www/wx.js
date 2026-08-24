@@ -25,8 +25,12 @@ const WMO = {
   99: "Severe thunder + hail",
 };
 
-export const DEFAULT_FILTERS = { km: 25, hailIn: 0, windMph: 38, days: 180, year: "all", sort: "date" };
+export const DEFAULT_FILTERS = { km: 15, hailIn: 0, windMph: 38, days: 180, year: "all", sort: "date" };
 let wxFilters = { ...DEFAULT_FILTERS };
+/** Current map pin — storm zones and graph are scoped to this point. */
+let pinLat = null;
+let pinLon = null;
+let pinRadiusLayer = null;
 let overlays = {};
 /** Exclusive weather product on the map: precip | cloud | vis | wind | hail */
 let activeWxProduct = "precip";
@@ -739,7 +743,7 @@ function setRadarTilePath(path, { crossfade = false } = {}) {
 
 export function applyWxTimelineFilters() {
   if (!map) return;
-  const wantPrecip = wxTimelineFilters.precip && activeWxProduct === "precip";
+  const wantPrecip = wxTimelineFilters.precip;
   for (const layer of radarLayers) {
     if (!layer) continue;
     try {
@@ -750,25 +754,32 @@ export function applyWxTimelineFilters() {
       /* ignore */
     }
   }
-  if (wantPrecip && overlays.precip && !radarLayers[0]) {
+  if (wantPrecip && overlays.precip && !radarFrames.length) {
     try {
       if (!map.hasLayer(overlays.precip)) overlays.precip.addTo(map);
     } catch {
       /* ignore */
     }
-  } else if (!wantPrecip && overlays.precip && !radarLayers[0]) {
+  } else if (!wantPrecip && overlays.precip && !radarFrames.length) {
     try {
       map.removeLayer(overlays.precip);
     } catch {
       /* ignore */
     }
   }
+  applyOverlays();
   syncHazardLayers();
   document.querySelectorAll("[data-wx-fl]").forEach((btn) => {
     const k = btn.dataset.wxFl;
     if (k === "all" || k === "none") return;
     btn.classList.toggle("on", Boolean(wxTimelineFilters[k]));
   });
+  const hourly = document.getElementById("wx-hourly");
+  const bundle = window.__pipWxBundle;
+  const esc = window.__pipWxEsc || ((s) => String(s ?? ""));
+  if (hourly && bundle?.hours?.length) {
+    renderHourlyTimeline(hourly, bundle, esc, window.__pipWxHailDays || []);
+  }
 }
 
 function wxFilterBarHtml() {
@@ -846,18 +857,53 @@ export function stopHourPlay() {
   }
 }
 
-export function radarScrubberHtml() {
-  if (radarFrames.length < 2 || activeWxProduct !== "precip") return "";
+function radarScrubberInnerHtml() {
+  if (radarFrames.length < 2 || !wxTimelineFilters.precip) return "";
   const max = radarFrames.length - 1;
-  return `<div class="wx-radar-scrub" id="wx-radar-scrub">
-    ${wxFilterBarHtml()}
-    <div class="wx-radar-scrub-row">
+  return `<div class="wx-radar-scrub-row">
     <button type="button" id="wx-radar-play" class="wx-play-btn${radarPlaying ? " on" : ""}">${radarPlaying ? "PAUSE" : "PLAY"}</button>
-    <span class="wx-radar-tag">PRECIP</span>
+    <span class="wx-radar-tag">LIVE PRECIP</span>
     <input type="range" id="wx-radar-range" min="0" max="${max}" value="${radarFrameIdx}" step="1" />
     <span id="wx-radar-label" class="wx-radar-label">…</span>
-    </div>
   </div>`;
+}
+
+/** Single live-control strip: filters + radar scrub (no duplicate bars elsewhere). */
+export function wxLiveControlsHtml() {
+  const radar = radarScrubberInnerHtml();
+  const active = [];
+  if (wxTimelineFilters.precip) active.push("precip");
+  if (wxTimelineFilters.hail) active.push("hail");
+  if (wxTimelineFilters.wind) active.push("wind");
+  if (wxTimelineFilters.temp) active.push("temp");
+  const hint =
+    active.length > 1
+      ? `<p class="wx-live-hint muted">Live ${active.join(" · ")} · hourly timeline below · tap hail bars for pin zones</p>`
+      : active.length === 1 && active[0] !== "precip"
+        ? `<p class="wx-live-hint muted">Live ${active[0]} · hourly timeline below</p>`
+        : "";
+  return `<div class="wx-live-controls" id="wx-live-controls">
+    ${wxFilterBarHtml()}
+    ${radar ? `<div class="wx-radar-scrub" id="wx-radar-scrub">${radar}</div>` : ""}
+    ${hint}
+  </div>`;
+}
+
+/** @deprecated use wxLiveControlsHtml */
+export function radarScrubberHtml() {
+  return wxLiveControlsHtml();
+}
+
+export function bindWxLiveControls(root = document) {
+  bindRadarScrubber(root);
+  bindWxTimelineFilters(root, () => {
+    applyWxTimelineFilters();
+    const host = root.querySelector?.("#wx-live-controls") || document.getElementById("wx-live-controls");
+    if (host) {
+      host.outerHTML = wxLiveControlsHtml();
+      bindWxLiveControls(root);
+    }
+  });
 }
 
 export function bindRadarScrubber(root = document) {
@@ -865,7 +911,6 @@ export function bindRadarScrubber(root = document) {
   const play = root.querySelector?.("#wx-radar-play") || document.getElementById("wx-radar-play");
   if (!range) return;
   setRadarFrame(radarFrameIdx);
-  bindWxTimelineFilters(root, () => applyWxTimelineFilters());
   range.oninput = () => {
     stopRadarPlay();
     setRadarFrame(range.value);
@@ -1135,7 +1180,7 @@ export function selectStormDate(date, { fit = false } = {}) {
   if (lastHailRows.length || lastWindRows.length) {
     drawHailMarkers(lastHailRows, lastWindRows, { fit });
   }
-  if (selectedStormDate && activeWxProduct !== "hail" && activeWxProduct !== "precip") {
+  if (selectedStormDate && wxTimelineFilters.hail && activeWxProduct !== "hail" && activeWxProduct !== "precip") {
     setMapLayer("hail");
   }
   if (fit) {
@@ -1209,6 +1254,7 @@ export function paintLiveWeather(root, bundle, hailDays, esc) {
   if (!root || !bundle) return;
   window.__pipWxBundle = bundle;
   window.__pipWxHailDays = hailDays || [];
+  window.__pipWxEsc = esc;
   const hail = hailDays || [];
   const sum =
     root.querySelector("#wx-summary") ||
@@ -1267,11 +1313,10 @@ export function renderHourlyTimeline(root, bundle, esc, hailDays = [], opts = {}
     root.dataset.wxMode = mode;
     root.innerHTML = `
       <div class="wx-timeline">
-        ${wxFilterBarHtml()}
         <div class="wx-timeline-modes">
-          <button type="button" data-wx-mode="temp" class="${mode === "temp" ? "on" : ""}">TEMP</button>
-          <button type="button" data-wx-mode="precip" class="${mode === "precip" ? "on" : ""}">PRECIP</button>
-          <button type="button" data-wx-mode="wind" class="${mode === "wind" ? "on" : ""}">WIND</button>
+          <button type="button" data-wx-mode="temp" class="${mode === "temp" && wxTimelineFilters.temp ? "on" : ""}${!wxTimelineFilters.temp ? " off" : ""}">TEMP</button>
+          <button type="button" data-wx-mode="precip" class="${mode === "precip" && wxTimelineFilters.precip ? "on" : ""}${!wxTimelineFilters.precip ? " off" : ""}">PRECIP</button>
+          <button type="button" data-wx-mode="wind" class="${mode === "wind" && wxTimelineFilters.wind ? "on" : ""}${!wxTimelineFilters.wind ? " off" : ""}">WIND</button>
         </div>
         <div class="wx-timeline-head">
           <span class="wx-timeline-when">${esc(when)}</span>
@@ -1284,7 +1329,6 @@ export function renderHourlyTimeline(root, bundle, esc, hailDays = [], opts = {}
           `${hours.length} hrs · −12h → +36h · tap bars · ${hailDates.size ? hailDates.size + " hail days marked" : "no hail on timeline"}`,
         )}</div>
       </div>`;
-    bindWxTimelineFilters(root, () => paint(Number(root.dataset.wxHour || i)));
     root.querySelectorAll("[data-wx-mode]").forEach((b) => {
       b.onclick = () => {
         mode = b.dataset.wxMode;
@@ -1455,7 +1499,7 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const filterDays = Number(filters.days) || 180;
   const archiveDays = Math.min(filterDays, 730);
   const swdiDays = Math.min(filterDays, 180);
-  const km = Number(filters.km) || 25;
+  const km = Number(filters.km) || 15;
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
   const [geo, wxNow, archiveStorms, spc, swdi, lsr] = await Promise.all([
     geoP,
@@ -1649,7 +1693,7 @@ export async function quickPin(settings, lat, lon) {
   return { ok: true, geo, lat, lon, address: geo?.address || "", weather: wx, hail: [], recent_storms: [] };
 }
 
-function pinFilterHailRows(rows, lat, lon, km = 25) {
+function pinFilterHailRows(rows, lat, lon, km = 15) {
   const pinLat = Number(lat);
   const pinLon = Number(lon);
   const radius = Number(km) || 25;
@@ -1666,6 +1710,63 @@ function pinFilterHailRows(rows, lat, lon, km = 25) {
       const dist = Number(h.distance_km);
       return !Number.isFinite(dist) || dist <= radius;
     });
+}
+
+function hailNearPin(rows, day = null) {
+  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return rows || [];
+  const km = Number(wxFilters.km) || 15;
+  return (rows || []).filter((h) => {
+    const d = String(h.date || "").slice(0, 10);
+    if (day && d !== day) return false;
+    if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
+    const dist = Number.isFinite(h.distance_km) ? h.distance_km : haversineKm(pinLat, pinLon, h.lat, h.lon);
+    return dist <= km;
+  });
+}
+
+function windNearPin(rows, day = null) {
+  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return rows || [];
+  const km = Number(wxFilters.km) || 15;
+  return (rows || []).filter((w) => {
+    const d = String(w.date || "").slice(0, 10);
+    if (day && d !== day) return false;
+    if (!Number.isFinite(w.lat) || !Number.isFinite(w.lon)) return false;
+    const dist = Number.isFinite(w.distance_km) ? w.distance_km : haversineKm(pinLat, pinLon, w.lat, w.lon);
+    return dist <= km;
+  });
+}
+
+export function setWxPin(lat, lon) {
+  pinLat = Number(lat);
+  pinLon = Number(lon);
+  drawPinRadius();
+  if (lastHailRows.length || lastWindRows.length) {
+    drawHailMarkers(lastHailRows, lastWindRows);
+  }
+}
+
+function drawPinRadius() {
+  if (!map || !window.L) return;
+  if (pinRadiusLayer) {
+    try {
+      map.removeLayer(pinRadiusLayer);
+    } catch {
+      /* ignore */
+    }
+    pinRadiusLayer = null;
+  }
+  if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon)) return;
+  const km = Number(wxFilters.km) || 15;
+  pinRadiusLayer = window.L.circle([pinLat, pinLon], {
+    radius: km * 1000,
+    color: "#7dff5a",
+    fillColor: "#7dff5a",
+    fillOpacity: 0.05,
+    weight: 1,
+    dashArray: "6 8",
+    interactive: false,
+    className: "wx-pin-radius",
+  }).addTo(map);
 }
 
 function ringPolygon(lat, lon, radiusM, sides = 6) {
@@ -1860,7 +1961,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   hailLayer = window.L.layerGroup();
   windLayer = window.L.layerGroup();
 
-  const collapsed = collapseHailByDate(hailRows || []);
+  const day = selectedStormDate;
+  const nearHail = hailNearPin(hailRows || [], null);
+  const collapsed = collapseHailByDate(nearHail);
   const daySet = new Set(collapsed.map((h) => h.date));
   if (selectedStormDate && !daySet.has(selectedStormDate)) {
     selectedStormDate = null;
@@ -1868,16 +1971,17 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   if (!selectedStormDate && collapsed.length) {
     selectedStormDate = [...collapsed].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0]?.date || null;
   }
-  const day = selectedStormDate;
+  const activeDay = selectedStormDate;
   const zones = collapsed
-    .filter((h) => !day || h.date === day)
+    .filter((h) => !activeDay || h.date === activeDay)
     .sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))
     .slice(0, 36);
 
   const fitPts = [];
   for (const h of zones) {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
-    const subRings = buildDetailedZoneRings(h, hailRows);
+    const dayHits = hailNearPin(hailRows || [], h.date);
+    const subRings = buildDetailedZoneRings(h, dayHits.length ? dayHits : nearHail);
     for (const sub of subRings) {
       const sz = sub.maxSize || parseFloat(h.size_in);
       const col = hailZoneColor(sz);
@@ -1895,7 +1999,7 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         .bindPopup(
           hailPopupHtml(
             { ...h, hits: sub.hits || h.hits, size_in: String(sub.maxSize || h.size_in) },
-            day,
+            activeDay,
           ),
         )
         .addTo(hailLayer);
@@ -1914,12 +2018,8 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
         }).addTo(hailLayer);
       }
     }
-    const dayHits = (hailRows || []).filter(
-      (p) => String(p.date || "").slice(0, 10) === h.date && Number.isFinite(p.lat) && Number.isFinite(p.lon),
-    );
     for (const p of dayHits.slice(0, 32)) {
       const isSpot = /spc|lsr|spot|iem/i.test(String(p.source || ""));
-      const pSz = parseFloat(p.size_in);
       window.L.circleMarker([p.lat, p.lon], {
         radius: isSpot ? 6 : 4,
         color: isSpot ? "#ff6b6b" : "#7dff5a",
@@ -1935,11 +2035,12 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
     }
   }
 
+  const nearWind = windNearPin(windRows || [], activeDay || null);
   const windDays = new Map();
-  for (const w of windRows || []) {
+  for (const w of nearWind) {
     const wday = String(w.date || "").slice(0, 10);
     if (!wday) continue;
-    if (day && wday !== day) continue;
+    if (activeDay && wday !== activeDay) continue;
     const mph = Number(w.wind_mph) || 0;
     const prev = windDays.get(wday);
     if (!prev || mph > (Number(prev.wind_mph) || 0)) windDays.set(wday, w);
@@ -1960,10 +2061,24 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
       .addTo(windLayer);
   }
   syncHazardLayers();
-  if (opts.fit && fitPts.length && map) {
+  if (opts.fit && map) {
+    const pts = [];
+    if (Number.isFinite(pinLat) && Number.isFinite(pinLon)) pts.push([pinLat, pinLon]);
+    for (const h of nearHail.filter((p) => !activeDay || String(p.date || "").slice(0, 10) === activeDay)) {
+      if (Number.isFinite(h.lat) && Number.isFinite(h.lon)) pts.push([h.lat, h.lon]);
+    }
     try {
-      const bounds = window.L.latLngBounds(fitPts);
-      if (bounds.isValid()) map.fitBounds(bounds.pad(0.3), { maxZoom: 12, animate: true });
+      if (pts.length >= 1) {
+        const bounds = window.L.latLngBounds(pts);
+        if (bounds.isValid()) {
+          map.fitBounds(bounds.pad(pts.length === 1 ? 0.08 : 0.35), { maxZoom: 14, animate: true });
+          return;
+        }
+      }
+      if (fitPts.length) {
+        const bounds = window.L.latLngBounds(fitPts);
+        if (bounds.isValid()) map.fitBounds(bounds.pad(0.3), { maxZoom: 12, animate: true });
+      }
     } catch {
       /* ignore */
     }
@@ -1972,18 +2087,15 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
 
 function syncHazardLayers() {
   if (!map) return;
-  const showHail =
-    wxTimelineFilters.hail && (activeWxProduct === "hail" || activeWxProduct === "precip");
-  const showWind = wxTimelineFilters.wind && activeWxProduct === "wind";
+  const showHail = wxTimelineFilters.hail;
+  const showWind = wxTimelineFilters.wind;
   try {
     if (hailLayer) {
       if (showHail) hailLayer.addTo(map);
       else map.removeLayer(hailLayer);
     }
     if (windLayer) {
-      if (showWind && activeWxProduct === "wind") windLayer.addTo(map);
-      else if (activeWxProduct === "hail") map.removeLayer(windLayer);
-      else if (activeWxProduct === "precip") map.removeLayer(windLayer);
+      if (showWind) windLayer.addTo(map);
       else map.removeLayer(windLayer);
     }
   } catch {
@@ -1997,8 +2109,8 @@ function applyOverlays() {
     if (id === "radar") continue;
     let on = activeWxProduct === id || (id === "precip" && activeWxProduct === "precip");
     if (id === "precip") on = on && wxTimelineFilters.precip;
-    if (id === "cloud" || id === "vis") on = on && wxTimelineFilters.precip;
-    if (id === "wind") on = on && wxTimelineFilters.wind;
+    if (id === "cloud" || id === "vis") on = (activeWxProduct === id || activeWxProduct === "cloud" || activeWxProduct === "vis") && wxTimelineFilters.precip;
+    if (id === "wind") on = activeWxProduct === "wind" && wxTimelineFilters.wind;
     try {
       if (on) overlays[id].addTo(map);
       else map.removeLayer(overlays[id]);
@@ -2081,6 +2193,9 @@ export function destroyMap() {
     map = null;
   }
   pin = null;
+  pinRadiusLayer = null;
+  pinLat = null;
+  pinLon = null;
   hailLayer = null;
   windLayer = null;
   windFieldLayer = null;
@@ -2136,6 +2251,7 @@ export function mountMap(container, config, { onTap, center }) {
   map.on("click", (e) => {
     if (wxSuppressMapTap) return;
     const { lat, lng } = e.latlng;
+    setWxPin(lat, lng);
     if (pin) pin.setLatLng(e.latlng);
     else pin = window.L.marker(e.latlng).addTo(map);
     if (onTap) onTap(lat, lng);
@@ -2150,6 +2266,7 @@ export function mountMap(container, config, { onTap, center }) {
       /* ignore */
     }
   }, 80);
+  if (Number.isFinite(c.lat) && Number.isFinite(c.lon)) setWxPin(c.lat, c.lon);
   return map;
 }
 
@@ -2176,6 +2293,7 @@ export function setMapLayer(id) {
 
 export function flyToPin(lat, lon, zoom = 13) {
   if (!map || !window.L || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  setWxPin(lat, lon);
   map.setView([lat, lon], zoom);
   if (pin) pin.setLatLng([lat, lon]);
   else pin = window.L.marker([lat, lon]).addTo(map);
@@ -2281,7 +2399,7 @@ function cutoffDate(days) {
 
 export function filterHailRaw(data, filters = wxFilters) {
   const since = cutoffDate(filters.days);
-  const km = Number(filters.km) || 25;
+  const km = Number(filters.km) || 15;
   const hailMin = Number(filters.hailIn) || 0;
   const year = String(filters.year || "all");
   const pinLat = Number(data.lat ?? data._meta?.lat);
@@ -2305,7 +2423,7 @@ export function filterHailRaw(data, filters = wxFilters) {
 
 export function filterDossier(data, filters = wxFilters) {
   const since = cutoffDate(filters.days);
-  const km = Number(filters.km) || 25;
+  const km = Number(filters.km) || 15;
   const windMin = Number(filters.windMph) || 0;
   const year = String(filters.year || "all");
   const sort = String(filters.sort || "date");
@@ -2531,7 +2649,6 @@ function bindRoofDossier(root, data, esc, onResearch, onRefetch) {
   if (btn && onResearch) btn.onclick = onResearch;
   const onStormPick = (date) => {
     selectStormDate(date, { fit: true });
-    drawHailMarkers(hailRaw, wind, { fit: true });
     renderRoofDossier(root, data, esc, onResearch, onRefetch);
   };
   bindStormGraph(root, onStormPick);
@@ -2543,6 +2660,7 @@ function bindRoofDossier(root, data, esc, onResearch, onRefetch) {
     if (!el) return;
     el.onchange = async () => {
       wxFilters[key] = cast(el.value);
+      if (key === "km") drawPinRadius();
       const needRefetch =
         onRefetch &&
         ((key === "days" && Number(wxFilters.days) > (meta.fetchedDays || 0)) ||
@@ -2611,9 +2729,8 @@ export function layerButtons(config, esc) {
       return `<button type="button" data-layer="${esc(id)}" class="wx-product ${on ? "on" : ""}">${esc(l.label)}</button>`;
     })
     .join("");
-  const scrub = radarScrubberHtml();
   const row = wxBtns ? `${baseBtns}<span class="wx-split"></span>${wxBtns}` : baseBtns;
-  return scrub ? `${row}${scrub}` : row;
+  return row;
 }
 
 export async function fetchLiveWeather(lat, lon) {

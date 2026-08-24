@@ -19,7 +19,7 @@ import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
-import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderWxPanels, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, renderRoofDossier, pinDossier, refetchDossier, startWeatherWatch, filterDossier, filterHailRaw, selectStormDate, bindRadarScrubber, bindWxMapExpand, fetchWeatherBundle, paintLiveWeather, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml, weatherSummaryHtml, collapseHailByDate } from "./wx.js";
+import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderWxPanels, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, renderRoofDossier, pinDossier, refetchDossier, startWeatherWatch, filterDossier, filterHailRaw, selectStormDate, bindWxLiveControls, bindWxMapExpand, fetchWeatherBundle, paintLiveWeather, renderHourlyTimeline, geocodeAddress, flyToPin, wxLiveControlsHtml, weatherSummaryHtml, collapseHailByDate, setWxPin } from "./wx.js";
 import { pickAndIdentify, detectVisionMode, pickImageFile, fileToDataUrl } from "./vision.js";
 import { looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
@@ -1013,8 +1013,8 @@ async function renderWx() {
   const refreshLayers = (cfg) => {
     const el = $("#wx-layers");
     if (!el || !cfg) return;
-    el.innerHTML = layerButtons(cfg, esc);
-    bindRadarScrubber(document);
+    el.innerHTML = layerButtons(cfg, esc) + wxLiveControlsHtml();
+    bindWxLiveControls(document);
   };
   try {
     const center = await resolveMapCenter(db.settings);
@@ -1032,22 +1032,14 @@ async function renderWx() {
       setMapLayer(id);
       if (isWx) {
         $("#wx-layers").querySelectorAll("button.wx-product, button.overlay").forEach((x) => x.classList.toggle("on", x === b));
-        // Rebuild scrubber when switching to/from precip.
-        const scrubHost = $("#wx-layers");
-        const oldScrub = scrubHost?.querySelector("#wx-radar-scrub");
-        if (oldScrub) oldScrub.remove();
-        const html = radarScrubberHtml();
-        if (html && scrubHost) {
-          scrubHost.insertAdjacentHTML("beforeend", html);
-          bindRadarScrubber(document);
-        }
+        refreshLayers(cfg);
       } else {
         $("#wx-layers").querySelectorAll("button[data-layer]:not(.wx-product):not(.overlay)").forEach((x) => x.classList.toggle("on", x === b));
       }
     };
     mountMap($("#wx-map"), cfg, { center, onTap: onWxTap });
     bindWxMapExpand($("#wx-map-shell"));
-    bindRadarScrubber(document);
+    bindWxLiveControls(document);
     const searchForm = $("#wx-search");
     if (searchForm) {
       searchForm.onsubmit = async (e) => {
@@ -1117,6 +1109,7 @@ async function renderWx() {
 async function onWxTap(lat, lon) {
   wxState.lat = lat;
   wxState.lon = lon;
+  setWxPin(lat, lon);
   selectStormDate(null, { fit: false });
   setStatus("PINNED · ADDRESS…");
   const panel = $("#wx-panel");
