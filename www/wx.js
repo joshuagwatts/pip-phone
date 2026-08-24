@@ -1071,27 +1071,32 @@ export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate
     .sort((a, b) => String(a.date).localeCompare(String(b.date)))
     .slice(-24);
   if (!rows.length) {
-    return `<div class="wx-storm-graph empty"><p class="muted">No hail days in range — widen NEAR / WINDOW or run DEEP RESEARCH.</p></div>`;
+    return `<div class="wx-storm-graph empty"><p class="muted">No hail days within ${wxFilters.km} km of this pin — widen NEAR / WINDOW or run DEEP RESEARCH.</p></div>`;
   }
   const maxSz = Math.max(...rows.map((h) => parseFloat(h.size_in) || 0), 1);
-  const w = Math.max(280, rows.length * 18);
-  const h = 110;
+  const maxHits = Math.max(...rows.map((h) => Number(h.hits) || 1), 1);
+  const w = Math.max(280, rows.length * 20);
+  const h = 118;
   const pad = 18;
-  const barArea = h - pad - 22;
-  const barW = Math.max(6, (w - 8) / rows.length - 3);
+  const barArea = h - pad - 26;
+  const slotW = (w - 8) / rows.length;
   const bars = rows
     .map((row, i) => {
       const sz = parseFloat(row.size_in) || 0;
+      const hits = Number(row.hits) || 1;
       const bh = Math.max(4, Math.round((sz / maxSz) * barArea));
-      const x = 4 + i * ((w - 8) / rows.length);
+      const bw = Math.max(6, slotW * 0.72 * Math.min(1.8, 0.65 + (hits / maxHits) * 0.55));
+      const x = 4 + i * slotW + (slotW - bw) / 2;
       const y = pad + (barArea - bh);
       const col = hailZoneColor(sz);
       const label = String(row.date || "").slice(5);
       const on = selectedDate && selectedDate === row.date;
+      const dist = row.distance_km != null ? `${row.distance_km}km` : "";
       return `<g class="wx-sg-bar${on ? " on" : ""}" data-storm-date="${esc(row.date)}" role="button" tabindex="0">
-        <rect x="${x.toFixed(1)}" y="${y}" width="${barW.toFixed(1)}" height="${bh}" fill="${col.fill}" stroke="${on ? "var(--phos)" : col.stroke}" stroke-width="${on ? 1.8 : 0.6}" opacity="${on ? 1 : 0.88}" />
-        <text x="${(x + barW / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle" class="wx-sg-x">${esc(label)}</text>
-        <text x="${(x + barW / 2).toFixed(1)}" y="${Math.max(10, y - 3)}" text-anchor="middle" class="wx-sg-v">${esc(String(sz))}"</text>
+        <rect x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${bh}" fill="${col.fill}" stroke="${on ? "var(--phos)" : col.stroke}" stroke-width="${on ? 1.8 : 0.6}" opacity="${on ? 1 : 0.88}" />
+        <text x="${(x + bw / 2).toFixed(1)}" y="${Math.max(10, y - 3)}" text-anchor="middle" class="wx-sg-v">${esc(String(sz))}"</text>
+        <text x="${(x + bw / 2).toFixed(1)}" y="${h - 16}" text-anchor="middle" class="wx-sg-x">${esc(label)}</text>
+        ${dist ? `<text x="${(x + bw / 2).toFixed(1)}" y="${h - 5}" text-anchor="middle" class="wx-sg-dist muted">${esc(dist)}</text>` : ""}
       </g>`;
     })
     .join("");
@@ -1099,11 +1104,11 @@ export function renderStormGraph(hailDays, esc, selectedDate = selectedStormDate
   const selLabel = selectedDate || biggest.date;
   return `<div class="wx-storm-graph">
     <div class="wx-storm-graph-head">
-      <span>HAIL ZONES · TAP A STORM DATE</span>
-      <span class="wx-storm-graph-peak">${esc(selLabel)} · map shows that day</span>
+      <span>HAIL ZONES · THIS PIN</span>
+      <span class="wx-storm-graph-peak">${esc(selLabel)} · ${rows.length} day(s) · ${wxFilters.km} km</span>
     </div>
-    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Hail size by storm date">${bars}</svg>
-    <div class="wx-storm-graph-legend muted">Tap a bar → storm zones on map · yellow light → purple/white extreme · height = max inches</div>
+    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Hail size by storm date near pin">${bars}</svg>
+    <div class="wx-storm-graph-legend muted">Tap a bar → storm zones on map · height = max inches · width = signatures · label = km from pin</div>
   </div>`;
 }
 
@@ -1296,7 +1301,8 @@ export function renderHourlyTimeline(root, bundle, esc, hailDays = [], opts = {}
 export function renderWeatherBoot(root, geo, wx, hail, esc) {
   const addr = (geo && (geo.address || geo.city)) || "Your area";
   const hailRows = collapseHailByDate(hail || []);
-  if (!selectedStormDate && hailRows.length) {
+  selectedStormDate = null;
+  if (hailRows.length) {
     selectedStormDate = [...hailRows].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0]?.date || null;
   }
   const bundleStub = {
@@ -1565,6 +1571,9 @@ export async function researchPin(settings, lat, lon, address = "", deep = true)
   const local = await localResearch(lat, lon, address, { deep, filters: wxFilters });
   if (usableRemote(remote)) {
     const norm = normalizeDossier(remote) || local;
+    norm.lat = lat;
+    norm.lon = lon;
+    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, Number(wxFilters.km) || 25);
     if ((local.hail?.length || 0) > (norm.hail?.length || 0)) {
       norm.hail = local.hail;
       norm.wind = local.wind || [];
@@ -1601,18 +1610,62 @@ export async function pinDossier(settings, lat, lon, { onPartial, deep = false }
 }
 
 export async function quickPin(settings, lat, lon) {
-  const remote = await api("/api/storm/pin", {
-    settings,
-    method: "POST",
-    body: { lat, lon },
-    timeout: 20000,
-  }).catch(() => null);
-  if (remote) return remote;
+  const [remote, local] = await Promise.all([
+    api("/api/storm/pin", {
+      settings,
+      method: "POST",
+      body: { lat, lon },
+      timeout: 20000,
+    }).catch(() => null),
+    quickDossier(settings, lat, lon).catch(() => null),
+  ]);
+  if (local) {
+    const norm = normalizeDossier(local) || local;
+    norm.lat = lat;
+    norm.lon = lon;
+    if (remote) {
+      const r = normalizeDossier(remote) || {};
+      norm.geo = r.geo || norm.geo;
+      norm.weather = (r.weather && r.weather.ok !== false ? r.weather : null) || norm.weather;
+      if ((local.hail?.length || 0) >= (r.hail?.length || 0)) {
+        /* keep local pin-filtered hail */
+      } else if (r.hail?.length) {
+        norm.hail = pinFilterHailRows(r.hail, lat, lon, Number(wxFilters.km) || 25);
+      }
+    }
+    return norm;
+  }
+  if (remote) {
+    const norm = normalizeDossier(remote) || remote;
+    norm.lat = lat;
+    norm.lon = lon;
+    norm.hail = pinFilterHailRows(norm.hail || [], lat, lon, Number(wxFilters.km) || 25);
+    return norm;
+  }
   const [geo, wx] = await Promise.all([
     reverseGeocode(lat, lon),
     currentWeather(lat, lon),
   ]);
-  return { ok: true, geo, weather: wx, hail: [], recent_storms: [] };
+  return { ok: true, geo, lat, lon, address: geo?.address || "", weather: wx, hail: [], recent_storms: [] };
+}
+
+function pinFilterHailRows(rows, lat, lon, km = 25) {
+  const pinLat = Number(lat);
+  const pinLon = Number(lon);
+  const radius = Number(km) || 25;
+  return (rows || [])
+    .map((h) => {
+      if (!Number.isFinite(pinLat) || !Number.isFinite(pinLon) || !Number.isFinite(h.lat) || !Number.isFinite(h.lon)) {
+        return h;
+      }
+      const dist = haversineKm(pinLat, pinLon, h.lat, h.lon);
+      return { ...h, distance_km: Math.round(dist * 10) / 10 };
+    })
+    .filter((h) => {
+      if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
+      const dist = Number(h.distance_km);
+      return !Number.isFinite(dist) || dist <= radius;
+    });
 }
 
 function ringPolygon(lat, lon, radiusM, sides = 6) {
@@ -1808,6 +1861,10 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   windLayer = window.L.layerGroup();
 
   const collapsed = collapseHailByDate(hailRows || []);
+  const daySet = new Set(collapsed.map((h) => h.date));
+  if (selectedStormDate && !daySet.has(selectedStormDate)) {
+    selectedStormDate = null;
+  }
   if (!selectedStormDate && collapsed.length) {
     selectedStormDate = [...collapsed].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0]?.date || null;
   }
@@ -2227,13 +2284,20 @@ export function filterHailRaw(data, filters = wxFilters) {
   const km = Number(filters.km) || 25;
   const hailMin = Number(filters.hailIn) || 0;
   const year = String(filters.year || "all");
+  const pinLat = Number(data.lat ?? data._meta?.lat);
+  const pinLon = Number(data.lon ?? data._meta?.lon);
   return (data.hail || []).filter((h) => {
     if (year !== "all") {
       if (!h.date || !String(h.date).startsWith(year)) return false;
     } else if (h.date && h.date < since) {
       return false;
     }
-    if (h.distance_km != null && h.distance_km > km) return false;
+    let dist = h.distance_km;
+    if (Number.isFinite(pinLat) && Number.isFinite(pinLon) && Number.isFinite(h.lat) && Number.isFinite(h.lon)) {
+      dist = haversineKm(pinLat, pinLon, h.lat, h.lon);
+    }
+    if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) return false;
+    if (dist != null && dist > km) return false;
     const sz = parseFloat(h.size_in);
     return Number.isNaN(sz) || sz >= hailMin;
   });
@@ -2514,6 +2578,9 @@ function bindRoofDossier(root, data, esc, onResearch, onRefetch) {
 export function renderRoofDossier(root, data, esc, onResearch, onRefetch) {
   if (!root) return;
   const { hail } = filterDossier(data, wxFilters);
+  if (selectedStormDate && !hail.some((h) => h.date === selectedStormDate)) {
+    selectedStormDate = null;
+  }
   if (!selectedStormDate && hail.length) {
     selectedStormDate = hail[0]?.date || null;
   }

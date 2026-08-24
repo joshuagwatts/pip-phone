@@ -73,9 +73,10 @@ export const PROVIDERS = [
     base: "https://api.x.ai/v1",
     life: "grok-3-mini",
     boost: "grok-3-mini",
+    models: ["grok-3-mini", "grok-3", "grok-2-1212", "grok-beta"],
     fishy: true,
     keyUrl: "https://console.x.ai/",
-    tip: "xAI console key.",
+    tip: "xAI console key · /models often 404 — chat ping validates.",
   },
   {
     id: "deepseek",
@@ -164,6 +165,108 @@ export function hydrateHealth(saved) {
   return providerHealth();
 }
 
+function isAuthFail(msg) {
+  return /incorrect.?api.?key|invalid.?api.?key|unauthorized|http 401|authentication/i.test(String(msg || ""));
+}
+
+/** Parse "tell Gemini to share with Groq" style relay intents. */
+export function parseAgentRelay(text) {
+  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt";
+  const norm = (id) => {
+    const x = String(id || "").toLowerCase();
+    if (x === "grok") return "xai";
+    if (x === "chatgpt") return "openai";
+    return x;
+  };
+  const t = String(text || "").trim();
+  let m = t.match(
+    new RegExp(
+      `\\b(?:tell|ask|have|get)\\s+(${agents})\\b[\\s\\S]{0,140}?\\b(?:share|send|pass|relay|forward|give)\\b[\\s\\S]{0,100}?\\b(?:with|to)\\s+(${agents})\\b`,
+      "i",
+    ),
+  );
+  if (m) return { from: norm(m[1]), to: norm(m[2]), raw: t };
+  m = t.match(new RegExp(`\\b(?:share|send|pass|relay|forward)\\b[\\s\\S]{0,80}?\\b(?:with|to)\\s+(${agents})\\b`, "i"));
+  if (m) return { from: null, to: norm(m[1]), raw: t };
+  m = t.match(
+    new RegExp(`\\b(${agents})\\b[\\s\\S]{0,50}?\\b(?:share|send|pass|relay)\\b[\\s\\S]{0,50}?\\b(?:with|to)\\s+(${agents})\\b`, "i"),
+  );
+  if (m) return { from: norm(m[1]), to: norm(m[2]), raw: t };
+  return null;
+}
+
+/** Source agent prepares a handoff; target agent continues the task. */
+export async function agentRelayComplete(
+  settings,
+  { fromId, toId, payload, operator = "Joshua", temperature = 0.7, maxTokens = 1200 } = {},
+) {
+  const toProv = PROVIDERS.find((p) => p.id === toId);
+  if (!toProv) throw new Error(`Unknown agent: ${toId}`);
+  const toKey = providerKey(settings, toProv);
+  if (!toKey) throw new Error(`No ${toProv.label} key — paste in DATA`);
+
+  let handoff = String(payload || "").trim();
+  let fromLabel = "";
+  const fromProv = fromId ? PROVIDERS.find((p) => p.id === fromId) : null;
+  if (fromProv && fromId !== toId) {
+    const fromKey = providerKey(settings, fromProv);
+    if (!fromKey) throw new Error(`No ${fromProv.label} key — paste in DATA`);
+    fromLabel = fromProv.label || fromId;
+    const prep = await openaiWithFallback(fromProv, fromKey, "life", [
+      {
+        role: "system",
+        content:
+          `${agentSystem(fromId, operator)}\n` +
+          `Prepare a concise handoff for ${toProv.label}. Include facts, code, lists, or conclusions — no meta commentary.`,
+      },
+      { role: "user", content: `Hand off to ${toProv.label}:\n\n${handoff}` },
+    ], temperature, maxTokens);
+    markHealth(fromId, true);
+    handoff = String(prep.text || handoff).trim();
+  }
+
+  const out = await openaiWithFallback(toProv, toKey, "life", [
+    { role: "system", content: agentSystem(toId, operator) },
+    {
+      role: "user",
+      content: fromLabel
+        ? `${fromLabel} sent you this:\n\n${handoff}\n\nContinue the task as yourself.`
+        : handoff,
+    },
+  ], temperature, maxTokens);
+  markHealth(toId, true);
+  return {
+    text: out.text,
+    provider: out.provider,
+    model: out.model,
+    from: fromId || null,
+    to: toId,
+    handoff,
+    tokens: Number(out.tokens) || 0,
+  };
+}
+
+async function validateOne(settings, prov) {
+  // xAI + Gemini often 404 on /models even with valid keys — chat ping is truth.
+  if (prov.fishy || prov.id === "xai") {
+    const ping = await chatPing(settings, prov);
+    if (ping.ok) return { ok: true, id: prov.id, models: 1, via: "chat" };
+    if (isAuthFail(ping.error)) return { ok: false, id: prov.id, error: ping.error };
+    const r = await probeModels(settings, prov);
+    if (r.ok) return r;
+    return { ok: false, id: prov.id, error: ping.error || r.error, soft: !isAuthFail(ping.error) && !isAuthFail(r.error) };
+  }
+  const r = await probeModels(settings, prov);
+  if (r.ok) return r;
+  if (isAuthFail(r.error)) return r;
+  if (/http 404|empty models|bad JSON/i.test(String(r.error || ""))) {
+    const ping = await chatPing(settings, prov);
+    if (ping.ok) return { ok: true, id: prov.id, models: 1, via: "chat" };
+    if (isAuthFail(ping.error)) return { ok: false, id: prov.id, error: ping.error };
+  }
+  return r;
+}
+
 export async function probeModels(settings, prov) {
   const key = providerKey(settings, prov);
   if (!key) {
@@ -208,8 +311,9 @@ export async function validateKeyed(settings, { only } = {}) {
     keyed = keyed.filter((p) => p.id === id || p.field === id);
   }
   const jobs = keyed.map(async (prov) => {
-    const r = await probeModels(settings, prov);
-    markHealth(prov.id, r.ok, r.error);
+    const r = await validateOne(settings, prov);
+    if (!r.soft) markHealth(prov.id, r.ok, r.error);
+    else if (r.ok) markHealth(prov.id, true);
     return { id: prov.id, label: prov.label, ...r };
   });
   return Promise.all(jobs);
@@ -412,10 +516,6 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
     tokens,
     usage,
   };
-}
-
-function isAuthFail(msg) {
-  return /incorrect.?api.?key|invalid.?api.?key|unauthorized|http 401|authentication/i.test(String(msg || ""));
 }
 
 async function openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools) {

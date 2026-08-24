@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
-import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth } from "./cloud.js";
+import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, parseAgentRelay, agentRelayComplete } from "./cloud.js";
 import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
@@ -19,7 +19,7 @@ import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
-import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderWxPanels, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, renderRoofBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier, filterHailRaw, selectStormDate, bindRadarScrubber, bindWxMapExpand, fetchWeatherBundle, paintLiveWeather, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml, weatherSummaryHtml, collapseHailByDate } from "./wx.js";
+import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderWxPanels, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, renderRoofDossier, pinDossier, refetchDossier, startWeatherWatch, filterDossier, filterHailRaw, selectStormDate, bindRadarScrubber, bindWxMapExpand, fetchWeatherBundle, paintLiveWeather, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml, weatherSummaryHtml, collapseHailByDate } from "./wx.js";
 import { pickAndIdentify, detectVisionMode, pickImageFile, fileToDataUrl } from "./vision.js";
 import { looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
@@ -1055,8 +1055,15 @@ async function renderWx() {
     );
     quickPin(db.settings, center.lat, center.lon).then(async (hit) => {
       if (tab !== "wx") return;
+      selectStormDate(null, { fit: false });
+      const data = {
+        ...hit,
+        lat: hit.lat ?? center.lat,
+        lon: hit.lon ?? center.lon,
+        address: hit.address || hit.geo?.address || "",
+      };
       renderWeatherBoot($("#wx-panel"), hit.geo, hit.weather || cfg.weather, hit.hail, esc);
-      renderRoofBoot($("#wx-roof-panel"), hit.hail, esc);
+      renderRoofDossier($("#wx-roof-panel"), data, esc, null, null);
       try {
         const bundle = await fetchWeatherBundle(center.lat, center.lon);
         const panel = $("#wx-panel");
@@ -2020,6 +2027,57 @@ async function sendChat() {
     db.chat.push({ role: "pip", content: switchHit.reply, brain: "pip" });
     persist();
     setStatus(switchHit.ok ? `WITH · ${agentLabel(chatAgent())}` : "AGENT");
+    return;
+  }
+  }
+
+  if (!image) {
+  const relay = parseAgentRelay(text);
+  if (relay) {
+    setStatus("RELAY…");
+    const lastPip = [...db.chat].reverse().find((m) => m.role === "pip" && m.content);
+    const payload = lastPip?.content || text;
+    let fromId = relay.from;
+    if (!fromId) {
+      const cur = chatAgent();
+      if (cur && cur !== "pip" && cur !== "auto" && cur !== "compare") fromId = cur;
+      else fromId = lastPip?.brain || lastPip?.agent || null;
+      if (fromId === "pip" || fromId === "auto" || fromId === "compare") fromId = null;
+    }
+    if (fromId === relay.to) fromId = null;
+    try {
+      const out = await agentRelayComplete(db.settings, {
+        fromId,
+        toId: relay.to,
+        payload,
+        operator: db.settings?.operator || "Joshua",
+      });
+      markBubbleLeaked(userBubble);
+      const last = db.chat.filter((m) => m.role === "user").pop();
+      if (last) last.leaked = true;
+      const via = fromId ? `${agentLabel(fromId)} → ${agentLabel(relay.to)}` : agentLabel(relay.to);
+      const reply = out.text;
+      db.chat.push({
+        role: "pip",
+        content: reply,
+        brain: out.provider,
+        agent: relay.to,
+        leaked: true,
+      });
+      rememberReply(db, reply);
+      persist();
+      addLog("pip", reply, {
+        brain: out.provider,
+        provider: out.provider,
+        agent: relay.to,
+        leaked: true,
+        tokens: out.tokens,
+      });
+      setStatus(`RELAY · ${via}`);
+    } catch (e) {
+      addLog("pip", String(e.message || e));
+      setStatus("RELAY FAIL");
+    }
     return;
   }
   }

@@ -992,6 +992,7 @@ body.wx-tab .leaflet-control-attribution {
 .wx-storm-graph .wx-sg-bar.on rect { stroke: var(--phos); stroke-width: 1.8; filter: brightness(1.15); }
 .wx-storm-graph .wx-sg-x { fill: var(--muted); font-size: 7px; }
 .wx-storm-graph .wx-sg-v { fill: var(--text); font-size: 7px; }
+.wx-storm-graph .wx-sg-dist { fill: var(--muted); font-size: 6px; }
 .wx-storm-graph-legend { font-size: 9px; margin-top: 0.2rem; letter-spacing: 0.04em; }
 .wx-hail-row[data-storm-date] { cursor: pointer; }
 .wx-hail-row[data-storm-date].on { background: rgba(125,255,90,0.08); }
