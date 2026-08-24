@@ -1708,7 +1708,7 @@ function addLog(role, text, opts = {}) {
     role === "user"
       ? opts.route || (opts.leaked ? "leaked" : opts.local ? "local" : opts.secure ? "secure" : "")
       : routeKind(opts);
-  div.className = `bubble ${role}`;
+  div.className = `bubble ${role}${role === "pip" ? " pip" : ""}`;
   const who =
     role === "user"
       ? "YOU"
@@ -1743,7 +1743,7 @@ function compareOverview(compare) {
   const ok = rows.filter((c) => c && c.ok && c.text);
   const bad = rows.filter((c) => c && !c.ok);
   const lines = [];
-  lines.push(`${ok.length} answered · ${bad.length} failed · ${rows.length} brains keyed`);
+  lines.push(`${ok.length} answered · ${bad.length} failed · ${rows.length} keyed`);
   if (ok.length >= 2) {
     const lens = ok.map((c) => String(c.text).length);
     const spread = Math.max(...lens) - Math.min(...lens);

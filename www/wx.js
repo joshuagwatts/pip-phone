@@ -39,8 +39,14 @@ let lastWindRows = [];
 let selectedStormDate = null;
 let radarFrames = [];
 let radarFrameIdx = 0;
-let radarPlayTimer = null;
+let radarPlayRaf = null;
+let radarPlaying = false;
 let hourPlayTimer = null;
+/** Dual-buffer radar tiles — crossfade instead of black flash between frames. */
+let radarLayers = [null, null];
+let radarActiveSlot = 0;
+/** Map + timeline layer visibility. */
+export const wxTimelineFilters = { precip: true, hail: true, wind: true, temp: true };
 let wxSuppressMapTap = false;
 let radarHost = "https://tilecache.rainviewer.com";
 let radarColor = "2/1_1";
@@ -652,37 +658,160 @@ export function hailSeverityLabel(sizeIn) {
   return "LIGHT";
 }
 
-function setRadarTilePath(path) {
+function ensureRadarLayer(url) {
+  if (!map || !window.L) return null;
+  if (!radarLayers[0]) {
+    for (let i = 0; i < 2; i++) {
+      radarLayers[i] = window.L.tileLayer(url, {
+        attribution: "© RainViewer",
+        opacity: i === 0 ? 0.72 : 0,
+        maxZoom: MAP_MAX_ZOOM,
+        maxNativeZoom: RADAR_NATIVE_ZOOM,
+        tileSize: 256,
+        updateWhenIdle: false,
+        updateWhenZooming: false,
+        keepBuffer: 4,
+        zIndex: 450 + i,
+      });
+    }
+    radarActiveSlot = 0;
+    overlays.precip = radarLayers[0];
+    overlays.radar = radarLayers[0];
+  }
+  return radarLayers[radarActiveSlot];
+}
+
+function setRadarTilePath(path, { crossfade = false } = {}) {
   if (!map || !window.L || !path) return;
   const url = rainTileUrl(radarHost, path, radarColor);
-  const wasOn = activeWxProduct === "precip" || activeOverlays.has("precip") || activeOverlays.has("radar");
-  if (overlays.precip) {
+  const wantOn = wxTimelineFilters.precip && (activeWxProduct === "precip" || activeOverlays.has("precip") || activeOverlays.has("radar"));
+
+  if (!crossfade) {
+    const layer = ensureRadarLayer(url) || overlays.precip;
+    if (layer) {
+      if (layer._url !== url) layer.setUrl(url);
+      overlays.precip = layer;
+      overlays.radar = layer;
+      if (wantOn && !map.hasLayer(layer)) layer.addTo(map);
+    } else {
+      overlays.precip = window.L.tileLayer(url, {
+        attribution: "© RainViewer",
+        opacity: 0.72,
+        maxZoom: MAP_MAX_ZOOM,
+        maxNativeZoom: RADAR_NATIVE_ZOOM,
+        tileSize: 256,
+        updateWhenIdle: false,
+        updateWhenZooming: false,
+        keepBuffer: 4,
+      });
+      overlays.radar = overlays.precip;
+      if (wantOn) overlays.precip.addTo(map);
+    }
+    return;
+  }
+
+  ensureRadarLayer(url);
+  const front = radarActiveSlot;
+  const back = 1 - front;
+  const frontLayer = radarLayers[front];
+  const backLayer = radarLayers[back];
+  if (!frontLayer || !backLayer) return;
+  if (backLayer._url === url) return;
+
+  backLayer.setUrl(url);
+  if (wantOn && !map.hasLayer(backLayer)) backLayer.addTo(map);
+  backLayer.setOpacity(0);
+
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    backLayer.off("load", finish);
+    backLayer.setOpacity(0.72);
+    frontLayer.setOpacity(0);
+    radarActiveSlot = back;
+    overlays.precip = backLayer;
+    overlays.radar = backLayer;
+  };
+  backLayer.on("load", finish);
+  window.setTimeout(finish, 160);
+}
+
+export function applyWxTimelineFilters() {
+  if (!map) return;
+  const wantPrecip = wxTimelineFilters.precip && activeWxProduct === "precip";
+  for (const layer of radarLayers) {
+    if (!layer) continue;
+    try {
+      if (wantPrecip) {
+        if (!map.hasLayer(layer)) layer.addTo(map);
+      } else map.removeLayer(layer);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (wantPrecip && overlays.precip && !radarLayers[0]) {
+    try {
+      if (!map.hasLayer(overlays.precip)) overlays.precip.addTo(map);
+    } catch {
+      /* ignore */
+    }
+  } else if (!wantPrecip && overlays.precip && !radarLayers[0]) {
     try {
       map.removeLayer(overlays.precip);
     } catch {
       /* ignore */
     }
   }
-  overlays.precip = window.L.tileLayer(url, {
-    attribution: "© RainViewer",
-    opacity: 0.72,
-    maxZoom: MAP_MAX_ZOOM,
-    maxNativeZoom: RADAR_NATIVE_ZOOM,
-    tileSize: 256,
-    updateWhenIdle: true,
-    updateWhenZooming: false,
-    keepBuffer: 1,
+  syncHazardLayers();
+  document.querySelectorAll("[data-wx-fl]").forEach((btn) => {
+    const k = btn.dataset.wxFl;
+    if (k === "all" || k === "none") return;
+    btn.classList.toggle("on", Boolean(wxTimelineFilters[k]));
   });
-  overlays.radar = overlays.precip;
-  if (wasOn && activeWxProduct === "precip") overlays.precip.addTo(map);
 }
 
-export function setRadarFrame(idx) {
+function wxFilterBarHtml() {
+  const f = wxTimelineFilters;
+  return `<div class="wx-tl-filters">
+    <button type="button" data-wx-fl="all">ALL</button>
+    <button type="button" data-wx-fl="none">NONE</button>
+    <button type="button" data-wx-fl="precip" class="${f.precip ? "on" : ""}">PRECIP</button>
+    <button type="button" data-wx-fl="hail" class="${f.hail ? "on" : ""}">HAIL</button>
+    <button type="button" data-wx-fl="wind" class="${f.wind ? "on" : ""}">WIND</button>
+    <button type="button" data-wx-fl="temp" class="${f.temp ? "on" : ""}">TEMP</button>
+  </div>`;
+}
+
+export function bindWxTimelineFilters(root = document, onChange) {
+  root.querySelectorAll("[data-wx-fl]").forEach((btn) => {
+    btn.onclick = () => {
+      const k = btn.dataset.wxFl;
+      if (k === "all") {
+        wxTimelineFilters.precip = true;
+        wxTimelineFilters.hail = true;
+        wxTimelineFilters.wind = true;
+        wxTimelineFilters.temp = true;
+      } else if (k === "none") {
+        wxTimelineFilters.precip = false;
+        wxTimelineFilters.hail = false;
+        wxTimelineFilters.wind = false;
+        wxTimelineFilters.temp = false;
+      } else if (k in wxTimelineFilters) {
+        wxTimelineFilters[k] = !wxTimelineFilters[k];
+      }
+      applyWxTimelineFilters();
+      onChange?.();
+    };
+  });
+}
+
+export function setRadarFrame(idx, { crossfade = false } = {}) {
   if (!radarFrames.length) return;
   const i = Math.max(0, Math.min(radarFrames.length - 1, Number(idx) || 0));
   radarFrameIdx = i;
   const frame = radarFrames[i];
-  if (frame?.path) setRadarTilePath(frame.path);
+  if (frame?.path) setRadarTilePath(frame.path, { crossfade });
   const label = document.getElementById("wx-radar-label");
   if (label && frame?.time) {
     const d = new Date(frame.time * 1000);
@@ -698,9 +827,10 @@ export function setRadarFrame(idx) {
 }
 
 export function stopRadarPlay() {
-  if (radarPlayTimer) {
-    clearInterval(radarPlayTimer);
-    radarPlayTimer = null;
+  radarPlaying = false;
+  if (radarPlayRaf) {
+    clearTimeout(radarPlayRaf);
+    radarPlayRaf = null;
   }
   const btn = document.getElementById("wx-radar-play");
   if (btn) {
@@ -720,10 +850,13 @@ export function radarScrubberHtml() {
   if (radarFrames.length < 2 || activeWxProduct !== "precip") return "";
   const max = radarFrames.length - 1;
   return `<div class="wx-radar-scrub" id="wx-radar-scrub">
-    <button type="button" id="wx-radar-play" class="wx-play-btn${radarPlayTimer ? " on" : ""}">${radarPlayTimer ? "PAUSE" : "PLAY"}</button>
+    ${wxFilterBarHtml()}
+    <div class="wx-radar-scrub-row">
+    <button type="button" id="wx-radar-play" class="wx-play-btn${radarPlaying ? " on" : ""}">${radarPlaying ? "PAUSE" : "PLAY"}</button>
     <span class="wx-radar-tag">PRECIP</span>
     <input type="range" id="wx-radar-range" min="0" max="${max}" value="${radarFrameIdx}" step="1" />
     <span id="wx-radar-label" class="wx-radar-label">…</span>
+    </div>
   </div>`;
 }
 
@@ -732,23 +865,28 @@ export function bindRadarScrubber(root = document) {
   const play = root.querySelector?.("#wx-radar-play") || document.getElementById("wx-radar-play");
   if (!range) return;
   setRadarFrame(radarFrameIdx);
+  bindWxTimelineFilters(root, () => applyWxTimelineFilters());
   range.oninput = () => {
     stopRadarPlay();
     setRadarFrame(range.value);
   };
   if (play) {
     play.onclick = () => {
-      if (radarPlayTimer) {
+      if (radarPlaying) {
         stopRadarPlay();
         return;
       }
       if (radarFrames.length < 2) return;
       play.textContent = "PAUSE";
       play.classList.add("on");
-      radarPlayTimer = setInterval(() => {
+      radarPlaying = true;
+      const tick = () => {
+        if (!radarPlaying) return;
         const next = (radarFrameIdx + 1) % radarFrames.length;
-        setRadarFrame(next);
-      }, 420);
+        setRadarFrame(next, { crossfade: true });
+        radarPlayRaf = window.setTimeout(tick, 520);
+      };
+      tick();
     };
   }
 }
@@ -861,7 +999,7 @@ function hourMetric(row, mode) {
   return Number(row.temp_f) || 0;
 }
 
-function renderHourBars(hours, mode, activeIdx) {
+function renderHourBars(hours, mode, activeIdx, hailDates = null) {
   const vals = hours.map((h) => hourMetric(h, mode));
   const max = Math.max(...vals, mode === "temp" ? 1 : mode === "wind" ? 10 : 1);
   const min = mode === "temp" ? Math.min(...vals.filter((v) => v), max - 1) : 0;
@@ -881,14 +1019,28 @@ function renderHourBars(hours, mode, activeIdx) {
       let fill = on ? "var(--phos)" : "rgba(125,255,90,0.35)";
       if (mode === "precip") fill = on ? "#4fc3f7" : "rgba(79,195,247,0.4)";
       if (mode === "wind") fill = on ? "#90caf9" : "rgba(144,202,249,0.35)";
-      if (mode === "hail" || [95, 96, 99].includes(row.code)) {
+      const day = String(row.time || "").slice(0, 10);
+      const hailDay = hailDates && hailDates.has(day);
+      if (hailDay && wxTimelineFilters.hail) fill = on ? "#ff7043" : "rgba(255,112,67,0.55)";
+      else if (mode === "hail" || [95, 96, 99].includes(row.code)) {
         if ([96, 99].includes(row.code)) fill = on ? "#e040fb" : "rgba(224,64,251,0.55)";
         else if (row.code === 95) fill = on ? "#ff7043" : "rgba(255,112,67,0.45)";
       }
       return `<rect x="${x.toFixed(1)}" y="${y}" width="${barW.toFixed(1)}" height="${bh}" fill="${fill}" data-hi="${i}" />`;
     })
     .join("");
-  return `<svg class="wx-hour-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img">${bars}</svg>`;
+  const hailTicks =
+    hailDates && wxTimelineFilters.hail
+      ? hours
+          .map((row, i) => {
+            const day = String(row.time || "").slice(0, 10);
+            if (!hailDates.has(day)) return "";
+            const x = i * (barW + gap) + barW / 2;
+            return `<line x1="${x.toFixed(1)}" y1="${h - 2}" x2="${x.toFixed(1)}" y2="${h}" stroke="#ff7043" stroke-width="2" />`;
+          })
+          .join("")
+      : "";
+  return `<svg class="wx-hour-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img">${bars}${hailTicks}</svg>`;
 }
 
 function renderPrecipStrip(hours, activeIdx, esc) {
@@ -1050,6 +1202,8 @@ export function weatherSummaryHtml(bundle, hailDays, esc) {
 /** Refresh hero + daily + hourly blocks inside a WX panel root. */
 export function paintLiveWeather(root, bundle, hailDays, esc) {
   if (!root || !bundle) return;
+  window.__pipWxBundle = bundle;
+  window.__pipWxHailDays = hailDays || [];
   const hail = hailDays || [];
   const sum =
     root.querySelector("#wx-summary") ||
@@ -1063,18 +1217,23 @@ export function paintLiveWeather(root, bundle, hailDays, esc) {
   const daily = root.querySelector("#wx-daily");
   if (daily) daily.innerHTML = renderDailyForecast(bundle.days, esc);
   const hourly = root.querySelector("#wx-hourly");
-  if (hourly && bundle.hours?.length) renderHourlyTimeline(hourly, bundle, esc);
+  if (hourly && bundle.hours?.length) renderHourlyTimeline(hourly, bundle, esc, hail);
 }
 
-export function renderHourlyTimeline(root, bundle, esc) {
+export function renderHourlyTimeline(root, bundle, esc, hailDays = [], opts = {}) {
   if (!root) return;
   const hours = bundle?.hours || [];
   if (!hours.length) {
     root.innerHTML = `<p class="muted">Hourly timeline offline.</p>`;
     return;
   }
-  let mode = root.dataset.wxMode || "precip";
-  const idx = Math.min(hours.length - 1, Math.max(0, Number(root.dataset.wxHour ?? bundle.nowIdx) || 0));
+  const hailDates = new Set((hailDays || []).map((h) => String(h.date || "").slice(0, 10)).filter(Boolean));
+  let mode = opts.mode || root.dataset.wxMode || "precip";
+  if (mode === "temp" && !wxTimelineFilters.temp) mode = wxTimelineFilters.precip ? "precip" : "wind";
+  const idx = Math.min(
+    hours.length - 1,
+    Math.max(0, Number(opts.idx ?? root.dataset.wxHour ?? bundle.nowIdx) || 0),
+  );
   const paint = (i) => {
     const row = hours[i];
     if (!row) return;
@@ -1103,6 +1262,7 @@ export function renderHourlyTimeline(root, bundle, esc) {
     root.dataset.wxMode = mode;
     root.innerHTML = `
       <div class="wx-timeline">
+        ${wxFilterBarHtml()}
         <div class="wx-timeline-modes">
           <button type="button" data-wx-mode="temp" class="${mode === "temp" ? "on" : ""}">TEMP</button>
           <button type="button" data-wx-mode="precip" class="${mode === "precip" ? "on" : ""}">PRECIP</button>
@@ -1113,12 +1273,13 @@ export function renderHourlyTimeline(root, bundle, esc) {
           <span class="wx-timeline-clock">${esc(tLabel)}</span>
         </div>
         <div class="wx-now">${focus}</div>
-        <div class="wx-hour-chart-wrap">${renderHourBars(hours, mode, i)}</div>
+        <div class="wx-hour-chart-wrap">${renderHourBars(hours, mode, i, hailDates)}</div>
         ${mode === "precip" ? renderPrecipStrip(hours, i, esc) : ""}
         <div class="wx-timeline-meta muted">${esc(
-          `${hours.length} hrs · −12h → +36h · tap a bar to scrub`,
+          `${hours.length} hrs · −12h → +36h · tap bars · ${hailDates.size ? hailDates.size + " hail days marked" : "no hail on timeline"}`,
         )}</div>
       </div>`;
+    bindWxTimelineFilters(root, () => paint(Number(root.dataset.wxHour || i)));
     root.querySelectorAll("[data-wx-mode]").forEach((b) => {
       b.onclick = () => {
         mode = b.dataset.wxMode;
@@ -1754,8 +1915,9 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
 
 function syncHazardLayers() {
   if (!map) return;
-  const showHail = activeWxProduct === "hail" || activeWxProduct === "precip";
-  const showWind = activeWxProduct === "wind" || activeWxProduct === "hail";
+  const showHail =
+    wxTimelineFilters.hail && (activeWxProduct === "hail" || activeWxProduct === "precip");
+  const showWind = wxTimelineFilters.wind && activeWxProduct === "wind";
   try {
     if (hailLayer) {
       if (showHail) hailLayer.addTo(map);
@@ -1776,7 +1938,10 @@ function applyOverlays() {
   if (!map) return;
   for (const id of Object.keys(overlays)) {
     if (id === "radar") continue;
-    const on = activeWxProduct === id || (id === "precip" && activeWxProduct === "precip");
+    let on = activeWxProduct === id || (id === "precip" && activeWxProduct === "precip");
+    if (id === "precip") on = on && wxTimelineFilters.precip;
+    if (id === "cloud" || id === "vis") on = on && wxTimelineFilters.precip;
+    if (id === "wind") on = on && wxTimelineFilters.wind;
     try {
       if (on) overlays[id].addTo(map);
       else map.removeLayer(overlays[id]);
@@ -1867,6 +2032,9 @@ export function destroyMap() {
   selectedStormDate = null;
   layers = {};
   overlays = {};
+  radarLayers = [null, null];
+  radarActiveSlot = 0;
+  radarPlaying = false;
   activeOverlays = new Set(["precip"]);
   activeWxProduct = "precip";
 }
