@@ -71,6 +71,7 @@ let radioClock = 0;
 let radioBusy = false;
 let codeBusy = false;
 let probeBusy = false;
+let probeGen = 0;
 let lastProbeHtml = "";
 let wxState = { lat: null, lon: null, address: "", data: null };
 let wxWatch = null;
@@ -1230,10 +1231,14 @@ function renderData() {
   const probeBtn = $("#brain-probe");
   if (probeBtn) {
     probeBtn.onclick = async () => {
-      const box = $("#brain-probe-out");
+      // Always allow another tap — bump gen so older in-flight probes can't block or overwrite.
+      const gen = ++probeGen;
+      probeBusy = true;
+      const alive = () => gen === probeGen;
       const writeProbe = (html) => {
+        if (!alive()) return;
         lastProbeHtml = html;
-        const el = $("#brain-probe-out") || box;
+        const el = $("#brain-probe-out");
         if (el) {
           el.innerHTML = html;
           el.classList.add("probe-active");
@@ -1245,49 +1250,39 @@ function renderData() {
         }
       };
 
-      if (probeBusy) {
-        writeProbe(`<div class="row"><span>STILL PROBING — wait, or leave DATA and come back</span></div>`);
-        setStatus("PROBE BUSY");
-        return;
-      }
-
       grabSettings();
       const keyed = PROVIDERS.filter((p) => String(db.settings[p.field] || "").trim());
       const diag = httpDiag();
       writeProbe(
-        `<div class="row"><span>PROBE TAPPED · ${keyed.length} key(s) · HTTP ${esc(diag.nativeHttp ? "NATIVE" : "MISSING")}</span></div>`,
+        `<div class="row"><span>PROBE #${gen} · ${keyed.length} key(s) · HTTP ${esc(diag.nativeHttp ? "NATIVE" : "MISSING")}</span></div>`,
       );
-      setStatus("PROBE TAPPED…");
+      setStatus(`PROBE #${gen}…`);
 
       if (!keyed.length) {
         writeProbe(
           `<div class="row"><span>NO KEYS IN MEMORY — paste above first</span></div><div class="row"><span>HTTP · ${esc(diag.nativeHttp ? "NATIVE" : "MISSING")} · ${esc(diag.platform)}</span></div>`,
         );
         setStatus("NO KEYS — PASTE FIRST");
+        if (alive()) probeBusy = false;
         return;
       }
 
-      probeBusy = true;
-      probeBtn.disabled = true;
-      probeBtn.textContent = "PROBING…";
-      const watchdog = setTimeout(() => {
-        if (!probeBusy) return;
-        probeBusy = false;
-        probeBtn.disabled = false;
-        probeBtn.textContent = "PROBE KEYS";
-        writeProbe(`<div class="row"><span>PROBE TIMED OUT (45s) — network blocked or hung</span></div>`);
-        setStatus("PROBE TIMEOUT");
-      }, 45000);
+      const btn = $("#brain-probe");
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "PROBE AGAIN";
+      }
 
       try {
         writeProbe(
-          `<div class="row"><span>PROBING ${keyed.length} KEY(S)…</span></div><div class="row"><span>HTTP · ${esc(diag.nativeHttp ? "NATIVE OK" : "NO NATIVE")} · ${esc(diag.platform)}</span></div>`,
+          `<div class="row"><span>PROBE #${gen} · checking ${keyed.length} key(s)…</span></div><div class="row"><span>HTTP · ${esc(diag.nativeHttp ? "NATIVE OK" : "NO NATIVE")} · ${esc(diag.platform)}</span></div>`,
         );
-        setStatus(`PROBING ${keyed.length} KEYS…`);
         const hits = await probeKeyed(db.settings);
+        if (!alive()) return;
         const lines = [];
-        lines.push(`HTTP · ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE"} · ${diag.platform}`);
+        lines.push(`PROBE #${gen} · HTTP · ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE"} · ${diag.platform}`);
         for (const p of PROVIDERS) {
+          if (!alive()) return;
           const has = String(db.settings[p.field] || "").trim();
           if (!has) continue;
           const hit = (hits || []).find((h) => h.id === p.id);
@@ -1296,10 +1291,11 @@ function renderData() {
             writeProbe(lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join(""));
             continue;
           }
-          setStatus(`CHAT PING · ${p.label.toUpperCase()}…`);
+          setStatus(`PROBE #${gen} · ${p.label.toUpperCase()} chat…`);
           lines.push(`${p.label.toUpperCase()} // models OK — chat ping…`);
           writeProbe(lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join(""));
           const ping = await chatPing(db.settings, p);
+          if (!alive()) return;
           lines.pop();
           lines.push(
             ping.ok
@@ -1308,6 +1304,7 @@ function renderData() {
           );
           writeProbe(lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join(""));
         }
+        if (!alive()) return;
         db.settings.brain_health = providerHealth();
         persist();
         paintBrainStrip();
@@ -1316,15 +1313,17 @@ function renderData() {
         const live = (hits || []).filter((h) => h.ok).map((h) => h.id.toUpperCase());
         setStatus(chatOk ? `CHAT OK · ${live.join(" · ")}` : live.length ? `LIVE BUT CHAT FAIL` : "NO LIVE KEYS");
       } catch (e) {
+        if (!alive()) return;
         writeProbe(`<div class="row"><span>${esc(String(e.message || e))}</span></div>`);
         setStatus(String(e.message || e).toUpperCase().slice(0, 80));
       } finally {
-        clearTimeout(watchdog);
-        probeBusy = false;
-        const btn = $("#brain-probe");
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = "PROBE KEYS";
+        if (alive()) {
+          probeBusy = false;
+          const b = $("#brain-probe");
+          if (b) {
+            b.disabled = false;
+            b.textContent = "PROBE KEYS";
+          }
         }
       }
     };
