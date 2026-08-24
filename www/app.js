@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
-import { probeKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, chatPing } from "./cloud.js";
+import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth } from "./cloud.js";
 import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
@@ -71,11 +71,42 @@ let lastShot = "";
 let radioClock = 0;
 let radioBusy = false;
 let codeBusy = false;
-let probeBusy = false;
-let probeGen = 0;
+const keyCheckTimers = {};
+
+function paintKeyRows() {
+  const health = providerHealth();
+  for (const p of PROVIDERS) {
+    const input = document.querySelector(`.key-row input[data-field="${p.field}"]`);
+    const row = input?.closest(".key-row");
+    if (!row) continue;
+    const info = keyTag(db.settings, p, health[p.id]);
+    row.className = `key-row ${info.state}`;
+    const tag = row.querySelector(".key-tag");
+    if (tag) {
+      const hint = keyHint(db.settings, p);
+      tag.textContent = hint ? `${info.tag} · ${hint}` : info.tag;
+    }
+  }
+}
+
+function queueKeyValidate(field) {
+  clearTimeout(keyCheckTimers[field]);
+  keyCheckTimers[field] = setTimeout(async () => {
+    const prov = PROVIDERS.find((p) => p.field === field);
+    if (!prov || !String(db.settings[field] || "").trim()) return;
+    try {
+      await validateKeyed(db.settings, { only: prov.id });
+      db.settings.brain_health = providerHealth();
+      persist();
+      paintBrainStrip();
+      paintKeyRows();
+    } catch {
+      /* ignore */
+    }
+  }, 450);
+}
 /** Pending chat image (data URL) — attach staple or paste. */
 let pendingChatImage = null;
-let lastProbeHtml = "";
 let wxState = { lat: null, lon: null, address: "", data: null };
 let wxWatch = null;
 
@@ -562,7 +593,7 @@ function tryAgentSwitch(text) {
   if (id !== "pip" && id !== "auto" && id !== "desktop" && id !== "compare") {
     const keyed = cloudStatus(db.settings).keyed || [];
     if (!keyed.includes(id)) {
-      return { ok: false, reply: `No ${agentLabel(id)} key yet. DATA → paste key → PROBE, then pick ${agentLabel(id)}.` };
+      return { ok: false, reply: `No ${agentLabel(id)} key yet. DATA → paste key, then pick ${agentLabel(id)}.` };
     }
   }
   if (id === "desktop" && !desktopConfigured(db.settings)) {
@@ -683,7 +714,7 @@ function fillAgentPick() {
     const meta = AGENT_META[o.id] || { label: agentLabel(o.id), blurb: "" };
     const stat = agentStatFor(o.id, { keyed, health, missing: !!o.missing });
     const on = o.id === active;
-    const blurb = o.missing ? "Key missing — paste in DATA then PROBE" : meta.blurb || "";
+    const blurb = o.missing ? "Key missing — paste in DATA" : meta.blurb || "";
     chunks.push(`
       <button type="button" class="agent-row${on ? " on" : ""}${o.missing ? " dim" : ""}" data-agent="${esc(o.id)}">
         <span class="agent-row-mark" aria-hidden="true"></span>
@@ -743,10 +774,6 @@ function paintBrainStrip() {
 function softRefresh() {
   if (tab === "opp") renderOpp();
   else if (tab === "data") {
-    if (probeBusy) {
-      paintBrainStrip();
-      return;
-    }
     const ae = document.activeElement;
     const editing = ae && ae.closest && ae.closest("#view") && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName);
     if (editing) paintBrainStrip();
@@ -1098,8 +1125,6 @@ async function onWxTap(lat, lon) {
 }
 
 function renderData() {
-  // Never leave PROBE stuck forever from a hung prior run.
-  probeBusy = false;
   const s = db.settings;
   const paired = desktopConfigured(s);
   const securePosture = privacyOn(s);
@@ -1137,7 +1162,7 @@ function renderData() {
 
   $("#view").innerHTML = `
     <h3>PHONE PIP</h3>
-    <p class="muted">Pair desktop for private GPU. Paste cloud keys below — they save as you type. PROBE proves chat works.</p>
+    <p class="muted">Pair desktop for private GPU. Paste cloud keys below — they save as you type. Bad keys turn red automatically.</p>
     <div class="field"><span>NAME</span><input id="set-op" value="${esc(s.operator || "")}" /></div>
     <div class="field"><span>HUMOR ${esc(s.humor)} · ${Number(s.humor) >= 75 ? "TARS" : "CREW"}</span>
       <input type="range" id="set-humor" min="0" max="100" value="${esc(s.humor)}" />
@@ -1166,11 +1191,9 @@ function renderData() {
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
     <p class="muted" id="keys-memory">${keyedNow.length ? `IN MEMORY: ${esc(keyedNow.join(" · "))}` : "NO KEYS IN MEMORY — paste below"}</p>
     <p class="muted">${esc(httpLine)}</p>
-    <div class="actions probe-actions">
-      <button type="button" id="brain-probe" class="primary">PROBE KEYS</button>
+    <div class="actions">
       ${paired ? `<button type="button" id="keys-sync">SYNC FROM DESKTOP</button>` : ""}
     </div>
-    <div id="brain-probe-out" class="probe-out">${lastProbeHtml || "<div class=\"row\"><span>Tap PROBE KEYS — proves chat, not just /models</span></div>"}</div>
     <p class="muted">Paste keys below (save as you type). Who you talk to = agent chip next to LENS in CHAT.</p>
     <div class="field"><span>PIN (power override)</span>
       <select id="brain-pin">
@@ -1256,6 +1279,7 @@ function renderData() {
       if (mem) mem.textContent = names.length ? `IN MEMORY: ${names.join(" · ")}` : "NO KEYS IN MEMORY — paste below";
       renderPrivacy();
       paintBrainStrip();
+      queueKeyValidate(p.field);
     });
   }
 
@@ -1391,9 +1415,15 @@ function renderData() {
     saveBtn.onclick = () => {
       guardSecrets(db.settings, () => {
         grabSettings();
-        setStatus("SAVED · TAP PROBE KEYS");
+        setStatus("SAVED");
         updateBrainChip();
         paintBrainStrip();
+        validateKeyed(db.settings).then(() => {
+          db.settings.brain_health = providerHealth();
+          persist();
+          paintBrainStrip();
+          paintKeyRows();
+        });
         renderData();
       }).catch((e) => setStatus(String(e.message || e)));
     };
@@ -1410,95 +1440,6 @@ function renderData() {
     };
   }
 
-  const probeBtn = $("#brain-probe");
-  if (probeBtn) {
-    probeBtn.onclick = async () => {
-      // Always allow another tap — bump gen so older in-flight probes can't block or overwrite.
-      const gen = ++probeGen;
-      probeBusy = true;
-      const alive = () => gen === probeGen;
-      const writeProbe = (html) => {
-        if (!alive()) return;
-        lastProbeHtml = html;
-        const el = $("#brain-probe-out");
-        if (el) {
-          el.innerHTML = html;
-          el.classList.add("probe-active");
-          try {
-            el.scrollIntoView({ block: "center", behavior: "smooth" });
-          } catch {
-            /* ignore */
-          }
-        }
-      };
-
-      grabSettings();
-      const keyed = PROVIDERS.filter((p) => String(db.settings[p.field] || "").trim());
-      const diag = httpDiag();
-      writeProbe(
-        `<div class="row"><span>PROBE #${gen} · ${keyed.length} key(s) · HTTP ${esc(diag.nativeHttp ? "NATIVE" : "MISSING")}</span></div>`,
-      );
-      setStatus(`PROBE #${gen}…`);
-
-      if (!keyed.length) {
-        writeProbe(
-          `<div class="row"><span>NO KEYS IN MEMORY — paste above first</span></div><div class="row"><span>HTTP · ${esc(diag.nativeHttp ? "NATIVE" : "MISSING")} · ${esc(diag.platform)}</span></div>`,
-        );
-        setStatus("NO KEYS — PASTE FIRST");
-        if (alive()) probeBusy = false;
-        return;
-      }
-
-      const btn = $("#brain-probe");
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = "PROBE AGAIN";
-      }
-
-      try {
-        writeProbe(
-          `<div class="row"><span>PROBE #${gen} · checking ${keyed.length} key(s) in parallel…</span></div><div class="row"><span>HTTP · ${esc(diag.nativeHttp ? "NATIVE OK" : "NO NATIVE")} · ${esc(diag.platform)}</span></div>`,
-        );
-        const hits = await probeKeyed(db.settings);
-        if (!alive()) return;
-        const lines = [`PROBE #${gen} · HTTP · ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE"} · ${diag.platform}`];
-        for (const p of PROVIDERS) {
-          const has = String(db.settings[p.field] || "").trim();
-          if (!has) continue;
-          const hit = (hits || []).find((h) => h.id === p.id);
-          if (hit?.chatOk || (hit?.ok && hit?.detail && /CHAT OK/i.test(hit.detail))) {
-            lines.push(`${p.label.toUpperCase()} // LIVE · CHAT OK`);
-          } else if (hit?.ok) {
-            lines.push(`${p.label.toUpperCase()} // LIVE · ${hit.detail || "OK"}`);
-          } else {
-            lines.push(`${p.label.toUpperCase()} // KEY BAD · ${hit?.detail || hit?.error || "failed"}`);
-          }
-        }
-        if (!alive()) return;
-        db.settings.brain_health = providerHealth();
-        persist();
-        paintBrainStrip();
-        writeProbe(lines.map((l) => `<div class="row"><span>${esc(l)}</span></div>`).join(""));
-        const chatOk = lines.some((l) => /CHAT OK/.test(l));
-        const live = (hits || []).filter((h) => h.ok).map((h) => h.id.toUpperCase());
-        setStatus(chatOk ? `CHAT OK · ${live.join(" · ")}` : live.length ? `LIVE BUT CHAT FAIL` : "NO LIVE KEYS");
-      } catch (e) {
-        if (!alive()) return;
-        writeProbe(`<div class="row"><span>${esc(String(e.message || e))}</span></div>`);
-        setStatus(String(e.message || e).toUpperCase().slice(0, 80));
-      } finally {
-        if (alive()) {
-          probeBusy = false;
-          const b = $("#brain-probe");
-          if (b) {
-            b.disabled = false;
-            b.textContent = "PROBE KEYS";
-          }
-        }
-      }
-    };
-  }
-
   const keysSyncBtn = $("#keys-sync");
   if (keysSyncBtn) {
     keysSyncBtn.onclick = async () => {
@@ -1510,7 +1451,10 @@ function renderData() {
         renderPrivacy();
         paintBrainStrip();
         const n = out.applied || keyedSummary(db.settings).length;
-        setStatus(n ? `SYNCED ${n} KEY${n > 1 ? "S" : ""} · TAP PROBE` : "DESKTOP HAS NO KEYS — paste on PC DATA first");
+        if (n) await validateKeyed(db.settings);
+        db.settings.brain_health = providerHealth();
+        persist();
+        setStatus(n ? `SYNCED ${n} KEY${n > 1 ? "S" : ""}` : "DESKTOP HAS NO KEYS — paste on PC DATA first");
         renderData();
       } catch (e) {
         setStatus(String(e.message || e).toUpperCase().slice(0, 80));
@@ -2080,27 +2024,25 @@ async function sendChat() {
   }
 
   if (!image && /^\s*(test\s+(brain|keys?|cloud)|\/test)\s*$/i.test(text)) {
-    setStatus("TESTING BRAINS…");
+    setStatus("CHECKING KEYS…");
     try {
-      const hits = await probeKeyed(db.settings);
+      const hits = await validateKeyed(db.settings);
+      db.settings.brain_health = providerHealth();
+      persist();
+      paintBrainStrip();
       const lines = [];
-      for (const p of PROVIDERS) {
-        const key = String(db.settings[p.field] || "").trim();
-        if (!key) continue;
-        const hit = (hits || []).find((h) => h.id === p.id);
-        if (!hit?.ok) {
-          lines.push(`${p.label}: KEY BAD · ${hit?.detail || hit?.error || "failed"}`);
-          continue;
-        }
-        lines.push(`${p.label}: ${hit.chatOk !== false ? "CHAT OK" : `CHAT FAIL · ${hit.error || ""}`}`);
+      for (const hit of hits || []) {
+        const p = PROVIDERS.find((x) => x.id === hit.id);
+        if (!p) continue;
+        lines.push(`${p.label}: ${hit.ok ? "LIVE" : `KEY BAD · ${hit.error || "failed"}`}`);
       }
       const reply = lines.length
         ? lines.join("\n")
-        : "No keys on phone. DATA → paste keys → SAVE, or SYNC FROM DESKTOP.";
+        : "No keys on phone. DATA → paste keys, or SYNC FROM DESKTOP.";
       addLog("pip", reply, { brain: "TEST" });
       db.chat.push({ role: "pip", content: reply, brain: "test" });
       persist();
-      setStatus(lines.some((l) => /CHAT OK/.test(l)) ? "TEST · CHAT OK" : "TEST · SEE REPLY");
+      setStatus(lines.some((l) => /LIVE/.test(l)) ? "KEYS OK" : "KEY CHECK");
     } catch (e) {
       addLog("pip", String(e.message || e));
       setStatus("TEST ERROR");
@@ -2440,14 +2382,16 @@ function boot() {
               persist();
             }
           }
-          const hits = await probeKeyed(db.settings);
+          await validateKeyed(db.settings);
           db.settings.brain_health = providerHealth();
           persist();
           paintBrainStrip();
-          const live = (hits || []).filter((h) => h.ok).map((h) => h.id);
           const keyed = cloudStatus(db.settings).keyed;
-          if (keyed.length && live.length) setStatus(`LIVE · ${live.join(" · ").toUpperCase()}`);
-          else if (keyed.length) setStatus("KEYS SET · TAP DATA → PROBE KEYS");
+          const live = keyed.filter((id) => providerHealth()[id]?.ok === true);
+          const bad = keyed.filter((id) => providerHealth()[id]?.ok === false);
+          if (live.length) setStatus(`LIVE · ${live.join(" · ").toUpperCase()}`);
+          else if (bad.length) setStatus(`${bad.length} BAD KEY${bad.length > 1 ? "S" : ""} · DATA`);
+          else if (keyed.length) setStatus("KEYS SET");
           else if (db.settings.desktop_live) setStatus("DESKTOP ONLINE · CLOUD KEYS OPTIONAL");
           else if (desktopConfigured(db.settings)) setStatus("DESKTOP PAIRED · OFFLINE — CHECK / FIND");
           else setStatus("PIP ON DECK · PAIR DESKTOP OR PASTE KEYS");

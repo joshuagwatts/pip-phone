@@ -199,54 +199,25 @@ export async function probeModels(settings, prov) {
 }
 
 /**
- * Real probe: /models is nice-to-have; a chat ping is the truth.
- * Many hosts (or VPNs) break /models while chat still works — never mark KEY BAD on models alone.
+ * Auto-check keyed APIs (/models auth). Bad keys → red. No manual probe button.
  */
-export async function probeKeyed(settings) {
-  const keyed = keyedProviders(settings);
+export async function validateKeyed(settings, { only } = {}) {
+  let keyed = keyedProviders(settings);
+  if (only != null) {
+    const id = String(only).toLowerCase();
+    keyed = keyed.filter((p) => p.id === id || p.field === id);
+  }
   const jobs = keyed.map(async (prov) => {
-    const models = await probeModels(settings, prov);
-    let ping = { ok: false, error: "" };
-    try {
-      ping = await chatPing(settings, prov);
-    } catch (e) {
-      ping = { ok: false, error: String(e.message || e).slice(0, 120) };
-    }
-    if (ping.ok) {
-      markHealth(prov.id, true);
-      return {
-        ok: true,
-        id: prov.id,
-        models: models.ok ? models.models || 1 : 0,
-        modelsOk: Boolean(models.ok),
-        chatOk: true,
-        detail: models.ok ? "CHAT OK" : "CHAT OK · /models skipped",
-      };
-    }
-    // Auth fail on models is definitive.
-    if (/401|403|unauthorized|incorrect.?api/i.test(models.error || "")) {
-      markHealth(prov.id, false, models.error);
-      return {
-        ok: false,
-        id: prov.id,
-        modelsOk: false,
-        chatOk: false,
-        error: models.error,
-        detail: models.error,
-      };
-    }
-    const err = ping.error || models.error || "chat fail";
-    markHealth(prov.id, false, err);
-    return {
-      ok: false,
-      id: prov.id,
-      modelsOk: Boolean(models.ok),
-      chatOk: false,
-      error: err,
-      detail: models.ok ? `models OK · chat fail · ${err}` : err,
-    };
+    const r = await probeModels(settings, prov);
+    markHealth(prov.id, r.ok, r.error);
+    return { id: prov.id, label: prov.label, ...r };
   });
   return Promise.all(jobs);
+}
+
+/** @deprecated use validateKeyed */
+export async function probeKeyed(settings) {
+  return validateKeyed(settings);
 }
 
 export function cloudStatus(settings) {

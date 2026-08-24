@@ -618,7 +618,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       ? extras.image
         ? `Vision failed (${errMsg}). Need Gemini / OpenAI / OpenRouter key · LEAKY on.`
         : live.length && routePin === "auto"
-          ? `Cloud brains failed (${errMsg}). DATA → PROBE · or pick another agent next to LENS.`
+          ? `Cloud brains failed (${errMsg}). Fix red keys in DATA · or pick another agent next to LENS.`
           : `Couldn't reach ${agentLabel(asSelf ? agent : "pip")}. ${errMsg}. Pick another agent or fix keys in DATA.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "", via: "", reason: tip });

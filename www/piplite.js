@@ -40,7 +40,7 @@ Desktop GPU and LIVE API keys still handle the heavy thinking. Lite handles the 
     lead: "I'm Pip — mentor, friend, agent. Lite mode is the book in your pocket.",
     body: `I keep keys on this device, mark cloud turns LEAKED, and prefer your desktop GPU when paired.
 Lite answers from the field guide — survival, storms, and how this app works — without waking a model.
-For deep drafts, code, or long reasoning: CONNECT desktop or PROBE LIVE keys. For the essentials: ask the Guide.`,
+For deep drafts, code, or long reasoning: CONNECT desktop or paste LIVE keys in DATA. For the essentials: ask the Guide.`,
   },
   {
     id: "brains",
@@ -51,7 +51,7 @@ For deep drafts, code, or long reasoning: CONNECT desktop or PROBE LIVE keys. Fo
 Desktop = private GPU fallback.
 PIP LITE = Guide only (PIN=lite) — not general chat when keys exist.
 COMPARE: type "compare: …" for parallel tabs.
-DATA → SAVE → PROBE until green LIVE. Chat bubble shows which brain answered.`,
+DATA → paste keys — green LIVE / red KEY BAD. Chat bubble shows which brain answered.`,
   },
   {
     id: "opp",
@@ -334,7 +334,7 @@ export function liteComplete(text, extras = {}) {
   } else {
     weak = true;
     out = formatEntry(ENTRIES[0]);
-    out += `\n\nNothing exact matched "${raw.slice(0, 48)}". Name a topic — water, fire, first aid, food, storm, lost — or CONNECT desktop / PROBE keys for the heavy brain.`;
+    out += `\n\nNothing exact matched "${raw.slice(0, 48)}". Name a topic — water, fire, first aid, food, storm, lost — or CONNECT desktop / paste keys for the heavy brain.`;
   }
 
   const name = extras.operator || "";
