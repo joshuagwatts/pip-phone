@@ -918,10 +918,9 @@ body.wx-tab main { padding: 0; overflow: visible; }
   height: 100%;
   z-index: 1;
 }
-.wx-hail-heat {
-  pointer-events: none;
-  z-index: 350;
-}
+.wx-hail-topo { pointer-events: auto; }
+.wx-hail-topo-core { pointer-events: none; }
+.wx-wind-topo { pointer-events: auto; }
 .wx-panel {
   max-height: none;
   overflow: visible;

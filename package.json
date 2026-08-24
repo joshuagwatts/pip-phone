@@ -1,8 +1,8 @@
 {
   "name": "pip-phone",
   "private": true,
-  "version": "0.1.69",
-  "description": "Standalone Pip Ã¢â‚¬â€ Android, iPhone, Mac, Windows",
+  "version": "0.1.70",
+  "description": "Standalone Pip ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Android, iPhone, Mac, Windows",
   "main": "desktop/main.js",
   "scripts": {
     "sync": "cap sync",
