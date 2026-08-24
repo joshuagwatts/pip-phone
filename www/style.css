@@ -839,12 +839,21 @@ body.wx-tab #view {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
 }
+body.wx-tab #status { display: none; }
 body.wx-tab main { padding: 0; overflow: visible; }
+body.wx-tab .leaflet-control-attribution {
+  font-size: 7px;
+  letter-spacing: 0;
+  opacity: 0.45;
+  margin: 0 !important;
+  padding: 0 2px !important;
+  background: transparent !important;
+}
 /* Block layout so the dossier grows natural height — #view scrolls map away */
 .wx-wrap {
   display: block;
   min-height: 100%;
-  padding-bottom: calc(var(--tab-h) + var(--safe-bottom) + 1.75rem);
+  padding-bottom: calc(var(--tab-h) + var(--safe-bottom) + 0.25rem);
 }
 .wx-layers { display: flex; gap: 0.25rem; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; background: var(--bg, #050805); }
 .wx-layers button { background: var(--panel); border: 1px solid var(--line); color: var(--muted); font: inherit; font-size: 10px; padding: 0.25rem 0.45rem; }
@@ -1049,10 +1058,10 @@ body.wx-map-expanded #view { overflow: hidden; }
   line-height: 1.45;
 }
 .wx-roof-panel {
-  padding: 0 0.9rem 1.25rem;
+  padding: 0 0.45rem 0.2rem;
   background: var(--inset);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.35;
 }
 .wx-roof-fold {
   border: 1px solid var(--line);
@@ -1063,18 +1072,21 @@ body.wx-map-expanded #view { overflow: hidden; }
 .wx-roof-sum {
   cursor: pointer;
   list-style: none;
-  padding: 0.65rem 0.75rem;
-  font-size: 10px;
-  letter-spacing: 0.16em;
+  padding: 0.4rem 0.55rem;
+  font-size: 9px;
+  letter-spacing: 0.14em;
   color: var(--amber);
   user-select: none;
 }
 .wx-roof-sum::-webkit-details-marker { display: none; }
 .wx-roof-body {
-  padding: 0 0.75rem 0.85rem;
+  padding: 0 0.55rem 0.65rem;
   border-top: 1px dashed var(--line);
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
-.wx-roof-blurb { font-size: 10px; margin: 0.45rem 0 0.55rem; letter-spacing: 0.04em; }
+.wx-roof-blurb { font-size: 9px; margin: 0.35rem 0 0.45rem; letter-spacing: 0.04em; }
 .wx-hail-confirmed { filter: saturate(1.1); }
 .wx-hail-spot { filter: drop-shadow(0 0 2px rgba(255,58,58,0.5)); }
 .wx-addr { color: var(--phos); letter-spacing: 0.06em; margin-bottom: 0.35rem; }

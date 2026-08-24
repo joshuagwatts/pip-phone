@@ -555,11 +555,7 @@ function renderPrivacy() {
     tog.textContent = secure ? "SECURE" : "LEAKY";
   }
   if (chip) {
-    const labels = { secure: "SECURE", local: "LOCAL", leak: "LEAK", leaky: "LEAKY", cloud: "CLOUD" };
-    const shown = secure ? "secure" : "leaky";
-    chip.textContent = labels[shown] || "LEAKY";
-    chip.classList.remove("leak", "leaky", "secure", "cloud", "local");
-    chip.classList.add(shown);
+    chip.hidden = true;
   }
 }
 
@@ -966,6 +962,7 @@ async function renderWx() {
   document.body.classList.remove("comm");
   document.body.classList.add("wx-tab");
   leaveWx();
+  setStatus("");
   $("#view").innerHTML = `
     <div class="wx-wrap">
       <form class="wx-search" id="wx-search" autocomplete="off">

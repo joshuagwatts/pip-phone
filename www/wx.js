@@ -1311,7 +1311,7 @@ export function renderWeatherBoot(root, geo, wx, hail, esc) {
       <div id="wx-summary" class="wx-summary-host">${weatherSummaryHtml(bundleStub, hailRows, esc)}</div>
       <div id="wx-daily"></div>
       <div id="wx-hourly-slot" class="wx-hourly"></div>
-      <p class="muted wx-boot-hint">Map below · roofing hail dossier under the map · double-tap map to expand</p>
+      <p class="muted wx-boot-hint">Double-tap map to expand · roofing dossier below</p>
     </div>`;
   const slot = root.querySelector("#wx-hourly-slot");
   if (hourly && slot) {
@@ -1326,10 +1326,10 @@ export function renderRoofBoot(root, hail, esc) {
   const hailRows = collapseHailByDate(hail || []);
   const n = hailRows.length;
   root.innerHTML = `
-    <details class="wx-roof-fold"${n ? " open" : ""}>
-      <summary class="wx-roof-sum">ROOFING DOSSIER · hail & insurance trace</summary>
+    <details class="wx-roof-fold">
+      <summary class="wx-roof-sum">ROOFING · ${n ? `${n} hail day(s)` : "hail trace"}</summary>
       <div class="wx-roof-body">
-        <p class="muted">${n ? `${n} hail day(s) in quick scan — pin an address for zones on the map.` : "Pin an address or tap the map · NOAA radar + spotter merge · DEEP RESEARCH for full trace."}</p>
+        <p class="muted">${n ? `${n} hail day(s) near pin — tap to expand trace.` : "Pin an address — tap to expand hail trace."}</p>
       </div>
     </details>`;
 }
@@ -2336,8 +2336,8 @@ function roofDossierHtml(data, esc, onResearch) {
     ...new Set((data.hail || []).map((h) => String(h.date || "").slice(0, 4)).filter((y) => /^\d{4}$/.test(y))),
   ].sort((a, b) => b.localeCompare(a));
   return `
-    <details class="wx-roof-fold"${hail.length ? " open" : ""}>
-      <summary class="wx-roof-sum">ROOFING DOSSIER · ${hail.length} hail day(s) · NOAA radar + spotter merge</summary>
+    <details class="wx-roof-fold">
+      <summary class="wx-roof-sum">ROOFING · ${hail.length ? `${hail.length} hail day(s)` : "hail trace"}${selectedStormDate ? ` · ${selectedStormDate}` : ""}</summary>
       <div class="wx-roof-body">
         <p class="muted wx-roof-blurb">Insurance-grade hail trace — tap a date to draw merged zones on the map above. Solid = spotter-confirmed · dashed = radar-only.</p>
         ${renderStormGraph(hail, esc, selectedStormDate)}
