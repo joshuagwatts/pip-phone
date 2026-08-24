@@ -1,6 +1,7 @@
 /** Pull desktop cloud API keys onto the phone — then call providers directly. */
 import { desktopConfigured, desktopLogin } from "./desktop.js";
 import { httpLanGet } from "./net.js";
+import { normalizeApiKey } from "./cloud.js";
 
 export const KEY_FIELDS = ["groq", "openrouter", "cerebras", "mistral", "gemini", "xai", "deepseek", "openai"];
 
@@ -19,13 +20,16 @@ function headers(settings) {
 }
 
 /** Apply a /api/phone/cloud-keys payload onto phone settings. Returns count of keys set. */
-export function applyCloudKeys(settings, pack) {
+export function applyCloudKeys(settings, pack, { replace = false } = {}) {
   if (!settings || !pack) return 0;
   const keys = pack.keys && typeof pack.keys === "object" ? pack.keys : pack;
   let n = 0;
   for (const field of KEY_FIELDS) {
-    const val = String(keys[field] || "").trim();
+    const val = normalizeApiKey(keys[field]);
     if (!val) continue;
+    const existing = normalizeApiKey(settings[field]);
+    // Phone keys win unless user explicitly SYNC FROM DESKTOP (replace).
+    if (existing && !replace) continue;
     settings[field] = val;
     n += 1;
   }
@@ -70,7 +74,7 @@ async function fetchKeysOnce(settings) {
 }
 
 /** Fetch keys from paired desktop. Re-auths once on 401 when password is saved. */
-export async function pullCloudKeys(settings) {
+export async function pullCloudKeys(settings, { replace = false } = {}) {
   if (!desktopConfigured(settings)) {
     throw new Error("pair desktop first");
   }
@@ -91,7 +95,7 @@ export async function pullCloudKeys(settings) {
       throw new Error(`key sync failed — ${msg.slice(0, 80)}`);
     }
   }
-  const n = applyCloudKeys(settings, pack);
+  const n = applyCloudKeys(settings, pack, { replace });
   if (!n && !(pack.keyed || []).length) {
     return { ...pack, applied: 0, keyed: [], empty: true };
   }
@@ -99,14 +103,14 @@ export async function pullCloudKeys(settings) {
 }
 
 /** Pull desktop keys when phone has none — used on connect / before chat. */
-export async function ensureCloudKeys(settings, { force = false } = {}) {
-  const local = KEY_FIELDS.filter((f) => String(settings[f] || "").trim()).length;
+export async function ensureCloudKeys(settings, { force = false, replace = false } = {}) {
+  const local = KEY_FIELDS.filter((f) => normalizeApiKey(settings[f])).length;
   if (local >= 1 && !force) return { applied: local, source: "local", keyed: keyedSummary(settings) };
   if (!desktopConfigured(settings)) {
     return { applied: local, source: local ? "local" : "none", keyed: keyedSummary(settings) };
   }
   try {
-    const out = await pullCloudKeys(settings);
+    const out = await pullCloudKeys(settings, { replace });
     return { ...out, source: "desktop" };
   } catch (e) {
     return {

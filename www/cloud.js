@@ -73,7 +73,7 @@ export const PROVIDERS = [
     base: "https://api.x.ai/v1",
     life: "grok-3-mini",
     boost: "grok-3-mini",
-    models: ["grok-3-mini", "grok-3", "grok-2-1212", "grok-beta"],
+    models: ["grok-3-mini", "grok-3-mini-latest", "grok-4", "grok-4-0709", "grok-2-1212", "grok-beta"],
     fishy: true,
     keyUrl: "https://console.x.ai/",
     tip: "xAI console key · /models often 404 — chat ping validates.",
@@ -96,7 +96,7 @@ export const PROVIDERS = [
     base: "https://api.openai.com/v1",
     life: "gpt-4o-mini",
     boost: "gpt-4o",
-    models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
+    models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1-nano"],
     keyUrl: "https://platform.openai.com/api-keys",
     tip: "ChatGPT family · strong vision via gpt-4o.",
     vision: true,
@@ -128,7 +128,22 @@ export function brainPin(settings) {
 }
 
 function providerKey(settings, prov) {
-  return String(settings[prov.field] || "").trim();
+  return normalizeApiKey(settings[prov.field]);
+}
+
+/** Strip paste cruft — Bearer prefix, quotes, whitespace. */
+export function normalizeApiKey(raw) {
+  let k = String(raw || "").trim();
+  k = k.replace(/^Bearer\s+/i, "").trim();
+  if ((k.startsWith('"') && k.endsWith('"')) || (k.startsWith("'") && k.endsWith("'"))) {
+    k = k.slice(1, -1).trim();
+  }
+  return k;
+}
+
+export function clearHealth(id) {
+  delete liveHealth[id];
+  return providerHealth();
 }
 
 export function keyedProviders(settings) {
@@ -154,6 +169,10 @@ export function hydrateHealth(saved) {
     // Drop stale "KEY BAD" from the short-lived chat-ping probe (v0.1.51).
     const err = String(row.error || "");
     if (row.ok === false && /empty reply|PIP OK|chat ping|timeout|failed/i.test(err) && !/http 40[13]|invalid.?api|unauthorized|no key/i.test(err)) {
+      continue;
+    }
+    // Stale /models 404 or model-id misses are not "bad key".
+    if (row.ok === false && /http 404|empty models|model.*not found|does not exist|not found for api/i.test(err) && !/http 40[13]|invalid.?api|unauthorized/i.test(err)) {
       continue;
     }
     liveHealth[id] = {
@@ -254,17 +273,15 @@ async function validateOne(settings, prov) {
     if (isAuthFail(ping.error)) return { ok: false, id: prov.id, error: ping.error };
     const r = await probeModels(settings, prov);
     if (r.ok) return r;
-    return { ok: false, id: prov.id, error: ping.error || r.error, soft: !isAuthFail(ping.error) && !isAuthFail(r.error) };
+    return { ok: false, id: prov.id, error: ping.error || r.error, soft: true };
   }
+  const ping = await chatPing(settings, prov);
+  if (ping.ok) return { ok: true, id: prov.id, models: 1, via: "chat" };
+  if (isAuthFail(ping.error)) return { ok: false, id: prov.id, error: ping.error };
   const r = await probeModels(settings, prov);
   if (r.ok) return r;
-  if (isAuthFail(r.error)) return r;
-  if (/http 404|empty models|bad JSON/i.test(String(r.error || ""))) {
-    const ping = await chatPing(settings, prov);
-    if (ping.ok) return { ok: true, id: prov.id, models: 1, via: "chat" };
-    if (isAuthFail(ping.error)) return { ok: false, id: prov.id, error: ping.error };
-  }
-  return r;
+  if (isAuthFail(r.error)) return { ok: false, id: prov.id, error: r.error };
+  return { ok: false, id: prov.id, error: ping.error || r.error, soft: true };
 }
 
 export async function probeModels(settings, prov) {
@@ -312,8 +329,9 @@ export async function validateKeyed(settings, { only } = {}) {
   }
   const jobs = keyed.map(async (prov) => {
     const r = await validateOne(settings, prov);
-    if (!r.soft) markHealth(prov.id, r.ok, r.error);
-    else if (r.ok) markHealth(prov.id, true);
+    if (r.ok) markHealth(prov.id, true);
+    else if (isAuthFail(r.error)) markHealth(prov.id, false, r.error);
+    else clearHealth(prov.id);
     return { id: prov.id, label: prov.label, ...r };
   });
   return Promise.all(jobs);

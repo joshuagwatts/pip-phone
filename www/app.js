@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
-import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, parseAgentRelay, agentRelayComplete } from "./cloud.js";
+import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete } from "./cloud.js";
 import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
@@ -93,8 +93,16 @@ function queueKeyValidate(field) {
   clearTimeout(keyCheckTimers[field]);
   keyCheckTimers[field] = setTimeout(async () => {
     const prov = PROVIDERS.find((p) => p.field === field);
-    if (!prov || !String(db.settings[field] || "").trim()) return;
+    const key = normalizeApiKey(db.settings[field]);
+    if (!prov || !key) return;
+    clearHealth(prov.id);
+    if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
+      delete db.settings.brain_health[prov.id];
+    }
+    paintBrainStrip();
+    paintKeyRows();
     try {
+      db.settings[field] = key;
       await validateKeyed(db.settings, { only: prov.id });
       db.settings.brain_health = providerHealth();
       persist();
@@ -1259,7 +1267,7 @@ function renderData() {
     for (const p of PROVIDERS) {
       const el = $(`#set-${p.field}`);
       if (!el) continue;
-      const v = el.value.trim();
+      const v = normalizeApiKey(el.value);
       // Blank field = keep existing key (so re-open DATA doesn't wipe).
       if (v) db.settings[p.field] = v;
     }
@@ -1278,9 +1286,13 @@ function renderData() {
     const el = $(`#set-${p.field}`);
     if (!el) continue;
     el.addEventListener("input", () => {
-      const v = el.value.trim();
+      const v = normalizeApiKey(el.value);
       if (!v) return;
       db.settings[p.field] = v;
+      clearHealth(p.id);
+      if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
+        delete db.settings.brain_health[p.id];
+      }
       persist();
       const mem = $("#keys-memory");
       const names = PROVIDERS.filter((x) => String(db.settings[x.field] || "").trim()).map((x) => x.label.toUpperCase());
@@ -1315,7 +1327,7 @@ function renderData() {
       persist();
       let keyBit = "";
       try {
-        const sync = await ensureCloudKeys(db.settings, { force: true });
+        const sync = await ensureCloudKeys(db.settings, { force: true, replace: false });
         if (sync.applied) {
           keyBit = ` · ${sync.applied} KEY${sync.applied > 1 ? "S" : ""}`;
           persist();
@@ -1454,7 +1466,7 @@ function renderData() {
       grabSettings();
       setStatus("SYNCING KEYS…");
       try {
-        const out = await pullCloudKeys(db.settings);
+        const out = await pullCloudKeys(db.settings, { replace: true });
         persist();
         renderPrivacy();
         paintBrainStrip();
