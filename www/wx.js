@@ -28,16 +28,18 @@ const WMO = {
 export const DEFAULT_FILTERS = { km: 25, hailIn: 0, windMph: 38, days: 180, year: "all", sort: "date" };
 let wxFilters = { ...DEFAULT_FILTERS };
 let overlays = {};
-/** Exclusive weather product on the map: precip | cloud | vis | wind */
+/** Exclusive weather product on the map: precip | cloud | vis | wind | hail */
 let activeWxProduct = "precip";
 let activeOverlays = new Set(["precip"]);
 let windLayer = null;
 let windFieldLayer = null;
+let lastHailRows = [];
+let lastWindRows = [];
 let radarFrames = [];
 let radarFrameIdx = 0;
 let radarHost = "https://tilecache.rainviewer.com";
 let radarColor = "2/1_1";
-const WX_PRODUCTS = ["precip", "cloud", "vis", "wind"];
+const WX_PRODUCTS = ["precip", "cloud", "vis", "wind", "hail"];
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   const r = 6371;
@@ -277,25 +279,88 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
         const row = {
           kind: "hail",
           date: day,
-          time: ztime.slice(11, 19),
+          time: ztime.slice(11, 16) || "",
           lat: pt.lat,
           lon: pt.lon,
           size_in: Number.isNaN(sz) ? "UNK" : sz.toFixed(2),
-          location: "Radar signature",
+          location: item.WSR_ID || "Radar hail",
           county: "",
           state: "",
-          comments: `NEXRAD ${item.WSR_ID || ""}`.trim(),
+          comments: `PROB ${item.PROB || "?"}`,
           source: "noaa-swdi-radar",
           distance_km: Math.round(dist * 10) / 10,
           score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3,
         };
-        const key = `${row.date}|${row.lat.toFixed(2)}|${row.lon.toFixed(2)}`;
+        const key = `${day}|${pt.lat.toFixed(3)}|${pt.lon.toFixed(3)}|${row.size_in}`;
         const prev = hits.get(key);
-        if (!prev || parseFloat(row.size_in) > parseFloat(prev.size_in)) hits.set(key, row);
+        if (!prev || (parseFloat(row.size_in) || 0) > (parseFloat(prev.size_in) || 0)) hits.set(key, row);
       }
     }
   }
-  return [...hits.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 120);
+  return [...hits.values()];
+}
+
+/** Live Local Storm Reports (IEM) — CORS-friendly spotter hail near pin. */
+async function fetchIemLsrHail(lat, lon, radiusKm = 40, hours = 72) {
+  const km = Math.min(Math.max(radiusKm, 5), 80);
+  const hrs = Math.min(Math.max(hours, 6), 168);
+  const urls = [
+    `https://mesonet.agron.iastate.edu/geojson/lsr.py?hours=${hrs}&lat0=${lat}&lon0=${lon}`,
+    `https://mesonet.agron.iastate.edu/geojson/lsr.py?hours=${hrs}`,
+  ];
+  let features = [];
+  for (const url of urls) {
+    try {
+      const { body } = await httpGet(url, 12000);
+      const data = JSON.parse(body || "{}");
+      features = data.features || [];
+      if (features.length) break;
+    } catch {
+      /* try next */
+    }
+  }
+  const out = [];
+  for (const f of features) {
+    const p = f.properties || {};
+    const typ = String(p.type || p.typetext || "").toUpperCase();
+    if (!(typ === "H" || /HAIL/.test(typ) || /HAIL/.test(String(p.typetext || "")))) continue;
+    const coords = (f.geometry && f.geometry.coordinates) || [];
+    const rlon = Number(coords[0]);
+    const rlat = Number(coords[1]);
+    if (!Number.isFinite(rlat) || !Number.isFinite(rlon)) continue;
+    const dist = haversineKm(lat, lon, rlat, rlon);
+    if (dist > km) continue;
+    const mag = Number(p.magf != null ? p.magf : p.magnitude) || 0;
+    const valid = String(p.valid || p.utcvalid || "");
+    const day = valid.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    out.push({
+      kind: "hail",
+      date: day,
+      time: valid.slice(11, 16) || "",
+      lat: rlat,
+      lon: rlon,
+      size_in: mag > 0 ? mag.toFixed(2) : "UNK",
+      location: p.city || p.county || "LSR hail",
+      county: p.county || "",
+      state: p.state || "",
+      comments: String(p.remark || p.source || "IEM LSR").slice(0, 120),
+      source: "iem-lsr",
+      distance_km: Math.round(dist * 10) / 10,
+      score: mag >= 1 ? 5 : 3,
+    });
+  }
+  return out;
+}
+
+function hailZoneColor(sizeIn) {
+  const sz = parseFloat(sizeIn);
+  if (Number.isNaN(sz)) return { stroke: "#7dff5a", fill: "#7dff5a", core: "#b8ff9a" };
+  if (sz >= 2.5) return { stroke: "#f8bbd0", fill: "#ce93d8", core: "#ffffff" };
+  if (sz >= 2) return { stroke: "#e040fb", fill: "#ab47bc", core: "#f8bbd0" };
+  if (sz >= 1.5) return { stroke: "#ff1744", fill: "#e53935", core: "#ff8a80" };
+  if (sz >= 1) return { stroke: "#ff6d00", fill: "#ef6c00", core: "#ffab40" };
+  if (sz >= 0.75) return { stroke: "#ffb300", fill: "#f9a825", core: "#ffe082" };
+  return { stroke: "#c0ca33", fill: "#d4e157", core: "#f0f4c3" };
 }
 
 function mergeHailRows(...groups) {
@@ -631,25 +696,29 @@ export async function fetchWeatherBundle(lat, lon) {
   const params = new URLSearchParams({
     latitude: lat,
     longitude: lon,
-    current: "temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m,precipitation",
-    hourly: "temperature_2m,precipitation,precipitation_probability,weather_code,wind_speed_10m",
+    current: "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,relative_humidity_2m",
+    hourly: "temperature_2m,apparent_temperature,precipitation,precipitation_probability,weather_code,wind_speed_10m,wind_gusts_10m,relative_humidity_2m",
+    daily: "temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,weather_code,wind_gusts_10m_max",
     past_days: "1",
-    forecast_days: "1",
+    forecast_days: "3",
     temperature_unit: "fahrenheit",
     wind_speed_unit: "mph",
+    precipitation_unit: "inch",
     timezone: "auto",
   });
   try {
-    const { body } = await httpGet(`https://api.open-meteo.com/v1/forecast?${params}`, 8000);
+    const { body } = await httpGet(`https://api.open-meteo.com/v1/forecast?${params}`, 10000);
     const data = JSON.parse(body || "{}");
     const cur = data.current || {};
     const code = parseInt(cur.weather_code || 0, 10);
     const current = {
       ok: true,
       temp_f: cur.temperature_2m,
+      feels_f: cur.apparent_temperature,
       wind_mph: cur.wind_speed_10m,
       gust_mph: cur.wind_gusts_10m,
       precip_in: cur.precipitation,
+      humidity: cur.relative_humidity_2m,
       code,
       label: WMO[code] || "Weather",
     };
@@ -659,32 +728,163 @@ export async function fetchWeatherBundle(lat, lon) {
     const hours = times.map((t, i) => {
       const ts = new Date(t).getTime();
       const c = parseInt((h.weather_code || [])[i] || 0, 10);
+      const precipIn = Number((h.precipitation || [])[i]);
       return {
         time: t,
         ts,
         temp_f: (h.temperature_2m || [])[i],
-        precip_mm: (h.precipitation || [])[i],
+        feels_f: (h.apparent_temperature || [])[i],
+        precip_in: Number.isFinite(precipIn) ? precipIn : 0,
+        precip_mm: Number.isFinite(precipIn) ? precipIn * 25.4 : 0,
         precip_prob: (h.precipitation_probability || [])[i],
         wind_mph: (h.wind_speed_10m || [])[i],
+        gust_mph: (h.wind_gusts_10m || [])[i],
+        humidity: (h.relative_humidity_2m || [])[i],
         code: c,
         label: WMO[c] || "Weather",
         offsetHr: Math.round((ts - now) / 3600000),
       };
     });
-    // Keep ~6h past through ~6h future
-    const windowed = hours.filter((row) => row.offsetHr >= -6 && row.offsetHr <= 6);
+    const windowed = hours.filter((row) => row.offsetHr >= -12 && row.offsetHr <= 36);
     const nearestIdx = windowed.reduce((best, row, i) => {
       if (best < 0) return i;
       return Math.abs(row.offsetHr) < Math.abs(windowed[best].offsetHr) ? i : best;
     }, -1);
-    return { current, hours: windowed.length ? windowed : hours.slice(0, 13), nowIdx: Math.max(0, nearestIdx) };
+    const daily = data.daily || {};
+    const days = (daily.time || []).map((t, i) => ({
+      date: t,
+      high_f: (daily.temperature_2m_max || [])[i],
+      low_f: (daily.temperature_2m_min || [])[i],
+      precip_in: (daily.precipitation_sum || [])[i],
+      precip_prob: (daily.precipitation_probability_max || [])[i],
+      gust_mph: (daily.wind_gusts_10m_max || [])[i],
+      code: parseInt((daily.weather_code || [])[i] || 0, 10),
+      label: WMO[parseInt((daily.weather_code || [])[i] || 0, 10)] || "Weather",
+    }));
+    return {
+      current,
+      hours: windowed.length ? windowed : hours.slice(0, 48),
+      nowIdx: Math.max(0, nearestIdx),
+      days,
+    };
   } catch {
     return {
       current: { ok: false },
       hours: [],
       nowIdx: 0,
+      days: [],
     };
   }
+}
+
+function hourMetric(row, mode) {
+  if (!row) return 0;
+  if (mode === "precip") return Math.max(Number(row.precip_prob) || 0, (Number(row.precip_in) || 0) * 100);
+  if (mode === "wind") return Number(row.gust_mph || row.wind_mph) || 0;
+  return Number(row.temp_f) || 0;
+}
+
+function renderHourBars(hours, mode, activeIdx) {
+  const vals = hours.map((h) => hourMetric(h, mode));
+  const max = Math.max(...vals, mode === "temp" ? 1 : mode === "wind" ? 10 : 1);
+  const min = mode === "temp" ? Math.min(...vals.filter((v) => v), max - 1) : 0;
+  const span = Math.max(1, max - min);
+  const w = Math.max(240, hours.length * 8);
+  const h = 56;
+  const gap = 1;
+  const barW = Math.max(2, (w - gap * hours.length) / hours.length);
+  const bars = hours
+    .map((row, i) => {
+      const v = vals[i];
+      const norm = mode === "temp" ? (v - min) / span : v / max;
+      const bh = Math.max(2, Math.round(norm * (h - 8)));
+      const x = i * (barW + gap);
+      const y = h - bh;
+      const on = i === activeIdx;
+      let fill = on ? "var(--phos)" : "rgba(125,255,90,0.35)";
+      if (mode === "precip") fill = on ? "#4fc3f7" : "rgba(79,195,247,0.4)";
+      if (mode === "wind") fill = on ? "#90caf9" : "rgba(144,202,249,0.35)";
+      if (mode === "hail" || [95, 96, 99].includes(row.code)) {
+        if ([96, 99].includes(row.code)) fill = on ? "#e040fb" : "rgba(224,64,251,0.55)";
+        else if (row.code === 95) fill = on ? "#ff7043" : "rgba(255,112,67,0.45)";
+      }
+      return `<rect x="${x.toFixed(1)}" y="${y}" width="${barW.toFixed(1)}" height="${bh}" fill="${fill}" data-hi="${i}" />`;
+    })
+    .join("");
+  return `<svg class="wx-hour-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img">${bars}</svg>`;
+}
+
+/** HailTrace-style storm-date bars — max hail size by day. */
+export function renderStormGraph(hailDays, esc) {
+  const rows = [...(hailDays || [])]
+    .filter((h) => parseFloat(h.size_in) > 0)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .slice(-24);
+  if (!rows.length) {
+    return `<div class="wx-storm-graph empty"><p class="muted">No hail days in range — widen NEAR / WINDOW or run DEEP RESEARCH.</p></div>`;
+  }
+  const maxSz = Math.max(...rows.map((h) => parseFloat(h.size_in) || 0), 1);
+  const w = Math.max(280, rows.length * 18);
+  const h = 110;
+  const pad = 18;
+  const barArea = h - pad - 22;
+  const barW = Math.max(6, (w - 8) / rows.length - 3);
+  const bars = rows
+    .map((row, i) => {
+      const sz = parseFloat(row.size_in) || 0;
+      const bh = Math.max(4, Math.round((sz / maxSz) * barArea));
+      const x = 4 + i * ((w - 8) / rows.length);
+      const y = pad + (barArea - bh);
+      const col = hailZoneColor(sz);
+      const label = String(row.date || "").slice(5);
+      return `<g class="wx-sg-bar">
+        <rect x="${x.toFixed(1)}" y="${y}" width="${barW.toFixed(1)}" height="${bh}" fill="${col.fill}" stroke="${col.stroke}" stroke-width="0.6" opacity="0.92" />
+        <text x="${(x + barW / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle" class="wx-sg-x">${esc(label)}</text>
+        <text x="${(x + barW / 2).toFixed(1)}" y="${Math.max(10, y - 3)}" text-anchor="middle" class="wx-sg-v">${esc(String(sz))}"</text>
+      </g>`;
+    })
+    .join("");
+  const biggest = [...rows].sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0))[0];
+  return `<div class="wx-storm-graph">
+    <div class="wx-storm-graph-head">
+      <span>HAIL ZONES · STORM DATES</span>
+      <span class="wx-storm-graph-peak">${esc(biggest.date)} · ${esc(biggest.size_in)}" ${esc(biggest.severity || "")}</span>
+    </div>
+    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Hail size by storm date">${bars}</svg>
+    <div class="wx-storm-graph-legend muted">Yellow light · orange strong · red severe · purple/white extreme · height = max inches that day</div>
+  </div>`;
+}
+
+export function weatherSummaryHtml(bundle, hailDays, esc) {
+  const cur = bundle?.current;
+  if (!cur?.ok) return `<div class="wx-summary muted">Weather summary offline.</div>`;
+  const hours = bundle.hours || [];
+  const next12 = hours.filter((h) => h.offsetHr >= 0 && h.offsetHr <= 12);
+  const maxProb = Math.max(0, ...next12.map((h) => Number(h.precip_prob) || 0));
+  const maxGust = Math.max(0, ...next12.map((h) => Number(h.gust_mph || h.wind_mph) || 0), Number(cur.gust_mph) || 0);
+  const stormHr = next12.find((h) => [95, 96, 99].includes(h.code));
+  const recentHail = [...(hailDays || [])].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+  const day0 = (bundle.days || [])[0];
+  const bits = [];
+  bits.push(`<div class="wx-summary-hero">${Math.round(cur.temp_f)}°F · ${esc(cur.label)}</div>`);
+  const sub = [];
+  if (cur.feels_f != null) sub.push(`feels ${Math.round(cur.feels_f)}°`);
+  if (cur.humidity != null) sub.push(`${Math.round(cur.humidity)}% RH`);
+  if (cur.wind_mph != null) sub.push(`wind ${Math.round(cur.wind_mph)} mph`);
+  if (cur.gust_mph != null && cur.gust_mph > cur.wind_mph) sub.push(`gust ${Math.round(cur.gust_mph)}`);
+  bits.push(`<div class="wx-summary-sub">${esc(sub.join(" · "))}</div>`);
+  const outlook = [];
+  if (day0) {
+    outlook.push(`Today ${Math.round(day0.high_f)}°/${Math.round(day0.low_f)}°`);
+    if (day0.precip_prob != null) outlook.push(`${Math.round(day0.precip_prob)}% precip`);
+  }
+  if (maxProb >= 40) outlook.push(`Next 12h rain risk ${maxProb}%`);
+  if (maxGust >= 35) outlook.push(`Gusts to ${Math.round(maxGust)} mph`);
+  if (stormHr) outlook.push(`Thunder possible ~${new Date(stormHr.ts).toLocaleTimeString(undefined, { hour: "numeric" })}`);
+  if (recentHail) outlook.push(`Last hail day ${recentHail.date} · ${recentHail.size_in}"`);
+  else outlook.push("No recent hail near pin");
+  bits.push(`<div class="wx-summary-outlook">${esc(outlook.join(" · "))}</div>`);
+  return `<div class="wx-summary">${bits.join("")}</div>`;
 }
 
 export function renderHourlyTimeline(root, bundle, esc) {
@@ -694,7 +894,7 @@ export function renderHourlyTimeline(root, bundle, esc) {
     root.innerHTML = `<p class="muted">Hourly timeline offline.</p>`;
     return;
   }
-  let mode = root.dataset.wxMode || "temp";
+  let mode = root.dataset.wxMode || "precip";
   const idx = Math.min(hours.length - 1, Math.max(0, Number(bundle.nowIdx) || 0));
   const paint = (i) => {
     const row = hours[i];
@@ -705,15 +905,20 @@ export function renderHourlyTimeline(root, bundle, esc) {
         : row.offsetHr < 0
           ? `${Math.abs(row.offsetHr)}h ago`
           : `+${row.offsetHr}h`;
-    const tLabel = new Date(row.ts).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-    let focus = `${Math.round(row.temp_f)}°F · ${esc(row.label)}`;
+    const tLabel = new Date(row.ts).toLocaleString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    let focus = "";
     if (mode === "precip") {
-      const inch = row.precip_mm != null ? (Number(row.precip_mm) / 25.4).toFixed(2) : null;
-      focus = `${row.precip_prob != null ? `${Math.round(row.precip_prob)}% chance` : "precip"}${inch != null ? ` · ${inch} in` : ""} · ${esc(row.label)}`;
+      focus = `${row.precip_prob != null ? `${Math.round(row.precip_prob)}% chance` : "precip"} · ${(Number(row.precip_in) || 0).toFixed(2)} in · ${esc(row.label)}`;
     } else if (mode === "wind") {
-      focus = `${row.wind_mph != null ? `${Math.round(row.wind_mph)} mph` : "wind"} · ${esc(row.label)}`;
+      focus = `${row.wind_mph != null ? `${Math.round(row.wind_mph)} mph` : "wind"}${row.gust_mph != null ? ` · gust ${Math.round(row.gust_mph)}` : ""} · ${esc(row.label)}`;
     } else {
-      focus = `${Math.round(row.temp_f)}°F · ${esc(row.label)}${row.wind_mph != null ? ` · ${Math.round(row.wind_mph)} mph` : ""}`;
+      focus = `${Math.round(row.temp_f)}°F${row.feels_f != null ? ` (feels ${Math.round(row.feels_f)}°)` : ""} · ${esc(row.label)}`;
     }
     root.dataset.wxMode = mode;
     root.innerHTML = `
@@ -728,23 +933,26 @@ export function renderHourlyTimeline(root, bundle, esc) {
           <span class="wx-timeline-clock">${esc(tLabel)}</span>
         </div>
         <div class="wx-now">${focus}</div>
-        <label class="wx-timeline-scrub">HISTORY → FORECAST
+        <div class="wx-hour-chart-wrap">${renderHourBars(hours, mode, i)}</div>
+        <label class="wx-timeline-scrub">SCRUB HOURS · chart updates with selection
           <input type="range" id="wx-hour-range" min="0" max="${hours.length - 1}" value="${i}" step="1" />
         </label>
-        <div class="wx-timeline-ticks">${hours
-          .map((h, j) => {
-            const mark = h.offsetHr === 0 ? "●" : "·";
-            return `<span class="${j === i ? "on" : ""} ${h.offsetHr === 0 ? "now" : ""}">${mark}</span>`;
-          })
-          .join("")}</div>
+        <div class="wx-timeline-meta muted">${esc(
+          `${hours.length} hrs · −12h → +36h · tap TEMP/PRECIP/WIND then drag`,
+        )}</div>
       </div>`;
     const range = root.querySelector("#wx-hour-range");
-    if (range) range.oninput = () => paint(Number(range.value));
+    if (range) {
+      range.oninput = () => paint(Number(range.value));
+    }
     root.querySelectorAll("[data-wx-mode]").forEach((b) => {
       b.onclick = () => {
         mode = b.dataset.wxMode;
         paint(Number(root.querySelector("#wx-hour-range")?.value || i));
       };
+    });
+    root.querySelectorAll(".wx-hour-chart rect").forEach((r) => {
+      r.onclick = () => paint(Number(r.getAttribute("data-hi")));
     });
   };
   paint(idx);
@@ -752,17 +960,18 @@ export function renderHourlyTimeline(root, bundle, esc) {
 
 export function renderWeatherBoot(root, geo, wx, hail, esc) {
   const addr = (geo && (geo.address || geo.city)) || "Your area";
-  const line = wx && wx.ok
-    ? `${Math.round(wx.temp_f)}°F · ${esc(wx.label || "Weather")}${wx.wind_mph ? ` · wind ${Math.round(wx.wind_mph)} mph` : ""}`
-    : "";
-  const hailRows = collapseHailByDate(hail || []).slice(0, 4);
+  const hailRows = collapseHailByDate(hail || []);
+  const bundleStub = {
+    current: wx && wx.ok ? wx : { ok: false },
+    hours: [],
+    days: [],
+  };
   root.innerHTML = `
     <div class="wx-boot">
       <div class="wx-addr">${esc(addr)}</div>
-      ${line ? `<div class="wx-now">${line}</div>` : ""}
-      ${hailRows.length
-        ? `<div class="wx-hail">${hailRows.map((h) => `<div class="wx-hail-row"><span class="stars">${esc(h.stars || hailStars(h.size_in))}</span><span class="date">${esc(h.date)}</span><span class="size">${esc(h.size_in)}"</span> <span class="sev">${esc(h.severity || "")}</span></div>`).join("")}</div>`
-        : `<p class="muted">Search an address or tap the map for hail zones.</p>`}
+      ${weatherSummaryHtml(bundleStub, hailRows, esc)}
+      ${renderStormGraph(hailRows, esc)}
+      <p class="muted wx-boot-hint">Scroll down for dossier · tap map or search an address · HAIL layer for zoning</p>
     </div>`;
 }
 
@@ -858,8 +1067,20 @@ async function localMapConfig(settings, center) {
       kind: "wx",
       synthetic: true,
     });
+    layerList.push({
+      id: "hail",
+      label: "Hail",
+      kind: "wx",
+      synthetic: true,
+    });
   } catch {
     /* overlays optional */
+  }
+  if (!layerList.some((l) => l.id === "wind")) {
+    layerList.push({ id: "wind", label: "Wind", kind: "wx", synthetic: true });
+  }
+  if (!layerList.some((l) => l.id === "hail")) {
+    layerList.push({ id: "hail", label: "Hail", kind: "wx", synthetic: true });
   }
   return { center: { lat: c.lat, lon: c.lon, city: c.city || settings?.city || "" }, layers: layerList, radarFrames };
 }
@@ -871,16 +1092,17 @@ async function localResearch(lat, lon, address = "", { deep = true, filters = wx
   const swdiDays = Math.min(filterDays, 180);
   const km = Number(filters.km) || 25;
   const spcDays = Math.min(filterDays, deep ? 90 : 30);
-  const [geo, wxNow, archiveStorms, spc, swdi] = await Promise.all([
+  const [geo, wxNow, archiveStorms, spc, swdi, lsr] = await Promise.all([
     geoP,
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     historicalStorms(lat, lon, archiveDays),
     fetchSpcReports(lat, lon, km, spcDays),
     fetchSwdiHail(lat, lon, km, swdiDays),
+    fetchIemLsrHail(lat, lon, km, deep ? 120 : 72).catch(() => []),
   ]);
   const addr = address || geo.address || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   const city = geo.city || addr.split(",")[0];
-  const hail = mergeHailRows(spc.hail || [], swdi || []);
+  const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
   const storms = enrichStormDates(archiveStorms, hail, wind);
   const news = [];
@@ -928,12 +1150,13 @@ export async function quickDossier(settings, lat, lon, { onPartial } = {}) {
   };
   if (onPartial) onPartial(partial);
   const km = Number(wxFilters.km) || 25;
-  const [wxNow, spc, swdi] = await Promise.all([
+  const [wxNow, spc, swdi, lsr] = await Promise.all([
     currentWeather(lat, lon).catch(() => ({ ok: false })),
     fetchSpcReports(lat, lon, km, 30),
     fetchSwdiHail(lat, lon, km, 60),
+    fetchIemLsrHail(lat, lon, km, 72).catch(() => []),
   ]);
-  const hail = mergeHailRows(spc.hail || [], swdi || []);
+  const hail = mergeHailRows(spc.hail || [], swdi || [], lsr || []);
   const wind = spc.wind || [];
   return {
     ...partial,
@@ -951,7 +1174,17 @@ export async function refetchDossier(settings, lat, lon, address, filters = wxFi
 }
 
 export async function loadMapConfig(settings) {
-  if (mapConfigCache) return mapConfigCache;
+  if (mapConfigCache) {
+    const layers = mapConfigCache.layers || [];
+    if (!layers.some((l) => l.id === "hail")) {
+      layers.push({ id: "hail", label: "Hail", kind: "wx", synthetic: true });
+    }
+    if (!layers.some((l) => l.id === "wind")) {
+      layers.push({ id: "wind", label: "Wind", kind: "wx", synthetic: true });
+    }
+    mapConfigCache.layers = layers;
+    return mapConfigCache;
+  }
   const center = await resolveMapCenter(settings);
   const remote = await api("/api/storm/map", { settings, timeout: 8000 }).catch(() => null);
   mapConfigCache = remote ? { ...remote, center: { ...remote.center, ...center } } : await localMapConfig(settings, center);
@@ -1025,42 +1258,68 @@ export async function quickPin(settings, lat, lon) {
 
 export function drawHailMarkers(hailRows, windRows) {
   if (!map || !window.L) return;
+  lastHailRows = hailRows || [];
+  lastWindRows = windRows || [];
   if (hailLayer) hailLayer.remove();
   if (windLayer) windLayer.remove();
   hailLayer = window.L.layerGroup();
   windLayer = window.L.layerGroup();
   const days = collapseHailByDate(hailRows || []);
   const sorted = [...days].sort((a, b) => (parseFloat(b.size_in) || 0) - (parseFloat(a.size_in) || 0));
-  for (const h of sorted.slice(0, 40)) {
+  for (const h of sorted.slice(0, 48)) {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
     const sz = parseFloat(h.size_in);
-    const color = Number.isNaN(sz) ? "#7dff5a" : sz >= 2 ? "#ff3a3a" : sz >= 1.5 ? "#e07050" : sz >= 1 ? "#d4a84b" : "#7dff5a";
-    const rM = Math.max(900, Math.min(12000, (h.zone_r_km || 2) * 1000));
+    const col = hailZoneColor(h.size_in);
+    const rM = Math.max(1100, Math.min(14000, (h.zone_r_km || 2) * 1000));
     const stars = h.stars || hailStars(h.size_in);
     const sev = h.severity || hailSeverityLabel(h.size_in);
     const src =
-      h.source === "mixed" ? "radar+spot" : h.source === "noaa-swdi-radar" ? "radar" : "spotter";
+      h.source === "mixed"
+        ? "radar+spot"
+        : h.source === "noaa-swdi-radar"
+          ? "radar"
+          : h.source === "iem-lsr"
+            ? "LSR"
+            : "spotter";
+    // Outer wash → mid zone → bright core (HailPoint-style swath cells).
+    window.L.circle([h.lat, h.lon], {
+      radius: rM * 1.35,
+      color: col.stroke,
+      fillColor: col.fill,
+      fillOpacity: sz >= 2 ? 0.12 : 0.07,
+      weight: 0,
+      opacity: 0,
+    }).addTo(hailLayer);
     window.L.circle([h.lat, h.lon], {
       radius: rM,
-      color,
-      fillColor: color,
-      fillOpacity: sz >= 2 ? 0.28 : sz >= 1 ? 0.2 : 0.12,
-      weight: sz >= 2 ? 2.5 : 1.5,
-      opacity: 0.85,
+      color: col.stroke,
+      fillColor: col.fill,
+      fillOpacity: sz >= 2 ? 0.32 : sz >= 1 ? 0.22 : 0.14,
+      weight: sz >= 2 ? 2.2 : 1.4,
+      opacity: 0.9,
     })
       .bindPopup(
         `<b>${stars} ${sev}</b><br>${h.date}${h.time ? ` ${h.time}` : ""} · <b>${h.size_in}"</b> max (${src})<br>${h.hits || 1} signature${(h.hits || 1) === 1 ? "" : "s"} · zone ~${h.zone_r_km || "?"} km<br>${h.location || ""}${h.state ? `, ${h.state}` : ""}<br>${h.distance_km != null ? `${h.distance_km} km from pin` : ""}`,
       )
       .addTo(hailLayer);
+    if (sz >= 1) {
+      window.L.circle([h.lat, h.lon], {
+        radius: Math.max(350, rM * (sz >= 2 ? 0.28 : 0.38)),
+        color: col.core,
+        fillColor: col.core,
+        fillOpacity: 0.55,
+        weight: 1,
+        opacity: 0.95,
+      }).addTo(hailLayer);
+    }
     window.L.circleMarker([h.lat, h.lon], {
-      radius: Number.isNaN(sz) ? 4 : Math.min(10, 3 + sz * 2),
-      color,
-      fillColor: color,
-      fillOpacity: 0.9,
+      radius: Number.isNaN(sz) ? 4 : Math.min(11, 3 + sz * 2.2),
+      color: col.stroke,
+      fillColor: col.core,
+      fillOpacity: 0.95,
       weight: 1,
     }).addTo(hailLayer);
   }
-  // Wind: one max per date near pin (not every report).
   const windDays = new Map();
   for (const w of windRows || []) {
     const day = String(w.date || "").slice(0, 10);
@@ -1082,8 +1341,27 @@ export function drawHailMarkers(hailRows, windRows) {
       .bindPopup(`${w.date} · ${mph} mph wind<br>${w.location || ""}, ${w.state || ""}<br>${w.distance_km} km from pin`)
       .addTo(windLayer);
   }
-  hailLayer.addTo(map);
-  windLayer.addTo(map);
+  syncHazardLayers();
+}
+
+function syncHazardLayers() {
+  if (!map) return;
+  const showHail = activeWxProduct === "hail" || activeWxProduct === "precip";
+  const showWind = activeWxProduct === "wind" || activeWxProduct === "hail";
+  try {
+    if (hailLayer) {
+      if (showHail) hailLayer.addTo(map);
+      else map.removeLayer(hailLayer);
+    }
+    if (windLayer) {
+      if (showWind && activeWxProduct === "wind") windLayer.addTo(map);
+      else if (activeWxProduct === "hail") map.removeLayer(windLayer);
+      else if (activeWxProduct === "precip") map.removeLayer(windLayer);
+      else map.removeLayer(windLayer);
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 function applyOverlays() {
@@ -1106,6 +1384,7 @@ function applyOverlays() {
       /* ignore */
     }
   }
+  syncHazardLayers();
 }
 
 async function refreshWindField() {
@@ -1173,6 +1452,8 @@ export function destroyMap() {
   hailLayer = null;
   windLayer = null;
   windFieldLayer = null;
+  lastHailRows = [];
+  lastWindRows = [];
   layers = {};
   overlays = {};
   activeOverlays = new Set(["precip"]);
@@ -1232,10 +1513,14 @@ export function setMapLayer(id) {
   if (!map) return;
   if (id === "radar") id = "precip";
   if (id === "clouds") id = "cloud";
-  if (WX_PRODUCTS.includes(id) || overlays[id]) {
+  if (WX_PRODUCTS.includes(id) || overlays[id] || id === "hail") {
     activeWxProduct = id;
     activeOverlays = new Set([id]);
     applyOverlays();
+    // Hail product focuses the map on zones; redraw if we already have rows.
+    if (id === "hail" && (lastHailRows.length || lastWindRows.length)) {
+      drawHailMarkers(lastHailRows, lastWindRows);
+    }
     return;
   }
   if (!layers[id]) return;
@@ -1391,10 +1676,6 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
   const years = [
     ...new Set((data.hail || []).map((h) => String(h.date || "").slice(0, 4)).filter((y) => /^\d{4}$/.test(y))),
   ].sort((a, b) => b.localeCompare(a));
-  const wxLine =
-    data.weather && data.weather.ok
-      ? `${Math.round(data.weather.temp_f)}°F · ${esc(data.weather.label || "Weather")}${data.weather.wind_mph ? ` · ${Math.round(data.weather.wind_mph)} mph` : ""}`
-      : "";
   const alert =
     data.weather && data.weather.severity && data.weather.severity.line
       ? `<div class="wx-alert ${esc(data.weather.severity.level || "")}">${esc(data.weather.severity.line)}</div>`
@@ -1402,9 +1683,10 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
   root.innerHTML = `
     <div class="wx-dossier">
       <div class="wx-addr">${esc(addr)}</div>
+      <div id="wx-summary" class="wx-summary-host"></div>
       <div id="wx-hourly" class="wx-hourly"></div>
-      ${wxLine ? `<div class="wx-now">${wxLine}</div>` : ""}
       ${alert}
+      ${renderStormGraph(hail, esc)}
       <div class="wx-links">
         ${zurl ? `<a href="${esc(zurl)}" target="_blank" rel="noopener">ZILLOW SEARCH</a>` : ""}
         ${onResearch ? `<button type="button" id="wx-deep" class="primary">DEEP RESEARCH</button>` : ""}
@@ -1452,7 +1734,7 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
         ${data.owner_email ? `<div>Email: ${esc(data.owner_email)}</div>` : ""}
       </div>
       <h4>HAIL TRACE · ${hail.length} DAYS</h4>
-      <div class="wx-hail-legend muted">1 tag per date · max size that day · ☆ light → ★★★★★ 3"+ · map shows severity zones</div>
+      <div class="wx-hail-legend muted">1 tag per date · max size that day · ☆ light → ★★★★★ 3"+ · HAIL layer = zoning swaths</div>
       <div class="wx-hail">${
         hail.length
           ? hail
@@ -1461,7 +1743,13 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
                 const stars = h.stars || hailStars(h.size_in);
                 const sev = h.severity || hailSeverityLabel(h.size_in);
                 const src =
-                  h.source === "mixed" ? "ZONE" : h.source === "noaa-swdi-radar" ? "RADAR" : "SPOT";
+                  h.source === "mixed"
+                    ? "ZONE"
+                    : h.source === "noaa-swdi-radar"
+                      ? "RADAR"
+                      : h.source === "iem-lsr"
+                        ? "LSR"
+                        : "SPOT";
                 return `<div class="wx-hail-row sev-${esc(String(sev).toLowerCase())}">
           <span class="stars">${esc(stars)}</span>
           <span class="date">${esc(h.date)}</span>
@@ -1497,7 +1785,7 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
               .slice(0, 16)
               .map(
                 (s) => `
-        <div class="wx-storm"><span class="date">${esc(s.date)}</span> <span class="score">${esc(String(s.wind_mph || s.score))}${s.wind_mph ? " mph" : ""}</span> ${esc((s.reasons || []).join(" · ") || s.label)}</div>`,
+        <div class="wx-storm"><span class="date">${esc(s.date)}</span> <span class="score">${esc(String(s.hail_in ? `${s.hail_in}"` : s.wind_mph || s.score))}${s.hail_in ? "" : s.wind_mph ? " mph" : ""}</span> ${esc((s.reasons || []).join(" · ") || s.label)}</div>`,
               )
               .join("")
           : `<p class="muted">No storm days at this pin after filters.</p>`
@@ -1553,6 +1841,8 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
   if (Number.isFinite(lat) && Number.isFinite(lon)) {
     fetchWeatherBundle(lat, lon)
       .then((bundle) => {
+        const sum = root.querySelector("#wx-summary");
+        if (sum) sum.innerHTML = weatherSummaryHtml(bundle, hail, esc);
         if (bundle?.hours?.length) renderHourlyTimeline(root.querySelector("#wx-hourly"), bundle, esc);
       })
       .catch(() => {});

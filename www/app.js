@@ -19,7 +19,7 @@ import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
-import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier, bindRadarScrubber, fetchWeatherBundle, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml } from "./wx.js";
+import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier, bindRadarScrubber, fetchWeatherBundle, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml, weatherSummaryHtml, collapseHailByDate } from "./wx.js";
 import { pickAndIdentify, detectVisionMode } from "./vision.js";
 import { looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
@@ -925,13 +925,23 @@ async function renderWx() {
       renderWeatherBoot($("#wx-panel"), hit.geo, hit.weather || cfg.weather, hit.hail, esc);
       try {
         const bundle = await fetchWeatherBundle(center.lat, center.lon);
+        const panel = $("#wx-panel");
+        const boot = panel?.querySelector(".wx-boot");
+        if (boot && bundle?.current?.ok) {
+          const sumHost = document.createElement("div");
+          sumHost.innerHTML = weatherSummaryHtml(bundle, collapseHailByDate(hit.hail || []), esc);
+          const oldSum = boot.querySelector(".wx-summary");
+          if (oldSum) oldSum.replaceWith(sumHost.firstElementChild);
+          else boot.insertBefore(sumHost.firstElementChild, boot.querySelector(".wx-storm-graph") || boot.querySelector(".wx-boot-hint"));
+        }
         const host = document.createElement("div");
         host.id = "wx-hourly";
         host.className = "wx-hourly";
-        const panel = $("#wx-panel");
-        const boot = panel?.querySelector(".wx-boot");
-        if (boot) boot.prepend(host);
-        else if (panel) panel.prepend(host);
+        if (boot) {
+          const graph = boot.querySelector(".wx-storm-graph");
+          if (graph) boot.insertBefore(host, graph);
+          else boot.appendChild(host);
+        } else if (panel) panel.prepend(host);
         renderHourlyTimeline(host, bundle, esc);
       } catch {
         /* optional */
