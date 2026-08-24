@@ -1,5 +1,6 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
+import { AGENT_META, agentLabel } from "./crew.js";
 import { probeKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, chatPing } from "./cloud.js";
 import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
@@ -20,7 +21,7 @@ import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
 import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier, bindRadarScrubber, fetchWeatherBundle, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml } from "./wx.js";
 import { pickAndIdentify, detectVisionMode } from "./vision.js";
-import { describeChain, looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
+import { looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
   mealSnapshot,
   planDay,
@@ -529,34 +530,125 @@ function renderPrivacy() {
   }
 }
 
+function chatAgent() {
+  return String(db.settings.chat_agent || "pip").toLowerCase();
+}
+
+function setChatAgent(id, silent = false) {
+  const next = String(id || "pip").toLowerCase();
+  db.settings.chat_agent = next;
+  // Keep brain_pin aligned for routing; pip uses auto cascade under the hood.
+  if (next === "pip") db.settings.brain_pin = "auto";
+  else if (next === "compare") db.settings.brain_pin = "compare";
+  else db.settings.brain_pin = next;
+  persist();
+  paintBrainStrip();
+  if (!silent) {
+    const meta = AGENT_META[next] || { label: agentLabel(next), blurb: "" };
+    setStatus(`TALKING TO · ${meta.label}`);
+    const line = $("#agent-line");
+    if (line) {
+      line.textContent = next === "pip"
+        ? "PIP · your crew — tap a keyed agent to talk to them as themselves"
+        : `${meta.label} · ${meta.blurb || "native voice"}`;
+    }
+  }
+}
+
+function tryAgentSwitch(text) {
+  const t = String(text || "").trim();
+  const m = t.match(
+    /^\s*(?:talk to|switch to|use|ask)\s+(pip|groq|openrouter|cerebras|mistral|gemini|grok|xai|desktop|compare)\b\s*$/i,
+  );
+  if (!m) return null;
+  let id = m[1].toLowerCase();
+  if (id === "grok") id = "xai";
+  if (id !== "pip" && id !== "desktop" && id !== "compare") {
+    const keyed = cloudStatus(db.settings).keyed || [];
+    if (!keyed.includes(id)) {
+      return { ok: false, reply: `No ${agentLabel(id)} key on this phone yet. DATA → paste key → PROBE, then tap ${agentLabel(id)}.` };
+    }
+  }
+  if (id === "desktop" && !desktopConfigured(db.settings)) {
+    return { ok: false, reply: "Desktop isn't paired. DATA → CONNECT first." };
+  }
+  setChatAgent(id);
+  const meta = AGENT_META[id] || { label: agentLabel(id), blurb: "" };
+  return {
+    ok: true,
+    reply:
+      id === "pip"
+        ? "Back with Pip — your crew. Tap a green agent chip when you want their native voice."
+        : `You're with ${meta.label} now. ${meta.blurb || "Their voice, not Pip's."}`,
+  };
+}
+
 function updateBrainChip() {
   renderPrivacy();
   paintBrainStrip();
 }
 
-function chainChipsHtml() {
-  const keyed = cloudStatus(db.settings).keyed || [];
+function agentChipsHtml() {
+  const keyed = new Set(cloudStatus(db.settings).keyed || []);
+  const health = providerHealth();
+  const active = chatAgent();
+  const desk = desktopConfigured(db.settings);
   const live = db.settings.desktop_live;
-  const leaky = !privacyOn(db.settings);
-  const rows = describeChain(
-    keyed,
-    providerHealth(),
-    desktopConfigured(db.settings),
-    db.settings.brain_pin,
-    live === true ? true : live === false ? false : null,
-    leaky,
-  );
+  const rows = [{ id: "pip", label: "PIP", state: "on" }];
+  for (const id of ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"]) {
+    if (!keyed.has(id)) continue;
+    const ok = health[id]?.ok;
+    rows.push({
+      id,
+      label: id === "xai" ? "GROK" : id.toUpperCase(),
+      state: ok === true ? "on" : ok === false ? "bad" : "key",
+    });
+  }
+  if (desk) {
+    rows.push({
+      id: "desktop",
+      label: "DESKTOP",
+      state: live === true ? "on" : live === false ? "bad" : "key",
+    });
+  }
+  if (keyed.size > 1) rows.push({ id: "compare", label: "COMPARE", state: "key" });
   return rows
-    .map((r) => `<span class="brain-chip ${esc(r.state)}" data-brain="${esc(r.id)}">${esc(r.label)}</span>`)
+    .map((r) => {
+      const sel = active === r.id || (active === "auto" && r.id === "pip") ? " sel" : "";
+      return `<button type="button" class="brain-chip ${esc(r.state)}${sel}" data-agent="${esc(r.id)}">${esc(r.label)}</button>`;
+    })
     .join("");
 }
 
 function paintBrainStrip() {
-  const html = chainChipsHtml();
+  const html = agentChipsHtml();
   const chat = $("#brain-strip");
-  if (chat) chat.innerHTML = html;
+  if (chat) {
+    chat.innerHTML = html;
+    chat.querySelectorAll("[data-agent]").forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.getAttribute("data-agent");
+        const keyed = cloudStatus(db.settings).keyed || [];
+        if (id !== "pip" && id !== "desktop" && id !== "compare" && !keyed.includes(id)) {
+          setStatus(`NO KEY · ${agentLabel(id)}`);
+          return;
+        }
+        setChatAgent(id);
+        document.body.classList.add("comm");
+      };
+    });
+  }
   const data = $("#data-chain");
   if (data) data.innerHTML = html;
+  const line = $("#agent-line");
+  if (line) {
+    const id = chatAgent();
+    const meta = AGENT_META[id] || { label: agentLabel(id), blurb: "" };
+    line.textContent =
+      id === "pip"
+        ? "PIP · your crew — tap a keyed agent for their native voice"
+        : `WITH ${meta.label} · ${meta.blurb || "native voice"}`;
+  }
 }
 
 function softRefresh() {
@@ -984,8 +1076,8 @@ function renderData() {
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
     <p class="muted" id="keys-memory">${keyedNow.length ? `IN MEMORY: ${esc(keyedNow.join(" · "))}` : "NO KEYS IN MEMORY — paste below"}</p>
     <p class="muted">${esc(httpLine)}</p>
-    <p class="muted">Paste keys below (save as you type). Then tap PROBE — results show under the button.</p>
-    <div class="field"><span>PIN</span>
+    <p class="muted">Paste keys below (save as you type). Pick who you talk to in the CHAT strip — not here.</p>
+    <div class="field"><span>PIN (power override)</span>
       <select id="brain-pin">
         ${["auto", "compare", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].map((id) => {
           const on = (s.brain_pin || "auto") === id;
@@ -1000,7 +1092,9 @@ function renderData() {
                     ? "qwen (slow)"
                     : id === "compare"
                       ? "compare (all tabs)"
-                      : id;
+                      : id === "auto"
+                        ? "auto (CHAT strip decides)"
+                        : id;
           return `<option value="${id}" ${on ? "selected" : ""}>${label}</option>`;
         }).join("")}
       </select>
@@ -1038,6 +1132,11 @@ function renderData() {
     db.settings.humor = Number($("#set-humor").value);
     db.settings.honesty = Number($("#set-honesty").value);
     db.settings.brain_pin = ($("#brain-pin") && $("#brain-pin").value) || db.settings.brain_pin;
+    const pinNow = String(db.settings.brain_pin || "auto").toLowerCase();
+    if (pinNow === "auto") db.settings.chat_agent = db.settings.chat_agent || "pip";
+    else if (["compare", "desktop", "groq", "openrouter", "cerebras", "mistral", "gemini", "xai"].includes(pinNow)) {
+      db.settings.chat_agent = pinNow;
+    }
     for (const p of PROVIDERS) {
       const el = $(`#set-${p.field}`);
       if (!el) continue;
@@ -1563,9 +1662,11 @@ function addLog(role, text, opts = {}) {
       ? leaked
         ? `YOU · LEAKED`
         : "YOU"
-      : opts.brain
-        ? `PIP · ${String(opts.brain).toUpperCase()}`
-        : "PIP";
+      : opts.agent && opts.agent !== "pip"
+        ? `${agentLabel(opts.agent)}${opts.brain && String(opts.brain).toLowerCase() !== String(opts.agent).toLowerCase() ? ` · ${String(opts.brain).toUpperCase()}` : ""}`
+        : opts.brain
+          ? `PIP · ${String(opts.brain).toUpperCase()}`
+          : "PIP";
   const meta = [];
   if (opts.tokens) meta.push(`~${opts.tokens} TOK`);
   if (opts.tools && opts.tools.length) meta.push(opts.tools.join(" · "));
@@ -1725,6 +1826,15 @@ async function sendChat() {
     /* optional */
   }
 
+  const switchHit = tryAgentSwitch(text);
+  if (switchHit) {
+    addLog("pip", switchHit.reply, { agent: "pip" });
+    db.chat.push({ role: "pip", content: switchHit.reply, brain: "pip" });
+    persist();
+    setStatus(switchHit.ok ? `WITH · ${agentLabel(chatAgent())}` : "AGENT");
+    return;
+  }
+
   if (/^\s*(test\s+(brain|keys?|cloud)|\/test)\s*$/i.test(text)) {
     setStatus("TESTING BRAINS…");
     try {
@@ -1835,6 +1945,7 @@ async function sendChat() {
     const reply = typeof out === "string" ? out : out.text;
     const leaked = typeof out === "object" ? Boolean(out.leaked) : false;
     const provider = typeof out === "object" ? out.provider : "";
+    const agent = typeof out === "object" ? out.agent || chatAgent() : chatAgent();
     const compare = typeof out === "object" ? out.compare : null;
     const pending = takePendingTheme();
     if (pending && applyThemePayload(db.settings, pending)) {
@@ -1851,6 +1962,7 @@ async function sendChat() {
       role: "pip",
       content: reply,
       brain: provider || "",
+      agent: agent || "pip",
       leaked,
       compare: compare || undefined,
     });
@@ -1861,12 +1973,13 @@ async function sendChat() {
       addCompareLog(compare, { leaked, tokens });
       setStatus(`COMPARE · ${compare.filter((c) => c.ok).length} BRAINS`);
     } else {
-    addLog("pip", reply, {
-      brain: provider || activeBrain().label,
-      leaked,
-      tokens,
-    });
-      const label = (provider || activeBrain().label || "PIP").toUpperCase();
+      addLog("pip", reply, {
+        brain: provider || activeBrain().label,
+        agent,
+        leaked,
+        tokens,
+      });
+      const label = agentLabel(agent === "pip" ? provider || "pip" : agent);
       const tokBit = tokens ? ` · ~${tokens} TOK` : "";
       setStatus((leaked ? `LEAKED · ${label}` : `PRIVATE · ${label}`) + tokBit);
     }
@@ -1888,7 +2001,8 @@ function boot() {
     hydrateHealth(db.settings.brain_health);
     // Drop stale KEY BAD poison from the old chat-ping probe.
     db.settings.brain_health = providerHealth();
-    // Keys on device = use them as Pip. Don't leave people stuck in SECURE + desktop-only.
+    if (!db.settings.chat_agent) db.settings.chat_agent = "pip";
+    // Keys on device = use them. Don't leave people stuck in SECURE + desktop-only.
     if (PROVIDERS.some((p) => String(db.settings[p.field] || "").trim())) {
       db.settings.privacy_mode = "leaky";
     }
@@ -1907,7 +2021,7 @@ function boot() {
       if (!db.chat.length) {
         addLog(
           "pip",
-          "Pip is happy to help — mentor, friend, agent. Pair desktop GPU in DATA, or paste cloud keys yourself.",
+          "Pip on deck — your crew. Paste keys in DATA, then tap GEMINI / CEREBRAS / GROQ in this strip to talk to them as themselves. Or say talk to grok.",
         );
       }
       try {

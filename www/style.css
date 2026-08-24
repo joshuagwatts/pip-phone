@@ -225,14 +225,30 @@ body.comm #comm { display: flex; }
 .brain-chip {
   font-size: 9px;
   letter-spacing: 0.12em;
-  padding: 0.12rem 0.35rem;
+  padding: 0.22rem 0.45rem;
   border: 1px solid var(--line);
   color: var(--muted);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
 }
 .brain-chip.on { color: var(--phos); border-color: var(--phos); }
 .brain-chip.key { color: var(--amber); border-color: var(--amber); }
 .brain-chip.bad { color: var(--leak); border-color: var(--leak); }
 .brain-chip.skip { opacity: 0.45; }
+.brain-chip.sel {
+  background: var(--phos);
+  color: var(--black);
+  border-color: var(--phos);
+}
+.agent-line {
+  margin: 0;
+  padding: 0.35rem 0.7rem 0.45rem;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
 .desk-status {
   margin: 0.4rem 0 0.7rem;
   padding: 0.55rem 0.7rem;

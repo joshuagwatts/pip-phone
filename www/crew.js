@@ -88,3 +88,50 @@ export function sanitizeReply(text) {
 }
 
 export const FALLBACK = "Pip is happy to help! Keys look quiet — check the CHAT strip, then ask again.";
+
+/** Native agent voices — when you tap an API in CHAT, talk to THAT model as itself. */
+export const AGENT_META = {
+  pip: { label: "PIP", blurb: "Your crew · routes tools · does not impersonate other AIs" },
+  groq: { label: "GROQ", blurb: "Fast Llama · sharp and short" },
+  openrouter: { label: "OPENROUTER", blurb: "Multi-model gateway · free routes when available" },
+  cerebras: { label: "CEREBRAS", blurb: "High-speed · efficient reasoning" },
+  mistral: { label: "MISTRAL", blurb: "European · clean and capable" },
+  gemini: { label: "GEMINI", blurb: "Google · strong with images and multimodal" },
+  xai: { label: "GROK", blurb: "xAI · witty, current, opinionated" },
+  desktop: { label: "DESKTOP", blurb: "Your PC GPU · private local models" },
+  compare: { label: "COMPARE", blurb: "Ask all keyed brains once · tab the replies" },
+};
+
+export function agentLabel(id) {
+  const k = String(id || "pip").toLowerCase();
+  return (AGENT_META[k] && AGENT_META[k].label) || String(id || "PIP").toUpperCase();
+}
+
+/** System prompt when chatting with a cloud/desktop agent as itself (not Pip). */
+export function agentSystem(agentId, operator) {
+  const id = String(agentId || "").toLowerCase();
+  const name = operator || "the operator";
+  const meta = AGENT_META[id] || { label: id.toUpperCase(), blurb: "" };
+  return [
+    `You are ${meta.label} — the real model behind this API key.`,
+    meta.blurb ? `Character: ${meta.blurb}.` : "",
+    "Stay yourself. Do not claim to be Pip, do not use Pip's crew voice, do not roleplay as another brand unless asked.",
+    `You are talking with ${name} on Phone Pip — a personal OS that routes them to the right brain for the job.`,
+    "Be useful. Match your native strengths. Short when short is enough; thorough when they ask.",
+    "No fake tool JSON in chat. No pretending you submitted forms.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Pip as orchestrator — does not pretend to be Groq/Gemini/etc. */
+export function pipOrchestratorSystem(operator, humor, honesty, kit) {
+  const base = talkSystem(operator, humor, honesty, kit);
+  return [
+    base,
+    "You are Pip the orchestrator on this phone — mentor, friend, agent.",
+    "You do NOT channel or impersonate other AIs (Groq, Gemini, Grok, Claude, etc.) unless they explicitly ask you to roleplay.",
+    "If they want another brain's native voice or specialty, tell them to tap that chip in the CHAT strip (or say talk to gemini / talk to grok).",
+    "You may recommend which agent fits the job (vision → Gemini, speed → Groq/Cerebras, wit → Grok) without pretending to be them.",
+  ].join("\n");
+}

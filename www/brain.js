@@ -1,5 +1,5 @@
 /** Phone brain — privacy-first chain, cloud only when needed, leak tags for the UI. */
-import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS } from "./crew.js";
+import { FALLBACK, isBlank, sanitizeReply, talkSystem, SHOTS, agentSystem, pipOrchestratorSystem, agentLabel } from "./crew.js";
 import {
   chatChain,
   chatComplete,
@@ -466,7 +466,7 @@ async function complete(messages, temperature = 0.7, maxTokens = 400, settings =
 }
 
 /**
- * @returns {Promise<{ text:string, leaked:boolean, provider:string, via:string }>}
+ * @returns {Promise<{ text:string, leaked:boolean, provider:string, via:string, agent?:string }>}
  */
 export async function chat(settings, history, text, onProgress, kit, db, extras = {}) {
   track(onProgress);
@@ -487,10 +487,19 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     forceCompare = true;
     askText = askText.slice(cmp[0].length).trim() || askText;
   }
-  const routeSettings =
-    forceCompare || /^(compare|all)$/i.test(String(settings?.brain_pin || ""))
-      ? { ...settings, brain_pin: "compare" }
-      : settings;
+
+  const agent = String(settings?.chat_agent || "pip").toLowerCase();
+  const asSelf =
+    Boolean(extras.asSelf) ||
+    (agent !== "pip" && agent !== "auto" && agent !== "lite" && agent !== "local" && agent !== "qwen");
+
+  let routePin = String(settings?.brain_pin || "auto").toLowerCase();
+  if (forceCompare || agent === "compare") routePin = "compare";
+  else if (agent === "desktop") routePin = "desktop";
+  else if (asSelf) routePin = agent;
+  else if (agent === "pip" || agent === "auto") routePin = routePin === "desktop" ? "desktop" : "auto";
+
+  const routeSettings = { ...settings, brain_pin: routePin };
   const job = pickJob(askText);
   let context = extras.webContext || "";
   let webUsed = Boolean(extras.webContext);
@@ -519,14 +528,23 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       /* optional */
     }
   }
-  const voiceExamples =
-    "Voice examples (stay in this register):\n" +
-    SHOTS.filter((_, i) => i % 2 === 1)
-      .slice(0, 4)
-      .map((m) => `- ${m.content}`)
+
+  let system;
+  if (asSelf) {
+    system = [agentSystem(agent === "desktop" ? "desktop" : agent, operator), momentLine, context]
+      .filter(Boolean)
       .join("\n");
-  const sysBase = `${talkSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}. You are answering through a cloud or desktop brain — stay Pip. Keys on this phone are intentional.`;
-  const system = [sysBase, voiceExamples, momentLine, context].filter(Boolean).join("\n");
+  } else {
+    const voiceExamples =
+      "Voice examples (stay in this register):\n" +
+      SHOTS.filter((_, i) => i % 2 === 1)
+        .slice(0, 4)
+        .map((m) => `- ${m.content}`)
+        .join("\n");
+    const sysBase = `${pipOrchestratorSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}.`;
+    system = [sysBase, voiceExamples, momentLine, context].filter(Boolean).join("\n");
+  }
+
   const prior = (history || []).filter((m) => m && m.content && m.content !== text).slice(-10);
   const messages = [
     { role: "system", content: system },
@@ -549,7 +567,12 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       hit = await routedComplete(
         routeSettings,
         [
-          { role: "system", content: talkSystem(operator, settings.humor, settings.honesty, kit) },
+          {
+            role: "system",
+            content: asSelf
+              ? agentSystem(agent === "desktop" ? "desktop" : agent, operator)
+              : pipOrchestratorSystem(operator, settings.humor, settings.honesty, kit),
+          },
           { role: "user", content: askText },
         ],
         "life",
@@ -566,20 +589,21 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   if (!hit?.text) {
     const live = liveProviderIds(settings);
     const tip = errMsg
-      ? live.length && String(settings?.brain_pin || "auto") === "auto"
-        ? `Cloud brains failed (${errMsg}). DATA → PROBE KEYS · check PIN is auto · same Wi‑Fi/data for api.* hosts.`
-        : `Pip couldn't reach a brain. ${errMsg}. Fix: DATA → SAVE keys → PROBE until LIVE · or CONNECT desktop · or PIN lite for the Guide.`
+      ? live.length && routePin === "auto"
+        ? `Cloud brains failed (${errMsg}). DATA → PROBE · or tap an agent in the CHAT strip.`
+        : `Couldn't reach ${agentLabel(asSelf ? agent : "pip")}. ${errMsg}. Tap another agent or fix keys in DATA.`
       : FALLBACK;
-    setTurn({ leaked: false, provider: "pip", via: "", reason: tip });
-    return { text: tip, leaked: false, provider: "pip", via: "", error: true };
+    setTurn({ leaked: false, provider: "", via: "", reason: tip });
+    return { text: tip, leaked: false, provider: "pip", via: "", error: true, agent: asSelf ? agent : "pip" };
   }
 
   const leaked = Boolean(hit.leaked || webUsed);
+  const outAgent = asSelf ? agent : "pip";
   setTurn({
     leaked,
     provider: hit.provider,
     via: hit.model || "",
-    reason: leaked ? (webUsed && !hit.leaked ? "web lookup left device" : "cloud API") : "local/desktop",
+    reason: asSelf ? `${agentLabel(agent)} as themselves` : leaked ? "cloud via Pip" : "local/desktop",
     tokens: hit.tokens || 0,
   });
   return {
@@ -589,8 +613,10 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     via: hit.model || "",
     tokens: hit.tokens || 0,
     compare: hit.compare || null,
+    agent: outAgent,
   };
 }
+
 
 
 export async function draftAnswers(settings, { title, kit, questions, kind }, onProgress) {

@@ -34,6 +34,7 @@ function blank() {
       honesty: 90,
       privacy_mode: "leaky",
       brain_pin: "auto",
+      chat_agent: "pip",
       groq: "",
       openrouter: "",
       cerebras: "",
