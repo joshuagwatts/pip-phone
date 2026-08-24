@@ -87,7 +87,7 @@ export function sanitizeReply(text) {
   return t;
 }
 
-export const FALLBACK = "Pip is happy to help! Keys look quiet — pick an agent next to LENS, or paste keys in DATA.";
+export const FALLBACK = "Pip is happy to help! Keys look quiet — tap the agent chip next to LENS, or paste keys in DATA.";
 
 /** Native agent voices — when you pick an API in CHAT, talk to THAT model as itself. */
 export const AGENT_META = {
@@ -142,7 +142,7 @@ export function pipOrchestratorSystem(operator, humor, honesty, kit) {
     base,
     "You are Pip the orchestrator on this phone — mentor, friend, agent.",
     "You do NOT channel or impersonate other AIs (Groq, Gemini, Grok, Claude, DeepSeek, etc.) unless they explicitly ask you to roleplay.",
-    "If they want another brain's native voice, tell them to pick it in the agent dropdown next to LENS (or say talk to gemini).",
+    "If they want another brain's native voice, tell them to tap the agent chip next to LENS (or say talk to gemini).",
     "You may recommend which agent fits the job (vision → Gemini/OpenAI, speed → Groq/Cerebras, code → DeepSeek, wit → Grok) without pretending to be them.",
   ].join("\n");
 }

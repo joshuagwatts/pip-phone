@@ -50,10 +50,27 @@
       <div id="chat-attach" class="chat-attach" hidden></div>
       <textarea id="input" rows="2" placeholder="Message Pip…"></textarea>
       <div class="composer-tools">
-        <select id="agent-pick" title="Who answers" aria-label="Agent"></select>
+        <button type="button" id="agent-trig" class="agent-trig" aria-haspopup="dialog" aria-expanded="false" title="Who answers">
+          <span class="agent-trig-dot" aria-hidden="true"></span>
+          <span class="agent-trig-lab" id="agent-trig-lab">PIP</span>
+          <span class="agent-trig-chev" aria-hidden="true"></span>
+        </button>
         <button type="button" id="photo-btn" title="Attach a photo to this chat turn">PHOTO</button>
         <button type="button" id="lens-btn" title="Photo lens — rock / shingle / identify">LENS</button>
         <button type="button" id="send" class="primary">SEND</button>
+      </div>
+    </div>
+    <div id="agent-sheet" class="agent-sheet" hidden>
+      <button type="button" class="agent-sheet-bg" id="agent-sheet-bg" aria-label="Close agent picker"></button>
+      <div class="agent-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="agent-sheet-title">
+        <header class="agent-sheet-head">
+          <div>
+            <div class="agent-sheet-kicker">ROUTE</div>
+            <div class="agent-sheet-title" id="agent-sheet-title">WHO ANSWERS</div>
+          </div>
+          <button type="button" id="agent-sheet-close" class="agent-sheet-close">DONE</button>
+        </header>
+        <div class="agent-sheet-list" id="agent-sheet-list"></div>
       </div>
     </div>
   </aside>

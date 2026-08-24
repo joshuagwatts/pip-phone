@@ -574,7 +574,7 @@ function tryAgentSwitch(text) {
     ok: true,
     reply:
       id === "pip"
-        ? "Back with Pip — your crew. Use the dropdown next to LENS for other agents or COMPARE."
+        ? "Back with Pip — your crew. Tap the agent chip next to LENS for other brains or COMPARE."
         : id === "compare"
           ? "COMPARE on — every keyed API answers; one bubble with tabs + overview."
           : id === "auto"
@@ -588,34 +588,136 @@ function updateBrainChip() {
   paintBrainStrip();
 }
 
-function fillAgentPick() {
-  const sel = $("#agent-pick");
-  if (!sel) return;
+function agentPickTick(kind = "tick") {
+  try {
+    const H = window.Capacitor?.Plugins?.Haptics;
+    if (H?.impact) {
+      H.impact({ style: kind === "ok" ? "MEDIUM" : "LIGHT" });
+      return;
+    }
+  } catch {
+    /* ignore */
+  }
+  if (navigator.vibrate) navigator.vibrate(kind === "ok" ? [12, 30, 18] : 14);
+}
+
+function agentOptions() {
   const keyed = new Set(cloudStatus(db.settings).keyed || []);
   const active = chatAgent();
-  const opts = [
-    { id: "pip", label: "PIP" },
-    { id: "auto", label: "AUTO" },
-    { id: "compare", label: "COMPARE" },
+  const modes = [
+    { id: "pip", section: "modes" },
+    { id: "auto", section: "modes" },
+    { id: "compare", section: "modes" },
   ];
+  const apis = [];
   for (const id of ["groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
-    if (keyed.has(id)) opts.push({ id, label: agentLabel(id) });
+    if (keyed.has(id)) apis.push({ id, section: "apis" });
   }
-  if (desktopConfigured(db.settings)) opts.push({ id: "desktop", label: "DESKTOP" });
-  // Keep current selection even if key cleared, so UI doesn't jump.
+  if (desktopConfigured(db.settings)) apis.push({ id: "desktop", section: "apis" });
+  const opts = [...modes, ...apis];
   if (active && !opts.some((o) => o.id === active)) {
-    opts.push({ id: active, label: `${agentLabel(active)} (no key)` });
+    opts.push({ id: active, section: "apis", missing: true });
   }
-  const prev = sel.value;
-  sel.innerHTML = opts
-    .map((o) => `<option value="${esc(o.id)}" ${o.id === active ? "selected" : ""}>${esc(o.label)}</option>`)
-    .join("");
-  if (!sel.dataset.bound) {
-    sel.dataset.bound = "1";
-    sel.onchange = () => setChatAgent(sel.value);
+  return { opts, keyed, active, health: providerHealth() };
+}
+
+function agentStatFor(id, { keyed, health, missing }) {
+  if (id === "pip" || id === "auto" || id === "compare") {
+    return { cls: "mode", text: id === "compare" ? "ALL" : id === "auto" ? "ROUTE" : "CREW" };
   }
-  if (prev && opts.some((o) => o.id === prev) && prev !== active) {
-    /* keep paint in sync */
+  if (missing || !keyed.has(id)) return { cls: "bad", text: "NO KEY" };
+  const ok = health[id]?.ok;
+  if (ok === true) return { cls: "live", text: "LIVE" };
+  if (ok === false) return { cls: "bad", text: "FAIL" };
+  return { cls: "key", text: "KEYED" };
+}
+
+function closeAgentSheet() {
+  const sheet = $("#agent-sheet");
+  const trig = $("#agent-trig");
+  if (!sheet || sheet.hidden) return;
+  sheet.classList.remove("open");
+  if (trig) {
+    trig.classList.remove("open");
+    trig.setAttribute("aria-expanded", "false");
+  }
+  window.clearTimeout(closeAgentSheet._t);
+  closeAgentSheet._t = window.setTimeout(() => {
+    sheet.hidden = true;
+  }, 220);
+}
+
+function openAgentSheet() {
+  fillAgentPick();
+  const sheet = $("#agent-sheet");
+  const trig = $("#agent-trig");
+  if (!sheet) return;
+  window.clearTimeout(closeAgentSheet._t);
+  sheet.hidden = false;
+  // Force reflow so open transition plays.
+  void sheet.offsetWidth;
+  sheet.classList.add("open");
+  if (trig) {
+    trig.classList.add("open");
+    trig.setAttribute("aria-expanded", "true");
+  }
+  agentPickTick("tick");
+}
+
+function fillAgentPick() {
+  const lab = $("#agent-trig-lab");
+  const list = $("#agent-sheet-list");
+  const { opts, keyed, active, health } = agentOptions();
+  if (lab) lab.textContent = agentLabel(active);
+  if (!list) return;
+  const chunks = [];
+  let lastSec = "";
+  for (const o of opts) {
+    const sec = o.section === "modes" ? "modes" : "apis";
+    if (sec !== lastSec) {
+      lastSec = sec;
+      chunks.push(
+        `<div class="agent-sec">${sec === "modes" ? "MODES" : "KEYED APIS"}</div>`,
+      );
+    }
+    const meta = AGENT_META[o.id] || { label: agentLabel(o.id), blurb: "" };
+    const stat = agentStatFor(o.id, { keyed, health, missing: !!o.missing });
+    const on = o.id === active;
+    const blurb = o.missing ? "Key missing — paste in DATA then PROBE" : meta.blurb || "";
+    chunks.push(`
+      <button type="button" class="agent-row${on ? " on" : ""}${o.missing ? " dim" : ""}" data-agent="${esc(o.id)}">
+        <span class="agent-row-mark" aria-hidden="true"></span>
+        <span class="agent-row-body">
+          <span class="agent-row-name">${esc(meta.label || agentLabel(o.id))}</span>
+          <span class="agent-row-blurb">${esc(blurb)}</span>
+        </span>
+        <span class="agent-row-stat ${esc(stat.cls)}">${esc(stat.text)}</span>
+      </button>`);
+  }
+  list.innerHTML = chunks.join("");
+  list.querySelectorAll("[data-agent]").forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.dataset.agent;
+      setChatAgent(id);
+      agentPickTick("ok");
+      fillAgentPick();
+      closeAgentSheet();
+    };
+  });
+  if (!fillAgentPick._bound) {
+    fillAgentPick._bound = true;
+    const trig = $("#agent-trig");
+    const bg = $("#agent-sheet-bg");
+    const done = $("#agent-sheet-close");
+    if (trig) {
+      trig.onclick = () => {
+        const sheet = $("#agent-sheet");
+        if (sheet && !sheet.hidden && sheet.classList.contains("open")) closeAgentSheet();
+        else openAgentSheet();
+      };
+    }
+    if (bg) bg.onclick = () => closeAgentSheet();
+    if (done) done.onclick = () => closeAgentSheet();
   }
 }
 
@@ -1083,7 +1185,7 @@ function renderData() {
       ${paired ? `<button type="button" id="keys-sync">SYNC FROM DESKTOP</button>` : ""}
     </div>
     <div id="brain-probe-out" class="probe-out">${lastProbeHtml || "<div class=\"row\"><span>Tap PROBE KEYS — proves chat, not just /models</span></div>"}</div>
-    <p class="muted">Paste keys below (save as you type). Who you talk to = dropdown next to LENS / PHOTO in CHAT.</p>
+    <p class="muted">Paste keys below (save as you type). Who you talk to = agent chip next to LENS / PHOTO in CHAT.</p>
     <div class="field"><span>PIN (power override)</span>
       <select id="brain-pin">
         ${["auto", "compare", "desktop", "lite", "local", "qwen", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].map((id) => {
@@ -2157,7 +2259,7 @@ function boot() {
       if (!db.chat.length) {
         addLog(
           "pip",
-          "Pip on deck. Pick PIP / AUTO / COMPARE / GEMINI… in the dropdown next to LENS. COMPARE gives one bubble with tabs + an overview.",
+          "Pip on deck. Tap the agent chip next to LENS for PIP / AUTO / COMPARE / GEMINI…. COMPARE gives one bubble with tabs + an overview.",
         );
       }
       try {
@@ -2177,7 +2279,10 @@ function boot() {
         render();
       };
       $("#comm-tog").onclick = () => document.body.classList.add("comm");
-      $("#comm-close").onclick = () => document.body.classList.remove("comm");
+      $("#comm-close").onclick = () => {
+        closeAgentSheet();
+        document.body.classList.remove("comm");
+      };
       const privacyTog = $("#privacy-tog");
       if (privacyTog) {
         privacyTog.onclick = () => {

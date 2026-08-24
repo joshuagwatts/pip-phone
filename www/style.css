@@ -375,17 +375,57 @@ body.comm #comm { display: flex; }
   gap: 0.35rem;
   width: 100%;
 }
-.composer-tools #agent-pick {
+.agent-trig {
   flex: 1;
   min-width: 0;
-  max-width: 42%;
-  background: var(--inset);
-  color: var(--text);
+  max-width: 46%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: linear-gradient(180deg, rgba(125,255,90,0.06), transparent 70%), var(--inset);
+  color: var(--phos);
   border: 1px solid var(--line);
   font: inherit;
   font-size: 11px;
-  letter-spacing: 0.08em;
-  padding: 0.55rem 0.45rem;
+  letter-spacing: 0.14em;
+  padding: 0.55rem 0.55rem;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.agent-trig:active { border-color: var(--phos); }
+.agent-trig.open {
+  border-color: var(--phos);
+  background: rgba(125,255,90,0.12);
+  box-shadow: inset 0 0 0 1px rgba(125,255,90,0.25);
+}
+.agent-trig-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--phos);
+  box-shadow: 0 0 8px rgba(125,255,90,0.7);
+  flex-shrink: 0;
+}
+.agent-trig-lab {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-trig-chev {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--muted);
+  flex-shrink: 0;
+  transition: transform 0.18s ease, border-top-color 0.15s ease;
+}
+.agent-trig.open .agent-trig-chev {
+  transform: rotate(180deg);
+  border-top-color: var(--phos);
 }
 .composer-tools #photo-btn,
 .composer-tools #lens-btn,
@@ -393,6 +433,171 @@ body.comm #comm { display: flex; }
   flex: 0 0 auto;
   padding: 0.55rem 0.65rem;
 }
+
+/* Custom agent picker — replaces native <select> sheet */
+.agent-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+.agent-sheet:not([hidden]) { pointer-events: auto; }
+.agent-sheet[hidden] { display: none !important; }
+.agent-sheet-bg {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.agent-sheet.open .agent-sheet-bg { opacity: 1; }
+.agent-sheet-panel {
+  position: relative;
+  z-index: 1;
+  max-height: min(72vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, rgba(125,255,90,0.07), transparent 28%),
+    var(--panel);
+  border-top: 1px solid var(--phos);
+  box-shadow: 0 -18px 40px rgba(0, 0, 0, 0.55);
+  transform: translateY(110%);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
+}
+.agent-sheet.open .agent-sheet-panel { transform: translateY(0); }
+.agent-sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 0.9rem 0.65rem;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.agent-sheet-kicker {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--amber);
+  margin-bottom: 0.15rem;
+}
+.agent-sheet-title {
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  color: var(--phos);
+}
+.agent-sheet-close {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  padding: 0.4rem 0.65rem;
+}
+.agent-sheet-close:active {
+  border-color: var(--phos);
+  color: var(--phos);
+}
+.agent-sheet-list {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.45rem 0.55rem 0.85rem;
+}
+.agent-sec {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--muted);
+  padding: 0.55rem 0.35rem 0.3rem;
+}
+.agent-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.55rem 0.65rem;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 0.7rem 0.55rem;
+  margin: 0.15rem 0;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+}
+.agent-row:active { transform: scale(0.985); }
+.agent-row:hover,
+.agent-row:focus-visible {
+  outline: none;
+  background: rgba(125,255,90,0.05);
+  border-color: var(--line);
+}
+.agent-row.on {
+  background: linear-gradient(90deg, rgba(125,255,90,0.14), rgba(125,255,90,0.03) 55%, transparent);
+  border-color: rgba(125,255,90,0.35);
+  border-left-color: var(--phos);
+  box-shadow: inset 0 0 0 1px rgba(125,255,90,0.08);
+}
+.agent-row.dim { opacity: 0.55; }
+.agent-row-mark {
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  position: relative;
+  flex-shrink: 0;
+}
+.agent-row.on .agent-row-mark {
+  border-color: var(--phos);
+  background: var(--phos);
+  box-shadow: 0 0 10px rgba(125,255,90,0.55);
+}
+.agent-row-mark::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: transparent;
+}
+.agent-row-body { min-width: 0; }
+.agent-row-name {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  color: var(--text);
+}
+.agent-row.on .agent-row-name { color: var(--phos); }
+.agent-row-blurb {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  margin-top: 0.15rem;
+  line-height: 1.35;
+}
+.agent-row-stat {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  padding: 0.22rem 0.4rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  align-self: start;
+  margin-top: 0.1rem;
+}
+.agent-row-stat.live { color: var(--phos); border-color: var(--phos); }
+.agent-row-stat.key { color: var(--amber); border-color: var(--amber); }
+.agent-row-stat.bad { color: var(--leak); border-color: var(--leak); }
+.agent-row-stat.mode { color: var(--amber); border-color: var(--line); }
 .chat-attach {
   display: flex;
   align-items: flex-start;
