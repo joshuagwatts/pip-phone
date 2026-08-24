@@ -229,11 +229,26 @@ function bboxForKm(lat, lon, radiusKm) {
 }
 
 function parseSwdiShape(shape) {
-  const m = String(shape || "").match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/);
-  if (!m) return null;
-  const lon = parseFloat(m[1]);
-  const lat = parseFloat(m[2]);
-  return Number.isNaN(lon) || Number.isNaN(lat) ? null : { lon, lat };
+  const s = String(shape || "");
+  const pt = s.match(/POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)/i);
+  if (pt) {
+    const lon = parseFloat(pt[1]);
+    const lat = parseFloat(pt[2]);
+    return Number.isNaN(lon) || Number.isNaN(lat) ? null : { type: "point", lon, lat };
+  }
+  const poly = s.match(/POLYGON\s*\(\(\s*([^)]+)\s*\)\)/i);
+  if (poly) {
+    const ring = [];
+    for (const pair of poly[1].split(",")) {
+      const bits = pair.trim().split(/\s+/);
+      if (bits.length < 2) continue;
+      const lon = parseFloat(bits[0]);
+      const lat = parseFloat(bits[1]);
+      if (Number.isFinite(lon) && Number.isFinite(lat)) ring.push([lat, lon]);
+    }
+    if (ring.length >= 3) return { type: "polygon", ring };
+  }
+  return null;
 }
 
 async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
@@ -275,7 +290,18 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
       for (const item of rows) {
         const pt = parseSwdiShape(item.SHAPE);
         if (!pt) continue;
-        const dist = haversineKm(lat, lon, pt.lat, pt.lon);
+        let hitLat;
+        let hitLon;
+        let swdiRing = null;
+        if (pt.type === "polygon") {
+          swdiRing = pt.ring;
+          hitLat = pt.ring.reduce((a, c) => a + c[0], 0) / pt.ring.length;
+          hitLon = pt.ring.reduce((a, c) => a + c[1], 0) / pt.ring.length;
+        } else {
+          hitLat = pt.lat;
+          hitLon = pt.lon;
+        }
+        const dist = haversineKm(lat, lon, hitLat, hitLon);
         if (dist > km) continue;
         const ztime = String(item.ZTIME || "");
         const day = ztime.slice(0, 10) || "";
@@ -285,8 +311,8 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
           kind: "hail",
           date: day,
           time: ztime.slice(11, 16) || "",
-          lat: pt.lat,
-          lon: pt.lon,
+          lat: hitLat,
+          lon: hitLon,
           size_in: Number.isNaN(sz) ? "UNK" : sz.toFixed(2),
           location: item.WSR_ID || "Radar hail",
           county: "",
@@ -295,8 +321,9 @@ async function fetchSwdiHail(lat, lon, radiusKm = 25, daysBack = 90) {
           source: "noaa-swdi-radar",
           distance_km: Math.round(dist * 10) / 10,
           score: !Number.isNaN(sz) && sz >= 1 ? 5 : 3,
+          swdi_ring: swdiRing,
         };
-        const key = `${day}|${pt.lat.toFixed(3)}|${pt.lon.toFixed(3)}|${row.size_in}`;
+        const key = `${day}|${hitLat.toFixed(3)}|${hitLon.toFixed(3)}|${row.size_in}`;
         const prev = hits.get(key);
         if (!prev || (parseFloat(row.size_in) || 0) > (parseFloat(prev.size_in) || 0)) hits.set(key, row);
       }
@@ -392,7 +419,10 @@ export function collapseHailByDate(rows) {
     const dist = Number(h.distance_km);
     const distN = Number.isFinite(dist) ? dist : 999;
     const prev = byDate.get(day);
-    const pt = Number.isFinite(h.lat) && Number.isFinite(h.lon) ? { lat: h.lat, lon: h.lon } : null;
+    const pt =
+      Number.isFinite(h.lat) && Number.isFinite(h.lon)
+        ? { lat: h.lat, lon: h.lon, size_in: size, source: h.source || "hail", swdi_ring: h.swdi_ring || null }
+        : null;
     if (!prev) {
       byDate.set(day, {
         ...h,
@@ -407,7 +437,7 @@ export function collapseHailByDate(rows) {
       continue;
     }
     prev.hits += 1;
-    if (pt) prev.zone_pts.push(pt);
+    if (pt) prev.zone_pts.push({ lat: pt.lat, lon: pt.lon, size_in: size, source: h.source || "hail" });
     if (h.source) prev.sources.add(h.source);
     const better =
       size > prev.max_size ||
@@ -464,6 +494,7 @@ export function collapseHailByDate(rows) {
       distance_km: row.distance_km,
       score: row.score || (parseFloat(row.size_in) >= 1 ? 5 : 3),
       hits: row.hits,
+      zone_pts: pts,
       zone_r_km: Math.round(zone_r_km * 10) / 10,
       severity: hailSeverityLabel(row.size_in),
       stars: hailStars(row.size_in),
@@ -1119,26 +1150,27 @@ export function renderWeatherBoot(root, geo, wx, hail, esc) {
       <div id="wx-summary" class="wx-summary-host">${weatherSummaryHtml(bundleStub, hailRows, esc)}</div>
       <div id="wx-daily"></div>
       <div id="wx-hourly-slot" class="wx-hourly"></div>
-      ${renderStormGraph(hailRows, esc, selectedStormDate)}
-      <p class="muted wx-boot-hint">Scroll for hail dossier · storm-date bar zooms map · double-tap map to expand</p>
+      <p class="muted wx-boot-hint">Map below · roofing hail dossier under the map · double-tap map to expand</p>
     </div>`;
   const slot = root.querySelector("#wx-hourly-slot");
   if (hourly && slot) {
     hourly.id = "wx-hourly";
     slot.replaceWith(hourly);
   }
-  const onPick = (date) => {
-    selectStormDate(date, { fit: true });
-    drawHailMarkers(hail, [], { fit: true });
-    const old = root.querySelector(".wx-storm-graph");
-    if (!old) return;
-    const wrap = document.createElement("div");
-    wrap.innerHTML = renderStormGraph(hailRows, esc, selectedStormDate);
-    if (wrap.firstElementChild) old.replaceWith(wrap.firstElementChild);
-    bindStormGraph(root, onPick);
-  };
-  bindStormGraph(root, onPick);
   if (hail?.length) drawHailMarkers(hail, [], { fit: false });
+}
+
+export function renderRoofBoot(root, hail, esc) {
+  if (!root) return;
+  const hailRows = collapseHailByDate(hail || []);
+  const n = hailRows.length;
+  root.innerHTML = `
+    <details class="wx-roof-fold"${n ? " open" : ""}>
+      <summary class="wx-roof-sum">ROOFING DOSSIER · hail & insurance trace</summary>
+      <div class="wx-roof-body">
+        <p class="muted">${n ? `${n} hail day(s) in quick scan — pin an address for zones on the map.` : "Pin an address or tap the map · NOAA radar + spotter merge · DEEP RESEARCH for full trace."}</p>
+      </div>
+    </details>`;
 }
 
 async function searchNews(query, limit = 6) {
@@ -1477,6 +1509,97 @@ function padPolygon(ring, padM) {
   });
 }
 
+function clusterPoints(pts, splitKm = 5) {
+  const clusters = [];
+  for (const p of pts || []) {
+    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
+    let placed = false;
+    for (const c of clusters) {
+      if (haversineKm(c.center.lat, c.center.lon, p.lat, p.lon) <= splitKm) {
+        c.pts.push(p);
+        c.center.lat = c.pts.reduce((a, x) => a + x.lat, 0) / c.pts.length;
+        c.center.lon = c.pts.reduce((a, x) => a + x.lon, 0) / c.pts.length;
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) clusters.push({ pts: [p], center: { lat: p.lat, lon: p.lon } });
+  }
+  return clusters.map((c) => c.pts);
+}
+
+/** Roofer/industry-style footprint radius from hail size + source type. */
+function hailFootprintM(sizeIn, source) {
+  const sz = parseFloat(sizeIn);
+  const s = Number.isNaN(sz) ? 0.75 : sz;
+  const spot = /spc|lsr|spot|iem/i.test(String(source || ""));
+  return Math.max(350, Math.min(8000, (spot ? 700 : 1100) + s * (spot ? 600 : 900)));
+}
+
+function buildDetailedZoneRings(zone, rawPts) {
+  const day = zone.date;
+  const hits = (rawPts || []).filter(
+    (p) => String(p.date || "").slice(0, 10) === day && Number.isFinite(p.lat) && Number.isFinite(p.lon),
+  );
+  const fromZone = (zone.zone_pts || []).map((p) => ({
+    lat: p.lat,
+    lon: p.lon,
+    size_in: p.size_in || zone.size_in,
+    source: p.source || zone.source,
+    swdi_ring: p.swdi_ring || null,
+  }));
+  const merged = hits.length ? hits : fromZone;
+  if (!merged.length) {
+    return [{ ring: topoZoneRing(zone, rawPts), maxSize: parseFloat(zone.size_in) || 0, hits: 1, confirmed: false }];
+  }
+
+  const rings = [];
+  for (const p of merged) {
+    if (p.swdi_ring && p.swdi_ring.length >= 3) {
+      const maxSz = parseFloat(p.size_in) || parseFloat(zone.size_in) || 0;
+      rings.push({
+        ring: padPolygon(p.swdi_ring, Math.max(120, maxSz * 80)),
+        maxSize: maxSz,
+        hits: 1,
+        confirmed: false,
+        source: "radar-poly",
+      });
+    }
+  }
+
+  const clusterInput = merged.map((p) => ({
+    lat: p.lat,
+    lon: p.lon,
+    size_in: p.size_in || zone.size_in,
+    source: p.source || zone.source,
+  }));
+  const clusters = clusterPoints(clusterInput, 5);
+  for (const cluster of clusters) {
+    const samples = [];
+    let confirmed = false;
+    for (const p of cluster) {
+      if (/spc|lsr|spot|iem/i.test(String(p.source || ""))) confirmed = true;
+      const r = hailFootprintM(p.size_in, p.source);
+      for (const [la, lo] of ringPolygon(p.lat, p.lon, r, 12)) samples.push({ lat: la, lon: lo });
+    }
+    const hull = convexHullLatLon(samples);
+    if (!hull) continue;
+    const maxSz = Math.max(...cluster.map((p) => parseFloat(p.size_in) || 0));
+    rings.push({
+      ring: padPolygon(hull, Math.max(180, maxSz * 100)),
+      maxSize: maxSz,
+      hits: cluster.length,
+      confirmed,
+      source: confirmed ? "spot+radar" : "radar-merge",
+    });
+  }
+
+  if (!rings.length) {
+    return [{ ring: topoZoneRing(zone, rawPts), maxSize: parseFloat(zone.size_in) || 0, hits: zone.hits || 1, confirmed: false }];
+  }
+  return rings;
+}
+
 function topoZoneRing(zone, rawPts) {
   const lat = zone.lat;
   const lon = zone.lon;
@@ -1536,32 +1659,61 @@ export function drawHailMarkers(hailRows, windRows, opts = {}) {
   const fitPts = [];
   for (const h of zones) {
     if (!Number.isFinite(h.lat) || !Number.isFinite(h.lon)) continue;
-    const sz = parseFloat(h.size_in);
-    const col = hailZoneColor(h.size_in);
-    const ring = topoZoneRing(h, hailRows);
-    fitPts.push(...ring);
-    window.L.polygon(ring, {
-      color: col.stroke,
-      fillColor: col.fill,
-      fillOpacity: sz >= 2 ? 0.2 : sz >= 1 ? 0.14 : 0.1,
-      weight: sz >= 2 ? 2.4 : sz >= 1 ? 1.8 : 1.2,
-      opacity: 0.92,
-      dashArray: sz >= 1 ? null : "6 5",
-      className: "wx-hail-topo",
-    })
-      .bindPopup(hailPopupHtml(h, day))
-      .addTo(hailLayer);
-    if (sz >= 0.75) {
-      const coreR = Math.max(350, ((h.zone_r_km || 1.5) * 1000) * (sz >= 2 ? 0.28 : 0.38));
-      window.L.polygon(ringPolygon(h.lat, h.lon, coreR, 6), {
-        color: col.core,
-        fillColor: col.core,
-        fillOpacity: 0.28,
+    const subRings = buildDetailedZoneRings(h, hailRows);
+    for (const sub of subRings) {
+      const sz = sub.maxSize || parseFloat(h.size_in);
+      const col = hailZoneColor(sz);
+      const isConfirm = sub.confirmed || sub.source === "spot+radar";
+      fitPts.push(...sub.ring);
+      window.L.polygon(sub.ring, {
+        color: col.stroke,
+        fillColor: col.fill,
+        fillOpacity: isConfirm ? (sz >= 2 ? 0.26 : 0.18) : sz >= 2 ? 0.16 : sz >= 1 ? 0.11 : 0.07,
+        weight: isConfirm ? (sz >= 2 ? 2.6 : 2) : sz >= 2 ? 2 : 1.2,
+        opacity: 0.92,
+        dashArray: isConfirm ? null : sz >= 1 ? "4 4" : "6 5",
+        className: isConfirm ? "wx-hail-topo wx-hail-confirmed" : "wx-hail-topo",
+      })
+        .bindPopup(
+          hailPopupHtml(
+            { ...h, hits: sub.hits || h.hits, size_in: String(sub.maxSize || h.size_in) },
+            day,
+          ),
+        )
+        .addTo(hailLayer);
+      if (sz >= 0.75 && isConfirm) {
+        const cLat = sub.ring.reduce((a, c) => a + c[0], 0) / sub.ring.length;
+        const cLon = sub.ring.reduce((a, c) => a + c[1], 0) / sub.ring.length;
+        const coreR = Math.max(280, hailFootprintM(sz, "noaa-spc") * 0.45);
+        window.L.polygon(ringPolygon(cLat, cLon, coreR, 8), {
+          color: col.core,
+          fillColor: col.core,
+          fillOpacity: 0.32,
+          weight: 1.4,
+          opacity: 0.9,
+          dashArray: "3 4",
+          className: "wx-hail-topo-core",
+        }).addTo(hailLayer);
+      }
+    }
+    const dayHits = (hailRows || []).filter(
+      (p) => String(p.date || "").slice(0, 10) === h.date && Number.isFinite(p.lat) && Number.isFinite(p.lon),
+    );
+    for (const p of dayHits.slice(0, 32)) {
+      const isSpot = /spc|lsr|spot|iem/i.test(String(p.source || ""));
+      const pSz = parseFloat(p.size_in);
+      window.L.circleMarker([p.lat, p.lon], {
+        radius: isSpot ? 6 : 4,
+        color: isSpot ? "#ff6b6b" : "#7dff5a",
+        fillColor: isSpot ? "#ff3a3a" : "#3f8f32",
+        fillOpacity: 0.85,
         weight: 1.2,
-        opacity: 0.85,
-        dashArray: "3 4",
-        className: "wx-hail-topo-core",
-      }).addTo(hailLayer);
+        className: isSpot ? "wx-hail-spot" : "wx-hail-radar-pt",
+      })
+        .bindPopup(
+          `<b>${isSpot ? "SPOTTER" : "RADAR"}</b> · ${p.date}${p.time ? ` ${p.time}` : ""}<br><b>${p.size_in}"</b> · ${p.location || ""}${p.distance_km != null ? `<br>${p.distance_km} km from pin` : ""}`,
+        )
+        .addTo(hailLayer);
     }
   }
 
@@ -1981,151 +2133,174 @@ export function filterDossier(data, filters = wxFilters) {
   return { hail, wind, storms };
 }
 
-export function renderDossier(root, data, esc, onResearch, onRefetch) {
-  const news = data.news || [];
+export function renderWeatherPanel(root, data, esc) {
+  if (!root) return;
   const addr = data.address || "";
-  const zurl = data.zillow_url || (addr ? zillowUrl(addr) : "");
-  const meta = data._meta || {};
-  const { hail, wind, storms } = filterDossier(data, wxFilters);
-  const hailRaw = filterHailRaw(data, wxFilters);
-  if (!selectedStormDate && hail.length) {
-    selectedStormDate = hail[0]?.date || null;
-  }
-  const years = [
-    ...new Set((data.hail || []).map((h) => String(h.date || "").slice(0, 4)).filter((y) => /^\d{4}$/.test(y))),
-  ].sort((a, b) => b.localeCompare(a));
   const alert =
     data.weather && data.weather.severity && data.weather.severity.line
       ? `<div class="wx-alert ${esc(data.weather.severity.level || "")}">${esc(data.weather.severity.line)}</div>`
       : "";
   root.innerHTML = `
-    <div class="wx-dossier">
+    <div class="wx-weather-panel">
       <div class="wx-addr">${esc(addr)}</div>
       <div id="wx-summary" class="wx-summary-host"></div>
       <div id="wx-daily"></div>
       <div id="wx-hourly" class="wx-hourly"></div>
       ${alert}
-      ${renderStormGraph(hail, esc, selectedStormDate)}
-      <div class="wx-links">
-        ${zurl ? `<a href="${esc(zurl)}" target="_blank" rel="noopener">ZILLOW SEARCH</a>` : ""}
-        ${onResearch ? `<button type="button" id="wx-deep" class="primary">DEEP RESEARCH</button>` : ""}
-      </div>
-      <p class="muted wx-meta">${meta.deep ? `Deep scan · ${meta.fetchedDays || "?"}d · ${meta.fetchedKm || "?"} km` : "Quick scan · DEEP RESEARCH for hail zones + news · Rock/shingle ID lives under CHAT → LENS"}</p>
-      <div class="wx-filters">
-        <label>NEAR <select id="wx-f-km">
-          <option value="8"${wxFilters.km == 8 ? " selected" : ""}>8 km</option>
-          <option value="15"${wxFilters.km == 15 ? " selected" : ""}>15 km</option>
-          <option value="25"${wxFilters.km == 25 ? " selected" : ""}>25 km</option>
-          <option value="40"${wxFilters.km == 40 ? " selected" : ""}>40 km</option>
-          <option value="50"${wxFilters.km == 50 ? " selected" : ""}>50 km</option>
-        </select></label>
-        <label>HAIL ≥ <select id="wx-f-hail">
-          <option value="0"${wxFilters.hailIn == 0 ? " selected" : ""}>any</option>
-          <option value="0.75"${wxFilters.hailIn == 0.75 ? " selected" : ""}>0.75"</option>
-          <option value="1"${wxFilters.hailIn == 1 ? " selected" : ""}>1"</option>
-          <option value="1.5"${wxFilters.hailIn == 1.5 ? " selected" : ""}>1.5"</option>
-          <option value="2"${wxFilters.hailIn == 2 ? " selected" : ""}>2"</option>
-        </select></label>
-        <label>WIND ≥ <select id="wx-f-wind">
-          <option value="0"${wxFilters.windMph == 0 ? " selected" : ""}>any</option>
-          <option value="38"${wxFilters.windMph == 38 ? " selected" : ""}>38 mph</option>
-          <option value="50"${wxFilters.windMph == 50 ? " selected" : ""}>50 mph</option>
-          <option value="58"${wxFilters.windMph == 58 ? " selected" : ""}>58 mph</option>
-        </select></label>
-        <label>WINDOW <select id="wx-f-days">
-          <option value="30"${wxFilters.days == 30 ? " selected" : ""}>30d</option>
-          <option value="90"${wxFilters.days == 90 ? " selected" : ""}>90d</option>
-          <option value="180"${wxFilters.days == 180 ? " selected" : ""}>180d</option>
-          <option value="365"${wxFilters.days == 365 ? " selected" : ""}>1y</option>
-        </select></label>
-        <label>YEAR <select id="wx-f-year">
-          <option value="all"${wxFilters.year === "all" || !wxFilters.year ? " selected" : ""}>all</option>
-          ${years.map((y) => `<option value="${esc(y)}"${String(wxFilters.year) === y ? " selected" : ""}>${esc(y)}</option>`).join("")}
-        </select></label>
-        <label>SORT <select id="wx-f-sort">
-          <option value="date"${wxFilters.sort !== "size" ? " selected" : ""}>chrono</option>
-          <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>extreme ★</option>
-        </select></label>
-      </div>
-      <div class="wx-contacts">
-        ${data.owner_name ? `<div>Owner: ${esc(data.owner_name)}</div>` : ""}
-        ${data.owner_phone ? `<div>Phone: ${esc(data.owner_phone)}</div>` : ""}
-        ${data.owner_email ? `<div>Email: ${esc(data.owner_email)}</div>` : ""}
-      </div>
-      <h4>HAIL TRACE · ${hail.length} DAYS${selectedStormDate ? ` · MAP ${esc(selectedStormDate)}` : ""}</h4>
-      <div class="wx-hail-legend muted">Tap a storm-date bar (or row) → topo zones on map · ☆ light → ★★★★★ 3"+</div>
-      <div class="wx-hail">${
-        hail.length
-          ? hail
-              .slice(0, 36)
-              .map((h) => {
-                const stars = h.stars || hailStars(h.size_in);
-                const sev = h.severity || hailSeverityLabel(h.size_in);
-                const src =
-                  h.source === "mixed"
-                    ? "ZONE"
-                    : h.source === "noaa-swdi-radar"
-                      ? "RADAR"
-                      : h.source === "iem-lsr"
-                        ? "LSR"
-                        : "SPOT";
-                const on = selectedStormDate === h.date ? " on" : "";
-                return `<div class="wx-hail-row sev-${esc(String(sev).toLowerCase())}${on}" data-storm-date="${esc(h.date)}">
-          <span class="stars">${esc(stars)}</span>
-          <span class="date">${esc(h.date)}</span>
-          <span class="size">${esc(h.size_in)}"</span>
-          <span class="sev">${esc(sev)}</span>
-          <span class="src">${esc(src)}</span>
-          <span class="dist">${esc(String(h.distance_km ?? "—"))} km</span>
-          <span class="loc">${esc(h.hits || 1)} hit${(h.hits || 1) === 1 ? "" : "s"}${h.zone_r_km ? ` · ~${esc(String(h.zone_r_km))}km zone` : ""}</span>
-        </div>`;
-              })
-              .join("")
-          : `<p class="muted">No hail days this close after filters. Widen NEAR, drop HAIL ≥, or change YEAR.</p>`
-      }</div>
-      <h4>WIND NEAR PIN</h4>
-      <div class="wx-wind">${
-        wind.length
-          ? wind
-              .slice(0, 12)
-              .map(
-                (w) => `
-        <div class="wx-hail-row"><span class="date">${esc(w.date)}</span>
-        <span class="size">${esc(String(w.wind_mph))} mph</span>
-        <span class="dist">${esc(String(w.distance_km))} km</span>
-        ${esc(w.location)}, ${esc(w.state)}</div>`,
-              )
-              .join("")
-          : `<p class="muted">No wind reports this close after filters.</p>`
-      }</div>
-      <h4>STORM DATES (THIS PIN)</h4>
-      <div class="wx-storms">${
-        storms.length
-          ? storms
-              .slice(0, 16)
-              .map(
-                (s) => `
-        <div class="wx-storm"><span class="date">${esc(s.date)}</span> <span class="score">${esc(String(s.hail_in ? `${s.hail_in}"` : s.wind_mph || s.score))}${s.hail_in ? "" : s.wind_mph ? " mph" : ""}</span> ${esc((s.reasons || []).join(" · ") || s.label)}</div>`,
-              )
-              .join("")
-          : `<p class="muted">No storm days at this pin after filters.</p>`
-      }</div>
-      <h4>NEWS</h4>
-      <div class="wx-news">${
-        news.length
-          ? news
-              .slice(0, 8)
-              .map((n) => `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>`)
-              .join("")
-          : `<p class="muted">News pulls on deep research.</p>`
-      }</div>
     </div>`;
+  const lat = Number(data.lat || data._meta?.lat);
+  const lon = Number(data.lon || data._meta?.lon);
+  const { hail } = filterDossier(data, wxFilters);
+  if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    fetchWeatherBundle(lat, lon)
+      .then((bundle) => paintLiveWeather(root, bundle, hail, esc))
+      .catch(() => {});
+  }
+}
+
+function roofDossierHtml(data, esc, onResearch) {
+  const news = data.news || [];
+  const addr = data.address || "";
+  const zurl = data.zillow_url || (addr ? zillowUrl(addr) : "");
+  const meta = data._meta || {};
+  const { hail, wind, storms } = filterDossier(data, wxFilters);
+  const years = [
+    ...new Set((data.hail || []).map((h) => String(h.date || "").slice(0, 4)).filter((y) => /^\d{4}$/.test(y))),
+  ].sort((a, b) => b.localeCompare(a));
+  return `
+    <details class="wx-roof-fold"${hail.length ? " open" : ""}>
+      <summary class="wx-roof-sum">ROOFING DOSSIER · ${hail.length} hail day(s) · NOAA radar + spotter merge</summary>
+      <div class="wx-roof-body">
+        <p class="muted wx-roof-blurb">Insurance-grade hail trace — tap a date to draw merged zones on the map above. Solid = spotter-confirmed · dashed = radar-only.</p>
+        ${renderStormGraph(hail, esc, selectedStormDate)}
+        <div class="wx-links">
+          ${zurl ? `<a href="${esc(zurl)}" target="_blank" rel="noopener">ZILLOW SEARCH</a>` : ""}
+          ${onResearch ? `<button type="button" id="wx-deep" class="primary">DEEP RESEARCH</button>` : ""}
+        </div>
+        <p class="muted wx-meta">${meta.deep ? `Deep scan · ${meta.fetchedDays || "?"}d · ${meta.fetchedKm || "?"} km` : "Quick scan · DEEP RESEARCH for full trace + news · Shingle ID → CHAT → LENS"}</p>
+        <div class="wx-filters">
+          <label>NEAR <select id="wx-f-km">
+            <option value="8"${wxFilters.km == 8 ? " selected" : ""}>8 km</option>
+            <option value="15"${wxFilters.km == 15 ? " selected" : ""}>15 km</option>
+            <option value="25"${wxFilters.km == 25 ? " selected" : ""}>25 km</option>
+            <option value="40"${wxFilters.km == 40 ? " selected" : ""}>40 km</option>
+            <option value="50"${wxFilters.km == 50 ? " selected" : ""}>50 km</option>
+          </select></label>
+          <label>HAIL ≥ <select id="wx-f-hail">
+            <option value="0"${wxFilters.hailIn == 0 ? " selected" : ""}>any</option>
+            <option value="0.75"${wxFilters.hailIn == 0.75 ? " selected" : ""}>0.75"</option>
+            <option value="1"${wxFilters.hailIn == 1 ? " selected" : ""}>1"</option>
+            <option value="1.5"${wxFilters.hailIn == 1.5 ? " selected" : ""}>1.5"</option>
+            <option value="2"${wxFilters.hailIn == 2 ? " selected" : ""}>2"</option>
+          </select></label>
+          <label>WIND ≥ <select id="wx-f-wind">
+            <option value="0"${wxFilters.windMph == 0 ? " selected" : ""}>any</option>
+            <option value="38"${wxFilters.windMph == 38 ? " selected" : ""}>38 mph</option>
+            <option value="50"${wxFilters.windMph == 50 ? " selected" : ""}>50 mph</option>
+            <option value="58"${wxFilters.windMph == 58 ? " selected" : ""}>58 mph</option>
+          </select></label>
+          <label>WINDOW <select id="wx-f-days">
+            <option value="30"${wxFilters.days == 30 ? " selected" : ""}>30d</option>
+            <option value="90"${wxFilters.days == 90 ? " selected" : ""}>90d</option>
+            <option value="180"${wxFilters.days == 180 ? " selected" : ""}>180d</option>
+            <option value="365"${wxFilters.days == 365 ? " selected" : ""}>1y</option>
+          </select></label>
+          <label>YEAR <select id="wx-f-year">
+            <option value="all"${wxFilters.year === "all" || !wxFilters.year ? " selected" : ""}>all</option>
+            ${years.map((y) => `<option value="${esc(y)}"${String(wxFilters.year) === y ? " selected" : ""}>${esc(y)}</option>`).join("")}
+          </select></label>
+          <label>SORT <select id="wx-f-sort">
+            <option value="date"${wxFilters.sort !== "size" ? " selected" : ""}>chrono</option>
+            <option value="size"${wxFilters.sort === "size" ? " selected" : ""}>extreme ★</option>
+          </select></label>
+        </div>
+        <div class="wx-contacts">
+          ${data.owner_name ? `<div>Owner: ${esc(data.owner_name)}</div>` : ""}
+          ${data.owner_phone ? `<div>Phone: ${esc(data.owner_phone)}</div>` : ""}
+          ${data.owner_email ? `<div>Email: ${esc(data.owner_email)}</div>` : ""}
+        </div>
+        <h4>HAIL TRACE · ${hail.length} DAYS${selectedStormDate ? ` · MAP ${esc(selectedStormDate)}` : ""}</h4>
+        <div class="wx-hail-legend muted">Tap date → map zones · red dot = spotter · green = radar sig · ☆→★★★★★</div>
+        <div class="wx-hail">${
+          hail.length
+            ? hail
+                .slice(0, 36)
+                .map((h) => {
+                  const stars = h.stars || hailStars(h.size_in);
+                  const sev = h.severity || hailSeverityLabel(h.size_in);
+                  const src =
+                    h.source === "mixed"
+                      ? "ZONE"
+                      : h.source === "noaa-swdi-radar"
+                        ? "RADAR"
+                        : h.source === "iem-lsr"
+                          ? "LSR"
+                          : "SPOT";
+                  const on = selectedStormDate === h.date ? " on" : "";
+                  return `<div class="wx-hail-row sev-${esc(String(sev).toLowerCase())}${on}" data-storm-date="${esc(h.date)}">
+            <span class="stars">${esc(stars)}</span>
+            <span class="date">${esc(h.date)}</span>
+            <span class="size">${esc(h.size_in)}"</span>
+            <span class="sev">${esc(sev)}</span>
+            <span class="src">${esc(src)}</span>
+            <span class="dist">${esc(String(h.distance_km ?? "—"))} km</span>
+            <span class="loc">${esc(h.hits || 1)} sig${(h.hits || 1) === 1 ? "" : "s"}${h.zone_r_km ? ` · ~${esc(String(h.zone_r_km))}km` : ""}</span>
+          </div>`;
+                })
+                .join("")
+            : `<p class="muted">No hail days this close after filters. Widen NEAR, drop HAIL ≥, or change YEAR.</p>`
+        }</div>
+        <h4>WIND NEAR PIN</h4>
+        <div class="wx-wind">${
+          wind.length
+            ? wind
+                .slice(0, 12)
+                .map(
+                  (w) => `
+          <div class="wx-hail-row"><span class="date">${esc(w.date)}</span>
+          <span class="size">${esc(String(w.wind_mph))} mph</span>
+          <span class="dist">${esc(String(w.distance_km))} km</span>
+          ${esc(w.location)}, ${esc(w.state)}</div>`,
+                )
+                .join("")
+            : `<p class="muted">No wind reports this close after filters.</p>`
+        }</div>
+        <h4>STORM DATES (THIS PIN)</h4>
+        <div class="wx-storms">${
+          storms.length
+            ? storms
+                .slice(0, 16)
+                .map(
+                  (s) => `
+          <div class="wx-storm"><span class="date">${esc(s.date)}</span> <span class="score">${esc(String(s.hail_in ? `${s.hail_in}"` : s.wind_mph || s.score))}${s.hail_in ? "" : s.wind_mph ? " mph" : ""}</span> ${esc((s.reasons || []).join(" · ") || s.label)}</div>`,
+                )
+                .join("")
+            : `<p class="muted">No storm days at this pin after filters.</p>`
+        }</div>
+        <h4>NEWS</h4>
+        <div class="wx-news">${
+          news.length
+            ? news
+                .slice(0, 8)
+                .map((n) => `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>`)
+                .join("")
+            : `<p class="muted">News pulls on deep research.</p>`
+        }</div>
+      </div>
+    </details>`;
+}
+
+function bindRoofDossier(root, data, esc, onResearch, onRefetch) {
+  if (!root) return;
+  const hailRaw = filterHailRaw(data, wxFilters);
+  const { wind } = filterDossier(data, wxFilters);
+  const meta = data._meta || {};
   const btn = root.querySelector("#wx-deep");
   if (btn && onResearch) btn.onclick = onResearch;
   const onStormPick = (date) => {
     selectStormDate(date, { fit: true });
     drawHailMarkers(hailRaw, wind, { fit: true });
-    renderDossier(root, data, esc, onResearch, onRefetch);
+    renderRoofDossier(root, data, esc, onResearch, onRefetch);
   };
   bindStormGraph(root, onStormPick);
   root.querySelectorAll(".wx-hail-row[data-storm-date]").forEach((row) => {
@@ -2141,20 +2316,21 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
         ((key === "days" && Number(wxFilters.days) > (meta.fetchedDays || 0)) ||
           (key === "km" && Number(wxFilters.km) > (meta.fetchedKm || 0)));
       if (needRefetch) {
-        root.querySelector(".wx-meta").textContent = "Refetching storm data…";
+        const metaEl = root.querySelector(".wx-meta");
+        if (metaEl) metaEl.textContent = "Refetching storm data…";
         try {
           const fresh = await onRefetch({ ...wxFilters });
           if (fresh) {
-            renderDossier(root, fresh, esc, onResearch, onRefetch);
+            renderWxPanels(fresh, esc, onResearch, onRefetch);
             const f = filterDossier(fresh, wxFilters);
             drawHailMarkers(filterHailRaw(fresh, wxFilters), f.wind, { fit: false });
             return;
           }
         } catch {
-          /* fall through to re-filter */
+          /* fall through */
         }
       }
-      renderDossier(root, data, esc, onResearch, onRefetch);
+      renderRoofDossier(root, data, esc, onResearch, onRefetch);
       const f = filterDossier(data, wxFilters);
       drawHailMarkers(filterHailRaw(data, wxFilters), f.wind, { fit: false });
     };
@@ -2165,13 +2341,26 @@ export function renderDossier(root, data, esc, onResearch, onRefetch) {
   bind("#wx-f-days", "days", Number);
   bind("#wx-f-year", "year", String);
   bind("#wx-f-sort", "sort", String);
-  const lat = Number(data.lat || meta.lat);
-  const lon = Number(data.lon || meta.lon);
-  if (Number.isFinite(lat) && Number.isFinite(lon)) {
-    fetchWeatherBundle(lat, lon)
-      .then((bundle) => paintLiveWeather(root, bundle, hail, esc))
-      .catch(() => {});
+}
+
+export function renderRoofDossier(root, data, esc, onResearch, onRefetch) {
+  if (!root) return;
+  const { hail } = filterDossier(data, wxFilters);
+  if (!selectedStormDate && hail.length) {
+    selectedStormDate = hail[0]?.date || null;
   }
+  root.innerHTML = roofDossierHtml(data, esc, onResearch);
+  bindRoofDossier(root, data, esc, onResearch, onRefetch);
+}
+
+export function renderWxPanels(data, esc, onResearch, onRefetch) {
+  renderWeatherPanel(document.getElementById("wx-panel"), data, esc);
+  renderRoofDossier(document.getElementById("wx-roof-panel"), data, esc, onResearch, onRefetch);
+}
+
+/** @deprecated use renderWxPanels */
+export function renderDossier(root, data, esc, onResearch, onRefetch) {
+  renderWxPanels(data, esc, onResearch, onRefetch);
 }
 
 export function layerButtons(config, esc) {

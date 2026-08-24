@@ -19,7 +19,7 @@ import { captureMoment, topMoments, rememberReply } from "./memory.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
-import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderDossier, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier, filterHailRaw, selectStormDate, bindRadarScrubber, bindWxMapExpand, fetchWeatherBundle, paintLiveWeather, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml, weatherSummaryHtml, collapseHailByDate } from "./wx.js";
+import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderWxPanels, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, renderRoofBoot, pinDossier, refetchDossier, startWeatherWatch, filterDossier, filterHailRaw, selectStormDate, bindRadarScrubber, bindWxMapExpand, fetchWeatherBundle, paintLiveWeather, renderHourlyTimeline, geocodeAddress, flyToPin, radarScrubberHtml, weatherSummaryHtml, collapseHailByDate } from "./wx.js";
 import { pickAndIdentify, detectVisionMode, pickImageFile, fileToDataUrl } from "./vision.js";
 import { looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
@@ -978,6 +978,7 @@ async function renderWx() {
         <span class="wx-map-hint">DOUBLE-TAP · EXPAND MAP</span>
         <div id="wx-map"></div>
       </div>
+      <div id="wx-roof-panel" class="wx-roof-panel"></div>
     </div>`;
   const refreshLayers = (cfg) => {
     const el = $("#wx-layers");
@@ -1058,6 +1059,7 @@ async function renderWx() {
     quickPin(db.settings, center.lat, center.lon).then(async (hit) => {
       if (tab !== "wx") return;
       renderWeatherBoot($("#wx-panel"), hit.geo, hit.weather || cfg.weather, hit.hail, esc);
+      renderRoofBoot($("#wx-roof-panel"), hit.hail, esc);
       try {
         const bundle = await fetchWeatherBundle(center.lat, center.lon);
         const panel = $("#wx-panel");
@@ -1081,19 +1083,21 @@ async function onWxTap(lat, lon) {
   selectStormDate(null, { fit: false });
   setStatus("PINNED · ADDRESS…");
   const panel = $("#wx-panel");
+  const roofPanel = $("#wx-roof-panel");
   const paintHail = (data) => {
     const f = filterDossier(data);
     drawHailMarkers(filterHailRaw(data), f.wind, { fit: false });
   };
+  const renderPanels = (d) => renderWxPanels(d, esc, onDeep, onRefetch);
   const onDeep = async () => {
     setStatus("DEEP RESEARCH…");
-    const meta = panel.querySelector(".wx-meta");
+    const meta = roofPanel?.querySelector(".wx-meta");
     if (meta) meta.textContent = "Deep scan running (hail zones + news)…";
     try {
       const deep = await researchPin(db.settings, lat, lon, wxState.address, true);
       wxState.data = deep;
       paintHail(deep);
-      renderDossier(panel, deep, esc, onDeep, onRefetch);
+      renderPanels(deep);
       setStatus("DOSSIER UPDATED");
     } catch (e) {
       panel.innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
@@ -1109,14 +1113,14 @@ async function onWxTap(lat, lon) {
     const data = await pinDossier(db.settings, lat, lon, {
       onPartial: (partial) => {
         wxState.address = partial.address || "";
-        renderDossier(panel, partial, esc, onDeep, onRefetch);
+        renderPanels(partial);
         setStatus("PINNED · HAIL NEARBY…");
       },
     });
     wxState.address = data.address || "";
     wxState.data = data;
     paintHail(data);
-    renderDossier(panel, data, esc, onDeep, onRefetch);
+    renderPanels(data);
     setStatus("WX DOSSIER");
   } catch (e) {
     panel.innerHTML = `<p class="muted">${esc(String(e.message || e))}. Check network.</p>`;
