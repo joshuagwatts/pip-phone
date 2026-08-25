@@ -46,6 +46,9 @@ import {
   fetchOppDigest,
   setOppStage,
   tryOppCommand,
+  RADIUS_OPTS,
+  SORT_OPTS,
+  parseHuntIntent,
 } from "./oppdesk.js";
 import { startBackground, toggleKeepAlive } from "./background.js";
 import {
@@ -63,7 +66,8 @@ let db = load();
 let tab = "opp";
 let pane = "list";
 let oppId = "";
-let oppFilter = { q: "", type: "all" };
+let oppFilter = { q: "", type: "all", sort: "near", radiusKm: 80 };
+let oppPlain = false;
 let calState = { calMonth: ym(), calDay: ymd() };
 let vibeMode = "motivation";
 let vibeStem = "sendoff";
@@ -371,20 +375,34 @@ function renderOpp() {
     const fit = scoreFit(sel, db.kit);
     const badge = fitLabel(fit.score);
     const answers = sel.answers && sel.answers.length ? sel.answers : (sel.questions || []).map((q) => ({ q: q.prompt || q.q, a: "", a5: "", type: q.type }));
+    const brief = sel.brief;
+    const briefHtml = brief
+      ? `<div class="opp-brief"><b>BRIEF</b> ${esc(String(brief.summary || brief.fit || brief).slice(0, 420))}</div>`
+      : "";
+    const dist = sel.distance_label ? ` · ${esc(sel.distance_label)}` : "";
     $("#view").innerHTML = `
       <h3>${esc(sel.title)}</h3>
-      <p class="opp-fit ${badge.cls}">${badge.text} · ${fit.score}% · ${esc(stageLabel(sel.app_stage || (sel.questions?.length ? "scraped" : "new")))}</p>
+      <p class="opp-fit ${badge.cls}">${badge.text} · ${fit.score}% · ${esc(stageLabel(sel.app_stage || (sel.questions?.length ? "scraped" : "new")))}${dist}</p>
       ${sel.url ? `<p class="muted">${esc(sel.url)}</p>` : ""}
       ${sel.note ? `<p class="muted">${esc(sel.note)}</p>` : ""}
-      <p class="muted">${esc(labelOf(sel.kind || classify(sel.title, sel.url, sel.questions).id))}</p>
-      ${answers.map((a, i) => `
+      <p class="muted">${esc(labelOf(sel.kind || classify(sel.title, sel.url, sel.questions).id))} · drafts use your KIT + cloud brains</p>
+      ${briefHtml}
+      <div class="opp-chips">
+        <button type="button" class="opp-chip ${oppPlain ? "" : "on"}" id="opp-voice-full">FULL</button>
+        <button type="button" class="opp-chip ${oppPlain ? "on" : ""}" id="opp-voice-plain">GRADE 5</button>
+      </div>
+      ${answers.map((a, i) => {
+        const body = oppPlain ? (a.a5 || a.a || "") : (a.a || "");
+        return `
         <div class="copy-block">
           <p>${esc(a.q || a.prompt || "")}${a.required ? " *" : ""}</p>
           <div class="actions">
             <button type="button" data-copy="${i}">COPY</button>
+            <button type="button" data-rewrite="${i}">REWRITE</button>
           </div>
-          <textarea data-ans="${i}">${esc(a.a || "")}</textarea>
-        </div>`).join("") || `<p class="muted">Form's shy. READ PAGE or paste the questions — I'll write them with you.</p>`}
+          <textarea data-ans="${i}">${esc(body)}</textarea>
+        </div>`;
+      }).join("") || `<p class="muted">Form's shy. READ PAGE or paste the questions — I'll write them with you.</p>`}
       <div class="field"><span>PASTE QUESTIONS</span><textarea id="paste-qs" placeholder="If the page is a wall, paste the questions."></textarea></div>
       <div class="opp-stages">
         ${APP_STAGES.filter((s) => s.id !== "new").map((s) => `
@@ -401,6 +419,10 @@ function renderOpp() {
     $("#opp-read").onclick = readPage;
     $("#opp-draft").onclick = draftThis;
     $("#opp-open").onclick = () => sel.url && openUrl(sel.url);
+    const fullBtn = $("#opp-voice-full");
+    const plainBtn = $("#opp-voice-plain");
+    if (fullBtn) fullBtn.onclick = () => { oppPlain = false; render(); };
+    if (plainBtn) plainBtn.onclick = () => { oppPlain = true; render(); };
     $("#opp-done").onclick = async () => {
       sel.status = "done";
       sel.app_stage = sel.app_stage || "submitted";
@@ -421,17 +443,22 @@ function renderOpp() {
     $("#view").querySelectorAll("[data-ans]").forEach((el) => {
       el.oninput = () => {
         const i = Number(el.dataset.ans);
-        if (!sel.answers[i]) sel.answers[i] = { q: answers[i].q, a: "" };
-        sel.answers[i].a = el.value;
+        if (!sel.answers[i]) sel.answers[i] = { q: answers[i].q, a: "", a5: "" };
+        if (oppPlain) sel.answers[i].a5 = el.value;
+        else sel.answers[i].a = el.value;
         persist();
       };
     });
     $("#view").querySelectorAll("[data-copy]").forEach((el) => {
       el.onclick = async () => {
         const i = Number(el.dataset.copy);
-        const text = (sel.answers[i] && sel.answers[i].a) || "";
+        const row = sel.answers[i] || {};
+        const text = oppPlain ? (row.a5 || row.a || "") : (row.a || "");
         try { await navigator.clipboard.writeText(text); setStatus("COPIED"); } catch { setStatus("COPY FAILED"); }
       };
+    });
+    $("#view").querySelectorAll("[data-rewrite]").forEach((el) => {
+      el.onclick = () => rewriteAnswer(Number(el.dataset.rewrite));
     });
     $("#paste-qs").onchange = () => {
       const qs = questionsFromPaste($("#paste-qs").value);
@@ -449,19 +476,26 @@ function renderOpp() {
     ? `<div class="opp-digest"><b>TODAY</b> ${esc(digest.summary)}${digest.top?.length ? " · " + digest.top.slice(0, 2).map((t) => esc(t.title)).join(" · ") : ""}</div>`
     : "";
   const listed = filterOpps(rows, oppFilter, db.kit);
+  const rad = Number(oppFilter.radiusKm);
   $("#view").innerHTML = `
     <h3>OPPORTUNITIES</h3>
     ${digestLine}
-    <p class="muted">Indeed-for-artists — Pip hunts real open calls, scrapes the form, drafts from your KIT. You paste. CHAT: <em>search for bass festival VJ calls</em> or paste a URL to scrape.</p>
+    <p class="muted">Indeed-for-artists — search near you, sort near→far, draft from KIT + cloud brains. CHAT: <em>festivals near OKC within 50 miles</em>.</p>
     <div class="opp-search">
       <div class="field span2"><span>SEARCH / FOCUS</span>
-        <input id="opp-q" value="${esc(oppFilter.q)}" placeholder="e.g. public art RFP Oklahoma · VJ festival" />
+        <input id="opp-q" value="${esc(oppFilter.q)}" placeholder="e.g. festivals near OKC · public art RFP Tulsa" />
       </div>
       <div class="opp-chips">${OPP_TYPES.map((t) => `
         <button type="button" class="opp-chip ${oppFilter.type === t.id ? "on" : ""}" data-opp-type="${esc(t.id)}">${esc(t.label)}</button>`).join("")}</div>
+      <p class="muted tiny">RADIUS</p>
+      <div class="opp-chips">${RADIUS_OPTS.map((t) => `
+        <button type="button" class="opp-chip ${rad === t.id ? "on" : ""}" data-opp-radius="${t.id}">${esc(t.label)}</button>`).join("")}</div>
+      <p class="muted tiny">SORT</p>
+      <div class="opp-chips">${SORT_OPTS.map((t) => `
+        <button type="button" class="opp-chip ${oppFilter.sort === t.id ? "on" : ""}" data-opp-sort="${esc(t.id)}">${esc(t.label)}</button>`).join("")}</div>
     </div>
     <div class="place-row">
-      <div class="field"><span>CITY</span><input id="hunt-city" value="${esc(db.kit.city || "")}" placeholder="Edmond" /></div>
+      <div class="field"><span>CITY</span><input id="hunt-city" value="${esc(db.kit.city || "")}" placeholder="OKC / Edmond" /></div>
       <div class="field"><span>STATE</span><input id="hunt-state" value="${esc(db.kit.state || "")}" placeholder="Oklahoma" /></div>
       <div class="field span2"><span>COUNTRY</span><input id="hunt-country" value="${esc(db.kit.country || "")}" placeholder="United States" /></div>
     </div>
@@ -473,13 +507,14 @@ function renderOpp() {
     </div>
     ${listed.map((o) => {
       const badge = fitLabel(o.fitScore || 0);
+      const dist = o.distance_label ? ` · ${esc(o.distance_label)}` : "";
       return `
       <button type="button" class="opp-card" data-id="${esc(o.id)}">
         <b>${esc(o.title)}</b>
         <span class="opp-fit ${badge.cls}">${badge.text}</span>
-        <span>${esc(stageLabel(o.app_stage || "new"))} · ${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · scrape"}${o.url ? " · " + esc(o.url.slice(0, 36)) : ""}</span>
+        <span>${esc(stageLabel(o.app_stage || "new"))} · ${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${dist}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · scrape"}${o.url ? " · " + esc(o.url.slice(0, 32)) : ""}</span>
       </button>`;
-    }).join("") || `<p class="muted">Nothing on the desk. SEARCH hunts profile-fit calls. SCRAPE pulls questions from a URL you already found.</p>`}
+    }).join("") || `<p class="muted">Nothing on the desk. SEARCH hunts near→far from your city. SCRAPE pulls a URL you already found.</p>`}
     <div class="dock">
       <button type="button" class="primary" id="opp-search-go">SEARCH</button>
       <button type="button" id="opp-hunt">HUNT ALL</button>
@@ -492,6 +527,18 @@ function renderOpp() {
   $("#view").querySelectorAll("[data-opp-type]").forEach((el) => {
     el.onclick = () => {
       oppFilter.type = el.dataset.oppType;
+      render();
+    };
+  });
+  $("#view").querySelectorAll("[data-opp-radius]").forEach((el) => {
+    el.onclick = () => {
+      oppFilter.radiusKm = Number(el.dataset.oppRadius);
+      render();
+    };
+  });
+  $("#view").querySelectorAll("[data-opp-sort]").forEach((el) => {
+    el.onclick = () => {
+      oppFilter.sort = el.dataset.oppSort;
       render();
     };
   });
@@ -1548,6 +1595,36 @@ async function readPage() {
   }
 }
 
+async function rewriteAnswer(index) {
+  const sel = selected();
+  if (!sel?.answers?.[index]) return;
+  const row = sel.answers[index];
+  const q = row.q || row.prompt || "";
+  setStatus("REWRITE…");
+  try {
+    const drafted = await draftAnswers(
+      { ...db.settings, brain_pin: "auto", route_mode: chatAgent() === "auto" ? "auto" : "pip", chat_agent: chatAgent() },
+      {
+        title: sel.title,
+        kit: db.kit,
+        questions: [{ prompt: q, type: row.type || "paragraph", hint: "Rewrite sharper from KIT only." }],
+        kind: sel.kind || classify(sel.title, sel.url, sel.questions).id,
+      },
+      setStatus,
+    );
+    const hit = drafted[0];
+    if (hit?.a) {
+      row.a = hit.a;
+      row.a5 = hit.a5 || row.a5 || "";
+      persist();
+      render();
+      setStatus("REWRITTEN");
+    } else setStatus("REWRITE EMPTY");
+  } catch (e) {
+    setStatus(String(e.message || e));
+  }
+}
+
 async function draftThis() {
   const sel = selected();
   if (!sel) return;
@@ -1567,9 +1644,19 @@ async function draftThis() {
   Object.assign(sel, mergeDraft(sel, seeded));
   persist();
   render();
-  setStatus("KIT ON THE PAGE · DRAFTING THE REST");
+  setStatus("KIT ON THE PAGE · DRAFTING VIA CREW");
   try {
-    const drafted = await draftAnswers(db.settings, { title: sel.title, kit: db.kit, questions: sel.questions, kind }, (msg) => setStatus(msg));
+    const draftSettings = {
+      ...db.settings,
+      brain_pin: "auto",
+      route_mode: chatAgent() === "auto" ? "auto" : "pip",
+      chat_agent: chatAgent() === "compare" ? "pip" : chatAgent(),
+    };
+    const drafted = await draftAnswers(
+      draftSettings,
+      { title: sel.title, kit: db.kit, questions: sel.questions, kind },
+      (msg) => setStatus(msg),
+    );
     const merged = drafted.map((row, i) => ({
       ...row,
       a: row.a || (seeded[i] && seeded[i].a) || "",
@@ -1582,7 +1669,8 @@ async function draftThis() {
     if (desktopConfigured(db.settings)) fullOppSync(db.settings, db).catch(() => {});
     render();
     const turn = takeLastTurn();
-    setStatus(turn.leaked ? "DRAFT READY · LEAKED TO CLOUD · PASTE IT" : "DRAFT READY · GO PASTE IT");
+    const who = turn.provider ? String(turn.provider).toUpperCase() : "BRAIN";
+    setStatus(turn.leaked ? `DRAFT · ${who} · LEAKED · PASTE IT` : `DRAFT · ${who} · PASTE IT`);
   } catch (e) {
     setStatus(String(e.message || e));
   }
@@ -1624,9 +1712,17 @@ async function runHunt(allTypes = false) {
     oppFilter.q = ($("#opp-q")?.value || oppFilter.q || "").trim();
     if (allTypes) oppFilter.type = "all";
     persist();
-    const { rows: found } = await huntOpportunities(db.settings, db.kit, {
+    const intent = parseHuntIntent(oppFilter.q, db.kit);
+    if (intent.city && !db.kit.city) db.kit.city = intent.city;
+    if (intent.state && !db.kit.state) db.kit.state = intent.state;
+    if (intent.type !== "all" && oppFilter.type === "all") oppFilter.type = intent.type;
+    const { rows: found, place } = await huntOpportunities(db.settings, db.kit, {
       focus: oppFilter.q,
-      type: oppFilter.type,
+      type: allTypes ? "all" : oppFilter.type,
+      radiusKm: oppFilter.radiusKm,
+      city: db.kit.city || intent.city,
+      state: db.kit.state || intent.state,
+      country: db.kit.country || intent.country,
       onProgress: setStatus,
     });
     const fresh = [];
@@ -1634,6 +1730,9 @@ async function runHunt(allTypes = false) {
     for (const hit of found) {
       if (hit.url && db.opps.some((o) => o.url === hit.url)) continue;
       const row = newOpp(hit);
+      row.ring = hit.ring;
+      row.distance_km = hit.distance_km;
+      row.distance_label = hit.distance_label;
       if ((hit.questions || []).length) {
         row.questions = hit.questions;
         row.kind = hit.kind || classify(row.title, row.url, hit.questions).id;
@@ -1646,9 +1745,11 @@ async function runHunt(allTypes = false) {
       fresh.push(row);
       n += 1;
     }
+    oppFilter.sort = "near";
     persist();
     render();
-    setStatus(n ? `LOGGED ${n}` : found.length ? "ALREADY HAD THOSE" : "NOTHING PUBLIC — ADD A URL");
+    const where = place?.city || db.kit.city || "";
+    setStatus(n ? `LOGGED ${n}${where ? " · " + where.toUpperCase() : ""} · NEAR→FAR` : found.length ? "ALREADY HAD THOSE" : "NOTHING PUBLIC — ADD A URL");
     const queue = fresh.slice(0, 24);
     let i = 0;
     const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
@@ -2483,6 +2584,7 @@ async function sendChat() {
     setPane: (p) => { pane = p; },
     selected,
     draftThis,
+    setOppFilter: (f) => { oppFilter = { ...oppFilter, ...f }; },
   });
   if (oppHit) {
     if (oppHit.leaked || /scrape|draft|hunt|apply/i.test(oppHit.reply || "")) {

@@ -1,6 +1,7 @@
 import { httpGet } from "./net.js";
 import { uid } from "./store.js";
-import { classify, placeRings, TYPE_QUERIES } from "./kind.js";
+import { classify, TYPE_QUERIES } from "./kind.js";
+import { huntPlaceRings } from "./opploc.js";
 import { pickLink } from "./digest.js";
 
 const TYPE_NAME = {
@@ -587,31 +588,46 @@ async function huntColossal(found) {
   }
 }
 
-export async function hunt(focus, { city, state, country, onProgress } = {}) {
+export async function hunt(focus, { city, state, country, radiusKm = 80, onProgress, rings } = {}) {
   const found = PINNED.map((p) => ({
     title: p.title,
     url: p.url,
     note: p.note,
     questions: p.questions,
     kind: "festival_install",
+    ring: 0,
   }));
   const extra = (focus || "").trim();
   if (onProgress) onProgress("HUNT BOARDS");
   await huntArtcall(found);
   await huntColossal(found);
-  const rings = placeRings({ city, state, country });
-  for (const place of rings) {
-    if (found.length >= 40) break;
-    if (onProgress) onProgress(`HUNT ${place.toUpperCase()}`);
+
+  const placeList = rings?.length
+    ? rings
+    : huntPlaceRings({ city, state, country, radiusKm });
+
+  for (const ring of placeList) {
+    if (found.length >= 48) break;
+    const place = ring.place || ring;
+    const ringN = ring.ring != null ? ring.ring : 1;
+    if (onProgress) onProgress(`HUNT ${String(place).toUpperCase()}`);
     const queries = TYPE_QUERIES.map(([, q]) => `${place} ${q} 2026`);
-    if (extra) queries.unshift(`${place} ${extra} 2026`);
+    if (extra) {
+      queries.unshift(`${place} ${extra} open call apply 2026`);
+      queries.unshift(`${extra} near ${place} application 2026`);
+    }
+    const before = found.length;
     await Promise.all(
-      queries.map((q) =>
+      queries.slice(0, extra ? 8 : 6).map((q) =>
         huntPage(`https://search.brave.com/search?q=${encodeURIComponent(q)}`, found, { needHint: true }),
       ),
     );
+    for (let i = before; i < found.length; i += 1) {
+      if (found[i].ring == null) found[i].ring = ringN;
+      if (!found[i].place) found[i].place = place;
+    }
   }
-  return found.slice(0, 40);
+  return found.slice(0, 48);
 }
 
 export function mergeDraft(opp, drafted) {

@@ -694,18 +694,25 @@ export async function draftAnswers(settings, { title, kit, questions, kind }, on
   delete kitBits.ready;
   delete kitBits.digest;
   kitBits.links_by_kind = typedLinks(kit);
-  kitBits.resume = String(kit.resume || "").slice(0, 2500);
+  kitBits.resume = String(kit.resume || "").slice(0, 2800);
   const asks = questions.map((q) => ({
     q: q.prompt || q.q || "",
     type: q.type || "short",
     hint: q.hint || "",
   }));
+  const mode = String(settings?.route_mode || settings?.chat_agent || "pip").toLowerCase();
+  const voice =
+    mode === "auto"
+      ? "Efficient drafts. Short. Kit-only. No consultant theater."
+      : "You draft as Pip's application consultant — grounded in KIT, tailored to THIS call's type and questions. Sharp, honest, paste-ready.";
   const messages = [
     {
       role: "system",
       content:
         "You draft application answers for Pip's operator from KIT only. " +
         draftVoice(kind) +
+        " " +
+        voice +
         " Ground every sentence in KIT. Do not invent employers, awards, clients, or numbers. " +
         "If a number is required and missing, write ESTIMATE and say they must confirm. " +
         "Match the question. Instagram fields get only the Instagram URL. Website fields get the site. " +
@@ -716,10 +723,17 @@ export async function draftAnswers(settings, { title, kit, questions, kind }, on
     },
     {
       role: "user",
-      content: `CALL: ${title}\nKIT:\n${JSON.stringify(kitBits)}\nQUESTIONS:\n${JSON.stringify(asks)}`,
+      content: `CALL: ${title}\nMODE: ${mode}\nKIT:\n${JSON.stringify(kitBits)}\nQUESTIONS:\n${JSON.stringify(asks)}`,
     },
   ];
-  const hit = await routedComplete(settings, messages, "boost", 0.35, 1200, onProgress);
+  const hit = await routedComplete(
+    { ...settings, brain_pin: settings.brain_pin || "auto", route_mode: mode === "auto" ? "auto" : "pip" },
+    messages,
+    "boost",
+    mode === "auto" ? 0.25 : 0.4,
+    mode === "auto" ? 1000 : 1600,
+    onProgress,
+  );
   setTurn({
     leaked: Boolean(hit.leaked),
     provider: hit.provider,

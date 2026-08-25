@@ -103,6 +103,16 @@ p { line-height: 1.45; }
   color: var(--muted);
 }
 .opp-chip.on { border-color: var(--phos); color: var(--phos); }
+.opp-brief {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--phos) 35%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.opp-brief b { color: var(--phos); margin-right: 0.35rem; }
+.muted.tiny { font-size: 10px; letter-spacing: 0.06em; margin: 0.35rem 0 0.15rem; opacity: 0.85; }
 .opp-fit {
   display: inline-block;
   font-size: 10px;

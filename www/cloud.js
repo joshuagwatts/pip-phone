@@ -816,7 +816,13 @@ export function chain(settings, lane = "life", ask = "") {
   const pin = brainPin(settings);
   const keyedIds = usableProviders(settings).map((p) => p.id);
   const job = lane === "boost" ? "boost" : lane === "code" ? "code" : "life";
-  const ids = orderFor(job, keyedIds, liveHealth, pin, ask);
+  const mode = String(settings.route_mode || "").toLowerCase();
+  const ids =
+    mode === "auto"
+      ? orderForEfficient(keyedIds, liveHealth, ask)
+      : mode === "pip"
+        ? orderForConsultant(keyedIds, liveHealth, ask, job)
+        : orderFor(job, keyedIds, liveHealth, pin, ask);
   return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
 }
 

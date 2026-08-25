@@ -3,6 +3,17 @@ import { desktopConfigured } from "./desktop.js";
 import { httpLanGet, httpLanPostJson } from "./net.js";
 import { classify, labelOf } from "./kind.js";
 import { hunt as localHunt, scrapeUrl, newOpp, suggestAnswers } from "./opp.js";
+import {
+  parseHuntIntent,
+  huntPlaceRings,
+  resolveHuntHub,
+  tagHuntHits,
+  sortOpps,
+  RADIUS_OPTS,
+  SORT_OPTS,
+} from "./opploc.js";
+
+export { RADIUS_OPTS, SORT_OPTS, parseHuntIntent, sortOpps };
 
 export const APP_STAGES = [
   { id: "new", label: "New" },
@@ -31,6 +42,8 @@ export const OPP_TYPES = [
 const HUNT_CMD =
   /^(?:search|hunt|find)\s+(?:for\s+)?(.+?)(?:\s+(?:opportunit(?:y|ies)|open\s+calls?|gigs?|jobs?|applications?))?[.!?]*$/i;
 const HUNT_BARE = /^(?:hunt|search)\s+(?:open\s+)?calls?[.!?]*$/i;
+const HUNT_NATURAL =
+  /\b(festival|open\s+call|rfp|rfq|vj|mural|install|public\s+art|residency|grant).{0,40}\b(near|around|within|in)\b/i;
 const SCRAPE_CMD = /\b(?:scrape|read|add|open)\b/i;
 const DRAFT_CMD = /\b(?:draft|fill|complete)\s+(?:this|my|the)?\s*(?:application|form|opp)?/i;
 
@@ -103,29 +116,46 @@ export function fitLabel(score) {
   return { text: "CHECK", cls: "fit-low" };
 }
 
-export function filterOpps(rows, { query = "", type = "all" } = {}, kit = {}) {
+export function filterOpps(rows, { query = "", type = "all", sort = "near" } = {}, kit = {}) {
   const q = String(query || "").trim().toLowerCase();
-  return (rows || [])
+  // Strip location noise from list filter so "festivals near OKC" still matches festival titles.
+  const intent = parseHuntIntent(query, kit);
+  const filterQ = String(intent.focus || q)
+    .toLowerCase()
+    .replace(/\b(near|around|within|mi|miles|km)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const mapped = (rows || [])
     .map((o) => {
       const fit = scoreFit(o, kit);
-      return { ...o, fitScore: fit.score, fitReasons: fit.reasons, kind: o.kind || fit.kind };
+      return {
+        ...o,
+        fitScore: o.fitScore ?? fit.score,
+        fitReasons: fit.reasons,
+        kind: o.kind || fit.kind,
+        ring: o.ring,
+        distance_km: o.distance_km,
+        distance_label: o.distance_label,
+      };
     })
     .filter((o) => {
       if (type !== "all" && (o.kind || "other") !== type) return false;
-      if (!q) return true;
+      if (!filterQ) return true;
       const blob = `${o.title} ${o.note || ""} ${o.url || ""} ${labelOf(o.kind)}`.toLowerCase();
-      return blob.includes(q);
-    })
-    .sort((a, b) => (b.fitScore || 0) - (a.fitScore || 0) || (b.created_at || 0) - (a.created_at || 0));
+      return filterQ.split(/\s+/).filter((w) => w.length > 2).every((w) => blob.includes(w)) || blob.includes(filterQ);
+    });
+  return sortOpps(mapped, sort, kit);
 }
 
 export function looksLikeOppRequest(text) {
   const t = String(text || "").trim();
   if (!t) return false;
   if (/https?:\/\//i.test(t) && SCRAPE_CMD.test(t)) return true;
-  if (HUNT_BARE.test(t) || HUNT_CMD.test(t)) return true;
+  if (HUNT_BARE.test(t) || HUNT_CMD.test(t) || HUNT_NATURAL.test(t)) return true;
   if (DRAFT_CMD.test(t) && /\b(opp|application|form|call)\b/i.test(t)) return true;
-  return /\b(search|hunt|find)\b.+?\b(opportunit|open call|gig|rfp|residency|grant|job)\b/i.test(t);
+  if (/\b(search|hunt|find)\b.+?\b(opportunit|open call|gig|rfp|residency|grant|job|festival)\b/i.test(t)) return true;
+  if (/\bfestivals?\b.+\b(near|around|okc|tulsa|oklahoma)\b/i.test(t)) return true;
+  return false;
 }
 
 function mapDesktopOpp(row) {
@@ -276,22 +306,46 @@ export async function syncOppsFromDesktop(settings, db) {
   return { ok: true, synced: out.pulled + out.pushed };
 }
 
-export async function huntOpportunities(settings, kit, { focus = "", type = "all", onProgress } = {}) {
-  let focusLine = String(focus || "").trim();
-  if (type !== "all") {
-    const label = labelOf(type).toLowerCase();
+export async function huntOpportunities(
+  settings,
+  kit,
+  { focus = "", type = "all", radiusKm = 80, city, state, country, onProgress } = {},
+) {
+  const intent = parseHuntIntent(focus, kit);
+  let focusLine = String(intent.focus || focus || "").trim();
+  let huntType = type !== "all" ? type : intent.type || "all";
+  if (huntType !== "all") {
+    const label = labelOf(huntType).toLowerCase();
     if (!focusLine.toLowerCase().includes(label.split("/")[0])) {
       focusLine = `${focusLine} ${label}`.trim();
     }
   }
+  const place = {
+    city: city || intent.city || kit.city,
+    state: state || intent.state || kit.state,
+    country: country || intent.country || kit.country || "United States",
+    near: intent.near,
+  };
+  const rKm = radiusKm != null ? radiusKm : intent.radiusKm;
+  const rings = huntPlaceRings({ ...place, radiusKm: rKm });
+  let hub = null;
+  if (onProgress) onProgress(`LOCATE ${place.city || place.near || "…"}`);
+  hub = await resolveHuntHub(place);
+
   if (desktopConfigured(settings)) {
     if (onProgress) onProgress("DESKTOP HUNT…");
     try {
-      const loc = [kit.city, kit.state, kit.country].filter(Boolean).join(", ");
+      const loc = [place.city, place.state, place.country].filter(Boolean).join(", ");
       const out = await httpLanPostJson(
         `${lanBase(settings)}/api/opp/hunt`,
         lanHeaders(settings),
-        { focus: focusLine, apply: false, kind: type !== "all" ? type : "", location: loc },
+        {
+          focus: focusLine,
+          apply: false,
+          kind: huntType !== "all" ? huntType : "",
+          location: loc,
+          radius_km: rKm > 0 ? rKm : null,
+        },
         120000,
       );
       const rows = [];
@@ -311,21 +365,25 @@ export async function huntOpportunities(settings, kit, { focus = "", type = "all
           );
         }
       }
-      return { source: "desktop", out, rows };
+      const tagged = tagHuntHits(rows, hub, place);
+      return { source: "desktop", out, rows: sortOpps(tagged, "near"), hub, place, radiusKm: rKm };
     } catch {
       /* fall through local */
     }
   }
   if (onProgress) onProgress("HUNTING…");
   const found = await localHunt(focusLine, {
-    city: kit.city,
-    state: kit.state,
-    country: kit.country,
+    city: place.city,
+    state: place.state,
+    country: place.country,
+    radiusKm: rKm,
+    rings,
     onProgress,
   });
   const filtered =
-    type === "all" ? found : found.filter((h) => classify(h.title, h.url, h.questions).id === type);
-  return { source: "local", rows: filtered, out: { logged: filtered } };
+    huntType === "all" ? found : found.filter((h) => classify(h.title, h.url, h.questions).id === huntType);
+  const tagged = tagHuntHits(filtered, hub, place);
+  return { source: "local", rows: sortOpps(tagged, "near"), out: { logged: tagged }, hub, place, radiusKm: rKm };
 }
 
 export async function scrapeOpportunityUrl(url, kit, { title = "", settings = null, draft = false } = {}) {
@@ -384,25 +442,45 @@ export async function tryOppCommand(text, db, ctx = {}) {
     };
   }
 
-  if (HUNT_BARE.test(t) || HUNT_CMD.test(t)) {
+  if (HUNT_BARE.test(t) || HUNT_CMD.test(t) || HUNT_NATURAL.test(t) || /\bfestivals?\b.+\b(near|around|okc)\b/i.test(t)) {
     const m = HUNT_CMD.exec(t);
-    const focus = (m && m[1] ? m[1] : "").trim();
+    const rawFocus = (m && m[1] ? m[1] : t).trim();
+    const intent = parseHuntIntent(rawFocus, db.kit);
+    const where = intent.near || [intent.city, intent.state].filter(Boolean).join(", ");
+    const rad =
+      intent.radiusKm > 0
+        ? ` · ~${Math.round(intent.radiusKm / 1.609)} mi`
+        : intent.radiusKm === 0
+          ? " · statewide"
+          : "";
     return {
       ok: true,
-      reply: focus
-        ? `Hunting for ${focus}. Real open calls only — I'll scrape forms that match your KIT.`
-        : "Hunting profile-fit open calls near your KIT location.",
+      reply: intent.focus
+        ? `Hunting ${intent.focus}${where ? ` near ${where}` : ""}${rad}. Near → far. Real open calls — I'll scrape forms that match your KIT.`
+        : `Hunting profile-fit open calls${where ? ` near ${where}` : ""}${rad}.`,
       switchTab: "opp",
       async run() {
         ctx.setStatus?.("HUNTING…");
+        if (intent.city) db.kit.city = intent.city;
+        if (intent.state) db.kit.state = intent.state;
+        if (intent.country) db.kit.country = intent.country;
+        ctx.persist?.();
         const { rows } = await huntOpportunities(db.settings, db.kit, {
-          focus,
+          focus: intent.focus || rawFocus,
+          type: intent.type || "all",
+          radiusKm: intent.radiusKm,
+          city: intent.city,
+          state: intent.state,
+          country: intent.country,
           onProgress: ctx.setStatus,
         });
         let added = 0;
         for (const hit of rows) {
           if (db.opps.some((o) => o.url && hit.url && o.url === hit.url)) continue;
           const row = hit.id ? hit : newOpp(hit);
+          row.ring = hit.ring;
+          row.distance_km = hit.distance_km;
+          row.distance_label = hit.distance_label;
           if (hit.questions?.length && !row.answers?.length) {
             row.answers = suggestAnswers(hit.questions, db.kit, row.title, row.kind);
           }
@@ -410,8 +488,9 @@ export async function tryOppCommand(text, db, ctx = {}) {
           added += 1;
         }
         ctx.persist?.();
+        ctx.setOppFilter?.({ q: intent.focus || rawFocus, type: intent.type || "all", sort: "near", radiusKm: intent.radiusKm });
         ctx.render?.();
-        ctx.setStatus?.(added ? `FOUND ${added} · OPP` : "HUNT DONE · OPP");
+        ctx.setStatus?.(added ? `FOUND ${added} · NEAR→FAR · OPP` : "HUNT DONE · OPP");
       },
     };
   }
