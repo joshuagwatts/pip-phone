@@ -3,7 +3,7 @@ import { desktopConfigured, desktopLogin } from "./desktop.js";
 import { httpLanGet } from "./net.js";
 import { normalizeApiKey } from "./cloud.js";
 
-export const KEY_FIELDS = ["groq", "openrouter", "cerebras", "mistral", "gemini", "xai", "deepseek", "openai"];
+export const KEY_FIELDS = ["groq", "openrouter", "cerebras", "mistral", "gemini", "xai", "deepseek", "openai", "anthropic"];
 
 function lan(settings) {
   return String(settings.desktop_url || "").replace(/\/+$/, "");
@@ -53,7 +53,7 @@ export function applyCloudKeys(settings, pack, { replace = false } = {}) {
 
 export function keyedSummary(settings) {
   return KEY_FIELDS.filter((f) => String(settings[f] || "").trim()).map((f) =>
-    f === "xai" ? "grok" : f,
+    f === "xai" ? "grok" : f === "anthropic" ? "claude" : f,
   );
 }
 

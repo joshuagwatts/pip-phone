@@ -43,6 +43,7 @@ function blank() {
       xai: "",
       deepseek: "",
       openai: "",
+      anthropic: "",
       desktop_url: "",
       desktop_token: "",
       desktop_password: "",

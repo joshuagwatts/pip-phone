@@ -3,23 +3,23 @@
 export const JOBS = {
   life: {
     label: "CHAT",
-    brains: ["groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"],
+    brains: ["anthropic", "groq", "gemini", "openrouter", "openai", "cerebras", "deepseek", "mistral", "xai"],
   },
   boost: {
     label: "DRAFT",
-    brains: ["groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini"],
+    brains: ["anthropic", "openai", "groq", "openrouter", "cerebras", "deepseek", "mistral", "gemini"],
   },
   code: {
     label: "CODE",
-    brains: ["deepseek", "openrouter", "openai", "groq", "cerebras", "mistral"],
+    brains: ["deepseek", "anthropic", "openai", "openrouter", "groq", "cerebras", "mistral"],
   },
   wx: {
     label: "WX",
-    brains: ["gemini", "cerebras", "openrouter", "groq", "deepseek", "mistral"],
+    brains: ["gemini", "anthropic", "cerebras", "openrouter", "groq", "deepseek", "mistral"],
   },
   vision: {
     label: "LENS",
-    brains: ["gemini", "openai", "openrouter"],
+    brains: ["gemini", "openai", "anthropic", "openrouter"],
   },
   theme: {
     label: "THEME",
@@ -27,7 +27,7 @@ export const JOBS = {
   },
   meal: {
     label: "MEALS",
-    brains: ["gemini", "groq", "openrouter", "cerebras", "deepseek", "mistral"],
+    brains: ["gemini", "anthropic", "groq", "openrouter", "cerebras", "deepseek", "mistral"],
   },
 };
 
@@ -36,10 +36,15 @@ const CODE_HINT =
 const WX_HINT = /\b(hail|storm|radar|weather|nws|wind report|dossier|roof)\b/i;
 const DRAFT_HINT = /\b(apply|application|draft|resume|cover letter|bio|opp|open call)\b/i;
 const MEAL_HINT = /\b(meals?|breakfast|lunch|dinner|snack|grocery|macros?|kcal|vegan|vegetarian|what to eat|meal plan)\b/i;
+const VISION_HINT = /\b(image|photo|picture|screenshot|look at this|what('s| is) (in|this)|rock|shingle|lens)\b/i;
+const WIT_HINT = /\b(joke|roast|spicy|opinionated|wit|funny|grok|memes?)\b/i;
+const PROSE_HINT = /\b(write|essay|nuance|careful|edit (this|prose|copy)|rewrite|claude|haiku|sonnet|letter)\b/i;
+const FAST_HINT = /\b(fast|quick|asap|speed|one.?liner|short answer)\b/i;
 const NOT_CHAT_JOB = /\b(apply|application|hail|storm|zillow|deadline|cover letter)\b/i;
 
 export function pickJob(text) {
   const t = String(text || "");
+  if (VISION_HINT.test(t) && !DRAFT_HINT.test(t)) return "vision";
   if (MEAL_HINT.test(t) && !DRAFT_HINT.test(t)) return "meal";
   if (WX_HINT.test(t) && !DRAFT_HINT.test(t)) return "wx";
   if (CODE_HINT.test(t)) return "code";
@@ -60,7 +65,28 @@ export function wantsDesktopCodeUpgrade(text) {
   return /\b(upgrade\s+(on\s+)?pc|desktop\s+upgrade|phone\s+www\s+on\s+(pc|desktop))\b/i.test(String(text || ""));
 }
 
-export function orderFor(job, keyedIds, health = {}, pin = "auto") {
+/** Bump brains that fit this ask to the front of an already-filtered list. */
+function specialtyBoost(ask, ordered) {
+  const t = String(ask || "");
+  if (!t || !ordered.length) return ordered;
+  const bump = [];
+  if (VISION_HINT.test(t)) bump.push("gemini", "openai", "anthropic", "openrouter");
+  if (CODE_HINT.test(t)) bump.push("deepseek", "anthropic", "openai", "openrouter");
+  if (PROSE_HINT.test(t)) bump.push("anthropic", "openai", "mistral");
+  if (WIT_HINT.test(t)) bump.push("xai", "groq");
+  if (FAST_HINT.test(t)) bump.push("groq", "cerebras", "anthropic");
+  if (DRAFT_HINT.test(t)) bump.push("anthropic", "openai", "groq");
+  if (MEAL_HINT.test(t)) bump.push("gemini", "anthropic", "groq");
+  if (WX_HINT.test(t)) bump.push("gemini", "anthropic");
+  const head = [];
+  for (const id of bump) {
+    if (ordered.includes(id) && !head.includes(id)) head.push(id);
+  }
+  if (!head.length) return ordered;
+  return [...head, ...ordered.filter((id) => !head.includes(id))];
+}
+
+export function orderFor(job, keyedIds, health = {}, pin = "auto", ask = "") {
   const spec = JOBS[job] || JOBS.life;
   if (pin === "local" || pin === "lite" || pin === "qwen") return [];
   const keyed = spec.brains.filter((id) => keyedIds.includes(id));
@@ -69,6 +95,11 @@ export function orderFor(job, keyedIds, health = {}, pin = "auto") {
   if (pin && pin !== "auto" && keyedIds.includes(pin)) {
     ordered = [pin, ...keyed.filter((id) => id !== pin)];
   }
+  // Job list may omit a keyed brain — still allow it at the end.
+  for (const id of keyedIds) {
+    if (!ordered.includes(id)) ordered.push(id);
+  }
+  ordered = specialtyBoost(ask, ordered);
   // If every probe is "bad", still try them — stale health was blocking chat.
   const anyLive = ordered.some((id) => health[id]?.ok === true);
   if (!anyLive) return ordered;
@@ -80,7 +111,7 @@ export function orderFor(job, keyedIds, health = {}, pin = "auto") {
 export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto", desktopLive = null, leaky = false) {
   const rows = [];
   const cloudRows = [];
-  for (const id of ["groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
+  for (const id of ["anthropic", "groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
     const keyed = keyedIds.includes(id);
     const ok = health[id]?.ok;
     let state = "off";
@@ -89,7 +120,7 @@ export function describeChain(keyedIds, health = {}, desktop = false, pin = "aut
     else if (keyed) state = "key";
     cloudRows.push({
       id,
-      label: id === "xai" ? "GROK" : id.toUpperCase(),
+      label: id === "xai" ? "GROK" : id === "anthropic" ? "CLAUDE" : id.toUpperCase(),
       state,
     });
   }

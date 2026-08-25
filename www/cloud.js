@@ -101,14 +101,117 @@ export const PROVIDERS = [
     tip: "ChatGPT family · strong vision via gpt-4o.",
     vision: true,
   },
+  {
+    id: "anthropic",
+    label: "Claude",
+    field: "anthropic",
+    base: "https://api.anthropic.com/v1",
+    // Haiku is the cheap/fast default; Sonnet for boost drafts.
+    life: "claude-haiku-4-5",
+    boost: "claude-sonnet-5",
+    models: [
+      "claude-haiku-4-5",
+      "claude-haiku-4-5-20251001",
+      "claude-sonnet-5",
+      "claude-3-5-haiku-latest",
+      "claude-3-haiku-20240307",
+    ],
+    headers: { "anthropic-version": "2023-06-01" },
+    fishy: true,
+    keyUrl: "https://console.anthropic.com/settings/keys",
+    tip: "Anthropic · Claude Haiku by default · OpenAI-compat /v1.",
+  },
 ];
+
+const SPENT_KEY = "pip.phone.spent.v1";
+
+function loadSpent() {
+  try {
+    return JSON.parse(localStorage.getItem(SPENT_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSpent(map) {
+  localStorage.setItem(SPENT_KEY, JSON.stringify(map));
+}
+
+function spentUntil(msg) {
+  const m = String(msg || "");
+  if (/daily|per.?day|24.?h|month|quota.?reset/i.test(m)) {
+    const d = new Date();
+    d.setHours(24, 5, 0, 0);
+    return d.getTime();
+  }
+  return Date.now() + 3 * 60 * 60 * 1000;
+}
+
+export function isQuotaFail(msg) {
+  return /429|rate.?limit|too many requests|quota|insufficient.?quota|credit|billing|usage.?limit|token.?limit|exceeded your|resource.?exhausted|out of credits|spend.?limit|monthly.?limit|free.?tier.*limit|tokens? per (day|minute|hour)/i.test(
+    String(msg || ""),
+  );
+}
+
+/** True when this API hit quota/rate limits recently — skip until until. */
+export function isSpent(id) {
+  const key = String(id || "");
+  if (!key) return false;
+  const map = loadSpent();
+  const row = map[key];
+  if (!row) return false;
+  if (Date.now() > Number(row.until || 0)) {
+    delete map[key];
+    saveSpent(map);
+    return false;
+  }
+  return true;
+}
+
+export function markSpent(id, error = "") {
+  const key = String(id || "");
+  if (!key) return;
+  const map = loadSpent();
+  map[key] = {
+    until: spentUntil(error),
+    error: String(error || "").slice(0, 140),
+    at: Date.now(),
+  };
+  saveSpent(map);
+  markHealth(key, false, `MAXED · ${String(error || "quota").slice(0, 80)}`);
+}
+
+export function clearSpent(id) {
+  const map = loadSpent();
+  if (id) {
+    delete map[id];
+    saveSpent(map);
+    return;
+  }
+  saveSpent({});
+}
+
+export function spentMap() {
+  const map = loadSpent();
+  const out = {};
+  for (const [id, row] of Object.entries(map)) {
+    if (isSpent(id)) out[id] = row;
+  }
+  return out;
+}
+
+/** Keyed providers that still have budget (not maxed). */
+export function usableProviders(settings) {
+  return keyedProviders(settings).filter((p) => !isSpent(p.id));
+}
 
 export function keyTag(settings, prov, health = null) {
   const key = providerKey(settings, prov);
   if (!key) return { tag: "NO KEY", state: "off" };
+  if (isSpent(prov.id)) return { tag: "MAXED", state: "bad" };
   const h = health || liveHealth[prov.id];
   if (h?.ok === true) return { tag: "LIVE", state: "on" };
-  if (h?.ok === false) return { tag: "KEY BAD", state: "bad" };
+  if (h?.ok === false) return { tag: /MAXED/i.test(h.error || "") ? "MAXED" : "KEY BAD", state: "bad" };
   return { tag: "KEY SET", state: "key" };
 }
 
@@ -190,11 +293,12 @@ function isAuthFail(msg) {
 
 /** Parse "tell Gemini to share with Groq" / "Gemini say something to Groq" relay intents. */
 export function parseAgentRelay(text) {
-  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt";
+  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt|claude|anthropic|haiku|sonnet";
   const norm = (id) => {
     const x = String(id || "").toLowerCase();
     if (x === "grok") return "xai";
     if (x === "chatgpt") return "openai";
+    if (x === "claude" || x === "haiku" || x === "sonnet") return "anthropic";
     return x;
   };
   const t = String(text || "").trim();
@@ -504,7 +608,7 @@ function messageText(msg) {
 /** LIVE cloud ids (probe ok) — chat should prefer these. */
 export function liveProviderIds(settings) {
   const health = providerHealth();
-  return keyedProviders(settings)
+  return usableProviders(settings)
     .map((p) => p.id)
     .filter((id) => health[id]?.ok === true);
 }
@@ -675,39 +779,44 @@ export function chatCloudEnabled(settings) {
   return keyedProviders(settings).length > 0;
 }
 
-export function chatChain(settings, job = "life") {
+export function chatChain(settings, job = "life", ask = "") {
   const pin = brainPin(settings);
   if (pin === "local" || pin === "lite" || pin === "qwen") return [];
-  const keyedIds = keyedProviders(settings).map((p) => p.id);
+  const keyedIds = usableProviders(settings).map((p) => p.id);
   // Explicit agent pick (groq/gemini/cerebras/…) — ONLY that brain. Never silent-fallback to another API.
   if (pin && pin !== "auto" && pin !== "compare" && pin !== "all" && pin !== "desktop") {
     const only = PROVIDERS.find((p) => p.id === pin);
     if (only && keyedIds.includes(pin)) return [only];
+    // Pinned but spent — fail clear rather than silent-switch.
+    if (only && providerKey(settings, only) && isSpent(pin)) {
+      return [];
+    }
     return [];
   }
   // Vision pin — only providers that accept image_url.
   if (pin === "vision") {
-    const order = ["gemini", "openai", "openrouter"];
+    const order = ["gemini", "openai", "anthropic", "openrouter"];
     return order.map((id) => PROVIDERS.find((p) => p.id === id)).filter((p) => p && keyedIds.includes(p.id));
   }
   const effectivePin = pin === "compare" || pin === "all" ? "auto" : pin;
-  const ids = orderFor(job, keyedIds, liveHealth, effectivePin);
+  const ids = orderFor(job, keyedIds, liveHealth, effectivePin, ask);
   return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
 }
 
 /** OPP/CODE cloud chain — same LIVE upscale/downscale as CHAT when LEAKY. */
-export function chain(settings, lane = "life") {
+export function chain(settings, lane = "life", ask = "") {
   if (privacyOn(settings)) return [];
   const pin = brainPin(settings);
-  const keyedIds = keyedProviders(settings).map((p) => p.id);
+  const keyedIds = usableProviders(settings).map((p) => p.id);
   const job = lane === "boost" ? "boost" : lane === "code" ? "code" : "life";
-  const ids = orderFor(job, keyedIds, liveHealth, pin);
+  const ids = orderFor(job, keyedIds, liveHealth, pin, ask);
   return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
 }
 
 export async function cloudCompleteTools(settings, messages, tools, lane = "boost", temperature = 0.2, maxTokens = 8000) {
   const errors = [];
   for (const prov of chain(settings, lane)) {
+    if (isSpent(prov.id)) continue;
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {
@@ -715,8 +824,10 @@ export async function cloudCompleteTools(settings, messages, tools, lane = "boos
       markHealth(prov.id, true);
       return out;
     } catch (e) {
-      markHealth(prov.id, false, String(e.message || e).slice(0, 120));
-      errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
+      const msg = String(e.message || e);
+      if (isQuotaFail(msg)) markSpent(prov.id, msg);
+      else markHealth(prov.id, false, msg.slice(0, 120));
+      errors.push(`${prov.id}: ${msg.slice(0, 120)}`);
     }
   }
   throw new Error(errors.join(" · ") || "CODE needs LEAKY + a cloud key, or pair desktop for GPU code edits");
@@ -727,12 +838,16 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
   const pin = brainPin(settings);
   const pinned =
     pin && pin !== "auto" && pin !== "compare" && pin !== "all" && pin !== "desktop" && pin !== "local" && pin !== "lite" && pin !== "qwen";
-  const chainList = chatChain(settings, job);
+  const user = [...(messages || [])].reverse().find((m) => m && m.role === "user");
+  const ask = typeof user?.content === "string" ? user.content : "";
+  const chainList = chatChain(settings, job, ask);
   if (!chainList.length) {
+    if (pinned && isSpent(pin)) throw new Error(`${pin.toUpperCase()} maxed — quota/rate limit. Try another agent or wait.`);
     if (pinned) throw new Error(`${pin.toUpperCase()} not keyed — paste key in DATA or pick another agent`);
     throw new Error("no keyed chat brains — paste keys in DATA or unpin");
   }
   for (const prov of chainList) {
+    if (isSpent(prov.id)) continue;
     const key = providerKey(settings, prov);
     if (!key) continue;
     try {
@@ -740,8 +855,11 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
       markHealth(prov.id, true);
       return out;
     } catch (e) {
+      const msg = String(e.message || e);
+      if (isQuotaFail(msg)) markSpent(prov.id, msg);
+      else if (isAuthFail(msg)) markHealth(prov.id, false, msg);
       // Soft miss — keep prior LIVE so hierarchy isn't poisoned by one timeout.
-      errors.push(`${prov.id}: ${String(e.message || e).slice(0, 120)}`);
+      errors.push(`${prov.id}: ${msg.slice(0, 120)}`);
     }
   }
   if (pinned) {
@@ -778,6 +896,9 @@ export async function chatPing(settings, prov) {
 const AGENT_ALIASES = {
   grok: "xai",
   chatgpt: "openai",
+  claude: "anthropic",
+  haiku: "anthropic",
+  sonnet: "anthropic",
 };
 
 function normAgentId(id) {
@@ -785,15 +906,15 @@ function normAgentId(id) {
   return AGENT_ALIASES[x] || x;
 }
 
-/** Brains with keys attached — skip known-bad (KEY BAD) until re-paste/re-validate. */
+/** Brains with keys attached — skip maxed + known-bad until re-paste/re-validate. */
 export function compareProviders(settings, health = null) {
   const h = health || liveHealth;
-  return keyedProviders(settings).filter((p) => h[p.id]?.ok !== false);
+  return keyedProviders(settings).filter((p) => !isSpent(p.id) && h[p.id]?.ok !== false);
 }
 
 /** "Say something to Gemini" / crew cross-talk in COMPARE. */
 export function parseCrossAgentIntent(text) {
-  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt";
+  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt|claude|anthropic|haiku|sonnet";
   const t = String(text || "").trim();
   const relay = parseAgentRelay(t);
   if (relay?.from && relay?.to) {
@@ -971,23 +1092,29 @@ export async function compareComplete(
           ok: true,
         };
       } catch (e) {
+        const err = String(e.message || e).slice(0, 160);
+        if (isQuotaFail(err)) markSpent(prov.id, err);
         return {
           provider: prov.id,
           label: prov.label || prov.id,
           text: "",
-          error: String(e.message || e).slice(0, 160),
+          error: err,
           ok: false,
         };
       }
     };
     return withTimeout(run(), timeoutMs, prov.label || prov.id)
-      .catch((e) => ({
-        provider: prov.id,
-        label: prov.label || prov.id,
-        text: "",
-        error: String(e.message || e).slice(0, 160),
-        ok: false,
-      }))
+      .catch((e) => {
+        const err = String(e.message || e).slice(0, 160);
+        if (isQuotaFail(err)) markSpent(prov.id, err);
+        return {
+          provider: prov.id,
+          label: prov.label || prov.id,
+          text: "",
+          error: err,
+          ok: false,
+        };
+      })
       .then((row) => {
         emitPartial(row, index);
         return row;

@@ -91,7 +91,7 @@ export const FALLBACK = "Pip is happy to help! Keys look quiet — tap the agent
 
 /** Native agent voices — when you pick an API in CHAT, talk to THAT model as itself. */
 export const AGENT_META = {
-  pip: { label: "PIP", blurb: "Your crew · routes tools · does not impersonate other AIs" },
+  pip: { label: "PIP", blurb: "Your crew · one brain answers · Pip picks who fits" },
   auto: { label: "AUTO", blurb: "Best keyed brain · light system · cascade if one fails" },
   groq: { label: "GROQ", blurb: "Fast Llama · sharp and short" },
   openrouter: { label: "OPENROUTER", blurb: "Multi-model gateway · Claude/DeepSeek routes when keyed" },
@@ -101,6 +101,7 @@ export const AGENT_META = {
   xai: { label: "GROK", blurb: "xAI · witty, current, opinionated" },
   deepseek: { label: "DEEPSEEK", blurb: "Efficient · strong coding and analysis" },
   openai: { label: "OPENAI", blurb: "ChatGPT family · vision and general work" },
+  anthropic: { label: "CLAUDE", blurb: "Anthropic · Haiku default · sharp prose and careful reasoning" },
   desktop: { label: "DESKTOP", blurb: "Your PC GPU · private local models" },
   compare: { label: "COMPARE", blurb: "All keyed APIs · one bubble · tab each reply + overview" },
 };
@@ -136,13 +137,19 @@ export function autoSystem(operator) {
 }
 
 /** Pip as orchestrator — does not pretend to be Groq/Gemini/etc. */
-export function pipOrchestratorSystem(operator, humor, honesty, kit) {
+export function pipOrchestratorSystem(operator, humor, honesty, kit, roster = []) {
   const base = talkSystem(operator, humor, honesty, kit);
+  const listening =
+    roster.length > 0
+      ? `Crew listening this turn (they hear the chat; only ONE brain answers — you pick): ${roster.join(", ")}.`
+      : "No cloud keys yet — stay Pip Lite / guide, or ask them to paste keys in DATA.";
   return [
     base,
     "You are Pip the orchestrator on this phone — mentor, friend, agent.",
+    listening,
+    "Conversation mode: talk with the operator as Pip. The crew is in the room listening, not a panel show — do not make every AI reply.",
     "You do NOT channel or impersonate other AIs (Groq, Gemini, Grok, Claude, DeepSeek, etc.) unless they explicitly ask you to roleplay.",
-    "If they want another brain's native voice, tell them to tap the agent chip next to LENS (or say talk to gemini).",
-    "You may recommend which agent fits the job (vision → Gemini/OpenAI, speed → Groq/Cerebras, code → DeepSeek, wit → Grok) without pretending to be them.",
+    "If they want another brain's native voice, tell them to tap the agent chip next to LENS (or say talk to claude / gemini).",
+    "Fit the job: vision → Gemini/OpenAI/Claude, speed → Groq/Cerebras/Haiku, code → DeepSeek/Claude, prose → Claude, wit → Grok — without pretending to be them.",
   ].join("\n");
 }

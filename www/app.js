@@ -1,7 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
-import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent } from "./cloud.js";
+import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent, isSpent, clearSpent } from "./cloud.js";
 import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
@@ -98,6 +98,7 @@ function clearProviderKey(field) {
   const prov = PROVIDERS.find((p) => p.field === field);
   if (prov) {
     clearHealth(prov.id);
+    clearSpent(prov.id);
     if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
       delete db.settings.brain_health[prov.id];
     }
@@ -120,6 +121,7 @@ function queueKeyValidate(field) {
     const key = normalizeApiKey(db.settings[field]);
     if (!prov || !key) return;
     clearHealth(prov.id);
+    clearSpent(prov.id);
     if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
       delete db.settings.brain_health[prov.id];
     }
@@ -612,16 +614,20 @@ function setChatAgent(id, silent = false) {
 function tryAgentSwitch(text) {
   const t = String(text || "").trim();
   const m = t.match(
-    /^\s*(?:talk to|switch to|use|ask)\s+(pip|auto|compare|groq|openrouter|cerebras|mistral|gemini|grok|xai|deepseek|openai|chatgpt|desktop)\b\s*$/i,
+    /^\s*(?:talk to|switch to|use|ask)\s+(pip|auto|compare|groq|openrouter|cerebras|mistral|gemini|grok|xai|deepseek|openai|chatgpt|claude|anthropic|haiku|sonnet|desktop)\b\s*$/i,
   );
   if (!m) return null;
   let id = m[1].toLowerCase();
   if (id === "grok") id = "xai";
   if (id === "chatgpt") id = "openai";
+  if (id === "claude" || id === "haiku" || id === "sonnet") id = "anthropic";
   if (id !== "pip" && id !== "auto" && id !== "desktop" && id !== "compare") {
     const keyed = cloudStatus(db.settings).keyed || [];
     if (!keyed.includes(id)) {
       return { ok: false, reply: `No ${agentLabel(id)} key yet. DATA → paste key, then pick ${agentLabel(id)}.` };
+    }
+    if (isSpent(id)) {
+      return { ok: false, reply: `${agentLabel(id)} is maxed (quota/rate limit). Pick another brain or wait a bit.` };
     }
   }
   if (id === "desktop" && !desktopConfigured(db.settings)) {
@@ -633,7 +639,7 @@ function tryAgentSwitch(text) {
     ok: true,
     reply:
       id === "pip"
-        ? "Back with Pip — your crew. Tap the agent chip next to LENS for other brains or COMPARE."
+        ? "Back with Pip — your crew is listening. One brain answers per turn; Pip picks who fits. Tap the chip for COMPARE or a single API."
         : id === "compare"
           ? "COMPARE on — every keyed API answers; one bubble with tabs + overview."
           : id === "auto"
@@ -669,7 +675,7 @@ function agentOptions() {
     { id: "compare", section: "modes" },
   ];
   const apis = [];
-  for (const id of ["groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
+  for (const id of ["anthropic", "groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
     if (keyed.has(id)) apis.push({ id, section: "apis" });
   }
   if (desktopConfigured(db.settings)) apis.push({ id: "desktop", section: "apis" });
@@ -686,6 +692,7 @@ function agentStatFor(id, { keyed, health, missing }) {
     return { cls: "mode", text: id === "compare" ? "ALL" : id === "auto" ? "ROUTE" : "CREW" };
   }
   if (missing || !keyed.has(id)) return { cls: "bad", text: "NO KEY" };
+  if (isSpent(id)) return { cls: "bad", text: "MAXED" };
   const ok = health[id]?.ok;
   if (ok === true) return { cls: "live", text: "LIVE" };
   if (ok === false) return { cls: "bad", text: "FAIL" };
@@ -1195,7 +1202,7 @@ function renderData() {
   const httpLine = `HTTP: ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE — cloud may fail"} · ${diag.platform}`;
 
   const pinModes = ["auto", "compare", "desktop", "lite", "local", "qwen"];
-  const pinKeyed = ["groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].filter((id) =>
+  const pinKeyed = ["anthropic", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].filter((id) =>
     String(s[id] || "").trim(),
   );
   const pinIds = [...pinModes, ...pinKeyed];
@@ -1286,7 +1293,7 @@ function renderData() {
     db.settings.brain_pin = ($("#brain-pin") && $("#brain-pin").value) || db.settings.brain_pin;
     const pinNow = String(db.settings.brain_pin || "auto").toLowerCase();
     if (pinNow === "auto") db.settings.chat_agent = db.settings.chat_agent || "pip";
-    else if (["compare", "desktop", "auto", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].includes(pinNow)) {
+    else if (["compare", "desktop", "auto", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai", "anthropic"].includes(pinNow)) {
       db.settings.chat_agent = pinNow;
     }
     for (const p of PROVIDERS) {
@@ -1294,7 +1301,10 @@ function renderData() {
       if (!el) continue;
       const v = normalizeApiKey(el.value);
       // Blank field = keep existing key (so re-open DATA doesn't wipe).
-      if (v) db.settings[p.field] = v;
+      if (v) {
+        db.settings[p.field] = v;
+        clearSpent(p.id);
+      }
     }
     if (PROVIDERS.some((p) => String(db.settings[p.field] || "").trim()) && privacyOn(db.settings)) {
       setStatus("KEYS SAVED · TAP LEAKY TO USE CLOUD");
@@ -1316,6 +1326,7 @@ function renderData() {
       delete db.settings[`${p.field}_cleared`];
       db.settings[p.field] = v;
       clearHealth(p.id);
+      clearSpent(p.id);
       if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
         delete db.settings.brain_health[p.id];
       }

@@ -12,6 +12,7 @@ import {
   parseCrossAgentIntent,
   privacyOn,
   providerHealth,
+  usableProviders,
 } from "./cloud.js";
 import { desktopChat, desktopConfigured, desktopReachable } from "./desktop.js";
 import { draftVoice } from "./kind.js";
@@ -563,7 +564,8 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
         .slice(0, 4)
         .map((m) => `- ${m.content}`)
         .join("\n");
-    const sysBase = `${pipOrchestratorSystem(operator, settings.humor, settings.honesty, kit)}\nJob: ${job}.`;
+    const roster = usableProviders(settings).map((p) => p.label || p.id);
+    const sysBase = `${pipOrchestratorSystem(operator, settings.humor, settings.honesty, kit, roster)}\nJob: ${job}.`;
     system = [sysBase, voiceExamples, momentLine, context].filter(Boolean).join("\n");
   }
 
@@ -610,7 +612,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
             role: "system",
             content: asSelf
               ? agentSystem(agent === "desktop" ? "desktop" : agent, operator)
-              : pipOrchestratorSystem(operator, settings.humor, settings.honesty, kit),
+              : pipOrchestratorSystem(operator, settings.humor, settings.honesty, kit, usableProviders(settings).map((p) => p.label || p.id)),
           },
           { role: "user", content: userContent },
         ],

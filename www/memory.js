@@ -56,7 +56,7 @@ export function storyBrief(db, limit = 10, minScore = 14) {
 export function chainBrief(db) {
   const health = (db && db.settings && db.settings.brain_health) || {};
   const leaky = String(db?.settings?.privacy_mode || "secure").toLowerCase() === "leaky";
-  const keys = ["groq", "openrouter", "gemini", "cerebras", "mistral", "xai"].filter(
+  const keys = ["anthropic", "groq", "openrouter", "gemini", "cerebras", "mistral", "xai", "deepseek", "openai"].filter(
     (id) => db && db.settings && String(db.settings[id] || "").trim(),
   );
   if (!keys.length) {
