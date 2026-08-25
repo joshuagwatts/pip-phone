@@ -108,6 +108,40 @@ export function orderFor(job, keyedIds, health = {}, pin = "auto", ask = "") {
   return [...live, ...down];
 }
 
+/**
+ * AUTO mode — efficiency first: cheap/fast cascade.
+ * Only bumps specialty when the ask clearly needs it (vision/code).
+ */
+export function orderForEfficient(keyedIds, health = {}, ask = "") {
+  const t = String(ask || "");
+  const speed = ["groq", "cerebras", "anthropic", "openrouter", "mistral", "gemini", "deepseek", "openai", "xai"];
+  let bump = speed;
+  if (VISION_HINT.test(t)) bump = ["gemini", "openai", "anthropic", "openrouter", ...speed];
+  else if (CODE_HINT.test(t)) bump = ["deepseek", "groq", "cerebras", "anthropic", "openrouter", ...speed];
+  else if (WX_HINT.test(t)) bump = ["gemini", "groq", "cerebras", "anthropic", ...speed];
+
+  const head = [];
+  for (const id of bump) {
+    if (keyedIds.includes(id) && !head.includes(id)) head.push(id);
+  }
+  for (const id of keyedIds) {
+    if (!head.includes(id)) head.push(id);
+  }
+  const anyLive = head.some((id) => health[id]?.ok === true);
+  if (!anyLive) return head;
+  const live = head.filter((id) => health[id]?.ok !== false);
+  const down = head.filter((id) => health[id]?.ok === false);
+  return [...live, ...down];
+}
+
+/**
+ * PIP mode — consultant fit: best brain for the circumstance, not the cheapest.
+ * Specialty + job ranking; quality models lead for life/prose/drafts.
+ */
+export function orderForConsultant(keyedIds, health = {}, ask = "", job = "life") {
+  return orderFor(job, keyedIds, health, "auto", ask);
+}
+
 export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto", desktopLive = null, leaky = false) {
   const rows = [];
   const cloudRows = [];

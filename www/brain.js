@@ -511,14 +511,23 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       agent !== "qwen");
 
   let routePin = String(settings?.brain_pin || "auto").toLowerCase();
+  let routeMode = "";
   if (forceCompare || agent === "compare") routePin = "compare";
   else if (agent === "desktop") routePin = "desktop";
   else if (extras.image) routePin = "vision";
   else if (asSelf) routePin = agent;
-  else if (agent === "pip" || agent === "auto") routePin = "auto";
+  else if (agent === "auto") {
+    routePin = "auto";
+    routeMode = "auto";
+  } else if (agent === "pip") {
+    routePin = "auto";
+    routeMode = "pip";
+  }
 
-  const routeSettings = { ...settings, brain_pin: routePin };
+  const routeSettings = { ...settings, brain_pin: routePin, route_mode: routeMode };
   const job = pickJob(askText);
+  const maxTok = extras.image ? 800 : agent === "auto" ? 700 : 1100;
+  const temp = agent === "auto" ? 0.45 : 0.7;
   let context = extras.webContext || "";
   let webUsed = Boolean(extras.webContext);
   if (!context) {
@@ -558,6 +567,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   } else if (agent === "auto") {
     system = [autoSystem(operator), momentLine, context].filter(Boolean).join("\n");
   } else {
+    // Pip — personal consultant among the crew (not Auto).
     const voiceExamples =
       "Voice examples (stay in this register):\n" +
       SHOTS.filter((_, i) => i % 2 === 1)
@@ -599,26 +609,32 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     prior: history,
   };
   try {
-    hit = await routedComplete(routeSettings, messages, "life", 0.7, extras.image ? 800 : 1024, onProgress, job, chatCallbacks);
+    hit = await routedComplete(routeSettings, messages, "life", temp, maxTok, onProgress, job, chatCallbacks);
   } catch (e) {
     errMsg = String(e.message || e);
   }
   if (!hit?.text) {
     try {
+      const fallbackSys = asSelf
+        ? agentSystem(agent === "desktop" ? "desktop" : agent, operator)
+        : agent === "auto"
+          ? autoSystem(operator)
+          : pipOrchestratorSystem(
+              operator,
+              settings.humor,
+              settings.honesty,
+              kit,
+              usableProviders(settings).map((p) => p.label || p.id),
+            );
       hit = await routedComplete(
         routeSettings,
         [
-          {
-            role: "system",
-            content: asSelf
-              ? agentSystem(agent === "desktop" ? "desktop" : agent, operator)
-              : pipOrchestratorSystem(operator, settings.humor, settings.honesty, kit, usableProviders(settings).map((p) => p.label || p.id)),
-          },
+          { role: "system", content: fallbackSys },
           { role: "user", content: userContent },
         ],
         "life",
-        0.55,
-        768,
+        temp,
+        Math.min(maxTok, agent === "auto" ? 512 : 900),
         onProgress,
         job,
         chatCallbacks,

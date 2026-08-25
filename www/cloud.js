@@ -1,4 +1,4 @@
-import { orderFor } from "./command.js";
+import { orderFor, orderForEfficient, orderForConsultant } from "./command.js";
 import { httpPostJson, httpGet } from "./net.js";
 import { agentSystem } from "./crew.js";
 
@@ -799,7 +799,14 @@ export function chatChain(settings, job = "life", ask = "") {
     return order.map((id) => PROVIDERS.find((p) => p.id === id)).filter((p) => p && keyedIds.includes(p.id));
   }
   const effectivePin = pin === "compare" || pin === "all" ? "auto" : pin;
-  const ids = orderFor(job, keyedIds, liveHealth, effectivePin, ask);
+  const mode = String(settings.route_mode || "").toLowerCase();
+  // AUTO = efficient cascade. PIP (default for auto-pin chat) = consultant fit.
+  const ids =
+    mode === "auto"
+      ? orderForEfficient(keyedIds, liveHealth, ask)
+      : mode === "pip"
+        ? orderForConsultant(keyedIds, liveHealth, ask, job)
+        : orderFor(job, keyedIds, liveHealth, effectivePin, ask);
   return ids.map((id) => PROVIDERS.find((p) => p.id === id)).filter(Boolean);
 }
 

@@ -639,11 +639,11 @@ function tryAgentSwitch(text) {
     ok: true,
     reply:
       id === "pip"
-        ? "Back with Pip — your crew is listening. One brain answers per turn; Pip picks who fits. Tap the chip for COMPARE or a single API."
+        ? "Pip on — your personal consultant. Crew listens; one brain underwrites the answer. Fit over speed."
         : id === "compare"
           ? "COMPARE on — every keyed API answers; one bubble with tabs + overview."
           : id === "auto"
-            ? "AUTO on — best keyed brain, light voice, cascade if one fails."
+            ? "AUTO on — efficient cascade. Fast/cheap first, light voice, no Pip theater."
             : `You're with ${meta.label}. ${meta.blurb || "Their voice, not Pip's."}`,
   };
 }
@@ -689,7 +689,10 @@ function agentOptions() {
 
 function agentStatFor(id, { keyed, health, missing }) {
   if (id === "pip" || id === "auto" || id === "compare") {
-    return { cls: "mode", text: id === "compare" ? "ALL" : id === "auto" ? "ROUTE" : "CREW" };
+    return {
+      cls: "mode",
+      text: id === "compare" ? "ALL" : id === "auto" ? "FAST" : "CONSULT",
+    };
   }
   if (missing || !keyed.has(id)) return { cls: "bad", text: "NO KEY" };
   if (isSpent(id)) return { cls: "bad", text: "MAXED" };
