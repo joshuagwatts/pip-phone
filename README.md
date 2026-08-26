@@ -2,6 +2,8 @@
 
 Same HUD on Android, iPhone, Mac, and Windows. OPP, kit, crew voice. Memory stays on that device. Does not submit forms.
 
+**Roofing field tools (WX hail, Super Chat, shingle LENS) now live in [Ground Control](./ground-control/README.md)** — that app is meant to ship as its own GitHub repo `joshuagwatts/ground-control`.
+
 **[Downloads](https://github.com/joshuagwatts/pip-phone/releases/latest)** — `Pip.apk`, `Pip-Windows.exe`, `Pip-Mac.dmg`
 
 Open the new file on the device that already has Pip. It installs over the old one. KIT stays. Do not uninstall first.
