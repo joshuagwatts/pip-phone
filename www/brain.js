@@ -19,6 +19,7 @@ import { draftVoice } from "./kind.js";
 import { typedLinks } from "./digest.js";
 import { pickJob, skipLocalModel } from "./command.js";
 import { liteComplete } from "./piplite.js";
+import { normalizeVisionImages } from "./vision.js";
 
 const QWEN_MLC = [
   "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
@@ -510,11 +511,14 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       agent !== "local" &&
       agent !== "qwen");
 
+  const visionImages = normalizeVisionImages(extras);
+  const hasVision = visionImages.length > 0;
+
   let routePin = String(settings?.brain_pin || "auto").toLowerCase();
   let routeMode = "";
   if (forceCompare || agent === "compare") routePin = "compare";
   else if (agent === "desktop") routePin = "desktop";
-  else if (extras.image) routePin = "vision";
+  else if (hasVision) routePin = "vision";
   else if (asSelf) routePin = agent;
   else if (agent === "auto") {
     routePin = "auto";
@@ -526,7 +530,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
 
   const routeSettings = { ...settings, brain_pin: routePin, route_mode: routeMode };
   const job = pickJob(askText);
-  const maxTok = extras.image ? 800 : agent === "auto" ? 700 : 1100;
+  const maxTok = hasVision ? Math.min(1600, 700 + visionImages.length * 120) : agent === "auto" ? 700 : 1100;
   const temp = agent === "auto" ? 0.45 : 0.7;
   let context = extras.webContext || "";
   let webUsed = Boolean(extras.webContext);
@@ -580,10 +584,13 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   }
 
   const prior = (history || []).filter((m) => m && m.content && m.content !== text).slice(-10);
-  const userContent = extras.image
+  const visionAsk =
+    askText ||
+    (visionImages.length > 1 ? `What's in these ${visionImages.length} images? Be direct.` : "What's in this image? Be direct.");
+  const userContent = hasVision
     ? [
-        { type: "text", text: askText || "What's in this image? Be direct." },
-        { type: "image_url", image_url: { url: String(extras.image) } },
+        { type: "text", text: visionAsk },
+        ...visionImages.map((url) => ({ type: "image_url", image_url: { url } })),
       ]
     : askText;
   const messages = [
@@ -597,8 +604,8 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     { role: "user", content: userContent },
   ];
 
-  if (extras.image) {
-    emit("VISION…");
+  if (hasVision) {
+    emit(visionImages.length > 1 ? `VISION · ${visionImages.length} PHOTOS…` : "VISION…");
   }
 
   let hit = null;
@@ -647,7 +654,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   if (!hit?.text) {
     const live = liveProviderIds(settings);
     const tip = errMsg
-      ? extras.image
+      ? hasVision
         ? `Vision failed (${errMsg}). Need Gemini / OpenAI / OpenRouter key · LEAKY on.`
         : live.length && routePin === "auto"
           ? `Cloud brains failed (${errMsg}). Fix red keys in DATA · or pick another agent next to LENS.`

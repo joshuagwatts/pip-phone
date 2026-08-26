@@ -711,18 +711,53 @@ body.comm #comm { display: flex; }
 .agent-row-stat.mode { color: var(--amber); border-color: var(--line); }
 .chat-attach {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.4rem;
   padding: 0.35rem 0.45rem;
   border-bottom: 1px solid var(--line);
   background: var(--inset);
 }
 .chat-attach[hidden] { display: none !important; }
+.chat-attach-list {
+  display: flex;
+  gap: 0.35rem;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.1rem;
+}
+.chat-attach-item {
+  position: relative;
+  flex: 0 0 auto;
+}
+.chat-attach-item img,
 .chat-attach img {
-  max-height: 72px;
-  max-width: 40%;
+  display: block;
+  width: 72px;
+  height: 72px;
   object-fit: cover;
   border: 1px solid var(--line);
+}
+.chat-attach-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 0;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  line-height: 1;
+  font-size: 10px;
+  background: rgba(5, 8, 5, 0.78);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+.chat-attach-count {
+  flex: 0 0 auto;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
 }
 .chat-attach button {
   font: inherit;
@@ -731,15 +766,23 @@ body.comm #comm { display: flex; }
   border: 1px solid var(--line);
   background: transparent;
   color: var(--muted);
+  flex-shrink: 0;
+}
+.bubble .chat-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
 }
 .bubble .chat-thumb {
   display: block;
-  max-width: 55%;
-  max-height: 140px;
-  margin-top: 0.4rem;
+  max-width: 42%;
+  max-height: 120px;
+  margin-top: 0;
   border: 1px solid var(--line);
   object-fit: cover;
 }
+.bubble .chat-thumbs .chat-thumb { max-width: 31%; max-height: 110px; }
 .compare-bubble .compare-tabs {
   display: flex;
   flex-wrap: wrap;

@@ -51,6 +51,20 @@ export function visionProvidersReady(settings) {
   });
 }
 
+export const MAX_CHAT_PHOTOS = 8;
+
+/** Collect data-URL images from chat extras (single or many). */
+export function normalizeVisionImages(extras = {}) {
+  const out = [];
+  const push = (u) => {
+    const s = String(u || "").trim();
+    if (s && !out.includes(s)) out.push(s);
+  };
+  if (Array.isArray(extras.images)) extras.images.forEach(push);
+  else push(extras.image);
+  return out.slice(0, MAX_CHAT_PHOTOS);
+}
+
 /** Compress image for multimodal APIs (max edge 1280, JPEG). */
 export function fileToDataUrl(file, maxEdge = 1280, quality = 0.72) {
   return new Promise((resolve, reject) => {
@@ -87,12 +101,14 @@ export function fileToDataUrl(file, maxEdge = 1280, quality = 0.72) {
   });
 }
 
-export function pickImageFile({ capture = true } = {}) {
+export function pickImageFiles({ capture = false, multiple = true } = {}) {
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*";
-    if (capture) input.setAttribute("capture", "environment");
+    if (multiple) input.multiple = true;
+    // capture + multiple fights the gallery picker — camera stays single-shot.
+    if (capture && !multiple) input.setAttribute("capture", "environment");
     input.style.display = "none";
     document.body.appendChild(input);
     const cleanup = () => {
@@ -103,10 +119,10 @@ export function pickImageFile({ capture = true } = {}) {
       }
     };
     input.onchange = () => {
-      const file = input.files && input.files[0];
+      const files = Array.from(input.files || []).filter(Boolean);
       cleanup();
-      if (!file) reject(new Error("cancelled"));
-      else resolve(file);
+      if (!files.length) reject(new Error("cancelled"));
+      else resolve(files.slice(0, MAX_CHAT_PHOTOS));
     };
     input.oncancel = () => {
       cleanup();
@@ -114,6 +130,10 @@ export function pickImageFile({ capture = true } = {}) {
     };
     setTimeout(() => input.click(), 0);
   });
+}
+
+export function pickImageFile({ capture = true } = {}) {
+  return pickImageFiles({ capture, multiple: false }).then((files) => files[0]);
 }
 
 async function visionOnce(prov, key, model, prompt, dataUrl) {

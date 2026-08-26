@@ -20,7 +20,7 @@ import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } fr
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
 import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderWxPanels, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, renderRoofDossier, pinDossier, refetchDossier, startWeatherWatch, filterDossier, filterHailRaw, selectStormDate, bindWxLiveControls, bindWxMapExpand, fetchWeatherBundle, paintLiveWeather, renderHourlyTimeline, geocodeAddress, flyToPin, wxLiveControlsHtml, weatherSummaryHtml, collapseHailByDate, setWxPin } from "./wx.js";
-import { pickAndIdentify, detectVisionMode, pickImageFile, fileToDataUrl } from "./vision.js";
+import { pickAndIdentify, detectVisionMode, pickImageFiles, fileToDataUrl, MAX_CHAT_PHOTOS } from "./vision.js";
 import { looksLikeCodeRequest, wantsDesktopCodeUpgrade } from "./command.js";
 import {
   mealSnapshot,
@@ -143,8 +143,8 @@ function queueKeyValidate(field) {
     }
   }, 450);
 }
-/** Pending chat image (data URL) — attach staple or paste. */
-let pendingChatImage = null;
+/** Pending chat photos (data URLs) — staple attach or paste. */
+let pendingChatImages = [];
 let wxState = { lat: null, lon: null, address: "", data: null };
 let wxWatch = null;
 
@@ -2341,35 +2341,82 @@ function markBubbleLeaked(el) {
 }
 
 function clearChatAttach() {
-  pendingChatImage = null;
-  const host = $("#chat-attach");
-  const attachBtn = $("#attach-btn");
-  if (attachBtn) attachBtn.classList.remove("on");
-  if (host) {
-    host.hidden = true;
-    host.innerHTML = "";
-  }
+  pendingChatImages = [];
+  paintChatAttach();
 }
 
-function setChatAttach(dataUrl) {
-  pendingChatImage = dataUrl;
+function paintChatAttach() {
   const host = $("#chat-attach");
   const attachBtn = $("#attach-btn");
-  if (attachBtn) attachBtn.classList.add("on");
+  if (attachBtn) attachBtn.classList.toggle("on", pendingChatImages.length > 0);
   if (!host) return;
+  if (!pendingChatImages.length) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
   host.hidden = false;
-  host.innerHTML = `<img src="${dataUrl}" alt="attach" /><button type="button" id="chat-attach-clear">✕</button>`;
+  const n = pendingChatImages.length;
+  host.innerHTML = `
+    <div class="chat-attach-list">
+      ${pendingChatImages
+        .map(
+          (url, i) => `
+        <div class="chat-attach-item">
+          <img src="${url}" alt="photo ${i + 1}" />
+          <button type="button" class="chat-attach-x" data-idx="${i}" aria-label="Remove photo ${i + 1}">✕</button>
+        </div>`,
+        )
+        .join("")}
+    </div>
+    <span class="chat-attach-count">${n}/${MAX_CHAT_PHOTOS}</span>
+    <button type="button" id="chat-attach-clear" title="Clear all">CLEAR</button>`;
+  host.querySelectorAll(".chat-attach-x").forEach((btn) => {
+    btn.onclick = () => {
+      const i = Number(btn.dataset.idx);
+      if (Number.isFinite(i) && i >= 0) pendingChatImages.splice(i, 1);
+      paintChatAttach();
+    };
+  });
   const clr = $("#chat-attach-clear");
   if (clr) clr.onclick = () => clearChatAttach();
 }
 
+/** Append compressed photo data URLs. Returns how many were added. */
+function addChatAttaches(dataUrls) {
+  const incoming = (Array.isArray(dataUrls) ? dataUrls : [dataUrls]).filter(Boolean);
+  let added = 0;
+  for (const url of incoming) {
+    if (pendingChatImages.length >= MAX_CHAT_PHOTOS) break;
+    pendingChatImages.push(url);
+    added += 1;
+  }
+  paintChatAttach();
+  return added;
+}
+
+function setChatAttach(dataUrl) {
+  addChatAttaches([dataUrl]);
+}
+
 async function attachChatPhoto({ capture = false } = {}) {
   try {
-    const file = await pickImageFile({ capture });
-    const dataUrl = await fileToDataUrl(file, 1280, 0.72);
-    setChatAttach(dataUrl);
+    const room = MAX_CHAT_PHOTOS - pendingChatImages.length;
+    if (room <= 0) {
+      setStatus(`MAX ${MAX_CHAT_PHOTOS} PHOTOS`);
+      return;
+    }
+    const files = await pickImageFiles({ capture, multiple: !capture });
+    const take = files.slice(0, room);
+    const urls = [];
+    for (const file of take) {
+      urls.push(await fileToDataUrl(file, 1280, 0.72));
+    }
+    const added = addChatAttaches(urls);
     document.body.classList.add("comm");
-    setStatus("ATTACHED · ADD TEXT OR SEND");
+    const skipped = files.length - take.length;
+    if (skipped > 0) setStatus(`ATTACHED ${added} · MAX ${MAX_CHAT_PHOTOS}`);
+    else setStatus(added === 1 ? "ATTACHED · ADD TEXT OR SEND" : `ATTACHED ${added} · ADD TEXT OR SEND`);
   } catch (e) {
     if (!/cancelled/i.test(String(e.message || e))) setStatus(String(e.message || e).slice(0, 60).toUpperCase());
   }
@@ -2380,30 +2427,37 @@ let chatBusy = false;
 async function sendChat() {
   const box = $("#input");
   const text = (box.value || "").trim();
-  const image = pendingChatImage;
-  if ((!text && !image) || chatBusy) return;
+  const images = pendingChatImages.slice();
+  const hasPhoto = images.length > 0;
+  if ((!text && !hasPhoto) || chatBusy) return;
   chatBusy = true;
   const sendBtn = $("#send");
   if (sendBtn) sendBtn.disabled = true;
   box.value = "";
-  const userLine = image ? (text ? `${text}\n[photo attached]` : "[photo attached]") : text;
-  db.chat.push({ role: "user", content: userLine, image: Boolean(image) });
+  const photoLine =
+    images.length > 1 ? `[${images.length} photos attached]` : hasPhoto ? "[photo attached]" : "";
+  const userLine = hasPhoto ? (text ? `${text}\n${photoLine}` : photoLine) : text;
+  db.chat.push({ role: "user", content: userLine, image: hasPhoto, photos: images.length });
   markChatUser();
   const userBubble = addLog("user", userLine);
-  if (image) {
-    // Keep a thumb in the bubble for clarity.
+  if (hasPhoto) {
     try {
-      const img = document.createElement("img");
-      img.src = image;
-      img.className = "chat-thumb";
-      img.alt = "attached";
-      userBubble.querySelector(".body")?.appendChild(img);
+      const row = document.createElement("div");
+      row.className = "chat-thumbs";
+      for (const url of images) {
+        const img = document.createElement("img");
+        img.src = url;
+        img.className = "chat-thumb";
+        img.alt = "attached";
+        row.appendChild(img);
+      }
+      userBubble.querySelector(".body")?.appendChild(row);
     } catch {
       /* ignore */
     }
   }
   clearChatAttach();
-  captureMoment(db, text || "photo");
+  captureMoment(db, text || (images.length > 1 ? "photos" : "photo"));
   persist();
   setStatus(pipStatus());
 
@@ -2419,7 +2473,7 @@ async function sendChat() {
   }
 
   try {
-  if (!image) {
+  if (!hasPhoto) {
   const switchHit = tryAgentSwitch(text);
   if (switchHit) {
     addLog("pip", switchHit.reply, { agent: "pip" });
@@ -2430,7 +2484,7 @@ async function sendChat() {
   }
   }
 
-  if (!image && chatAgent() !== "compare" && String(db.settings.brain_pin || "").toLowerCase() !== "compare") {
+  if (!hasPhoto && chatAgent() !== "compare" && String(db.settings.brain_pin || "").toLowerCase() !== "compare") {
   const relay = parseAgentRelay(text);
   if (relay) {
     setStatus("RELAY…");
@@ -2506,7 +2560,7 @@ async function sendChat() {
   }
   }
 
-  if (!image && /^\s*(test\s+(brain|keys?|cloud)|\/test)\s*$/i.test(text)) {
+  if (!hasPhoto && /^\s*(test\s+(brain|keys?|cloud)|\/test)\s*$/i.test(text)) {
     setStatus("CHECKING KEYS…");
     try {
       const hits = await validateKeyed(db.settings);
@@ -2533,7 +2587,7 @@ async function sendChat() {
     return;
   }
 
-  if (!image) {
+  if (!hasPhoto) {
   const themeHit = tryThemeCommand(text, db.settings);
   if (themeHit) {
     persist();
@@ -2612,7 +2666,7 @@ async function sendChat() {
 
   try {
   const isCompare =
-    !image &&
+    !hasPhoto &&
     (chatAgent() === "compare" ||
       String(db.settings.brain_pin || "").toLowerCase() === "compare" ||
       /^\s*(compare|ask all|all brains?)\s*[:\-]?\s*/i.test(text));
@@ -2628,12 +2682,12 @@ async function sendChat() {
   const out = await chat(
     db.settings,
     db.chat,
-    text || (image ? "What's in this image?" : ""),
+    text || (hasPhoto ? (images.length > 1 ? `What's in these ${images.length} images?` : "What's in this image?") : ""),
     (msg) => setStatus(msg),
     db.kit,
     db,
     {
-      ...(image ? { image } : {}),
+      ...(hasPhoto ? { image: images[0], images } : {}),
       onComparePartial: compareLive
         ? (row, allRows, meta) => updateCompareLog(compareLive, allRows, meta, row)
         : undefined,
@@ -2791,21 +2845,36 @@ function boot() {
       const inputEl = $("#input");
       if (inputEl) {
         inputEl.addEventListener("paste", (e) => {
-          const items = e.clipboardData && e.clipboardData.items;
-          if (!items) return;
-          for (const item of items) {
-            if (!/^image\//.test(item.type)) continue;
-            e.preventDefault();
-            const file = item.getAsFile();
-            if (!file) return;
-            fileToDataUrl(file, 1280, 0.72)
-              .then((url) => {
-                setChatAttach(url);
-                setStatus("ATTACHED · ADD TEXT OR SEND");
-              })
-              .catch(() => setStatus("PASTE IMAGE FAILED"));
-            break;
+          const clip = e.clipboardData;
+          if (!clip) return;
+          const files = [];
+          if (clip.files && clip.files.length) {
+            for (const f of clip.files) {
+              if (f && /^image\//.test(f.type)) files.push(f);
+            }
           }
+          if (!files.length && clip.items) {
+            for (const item of clip.items) {
+              if (!item || !/^image\//.test(item.type)) continue;
+              const file = item.getAsFile();
+              if (file) files.push(file);
+            }
+          }
+          if (!files.length) return;
+          e.preventDefault();
+          (async () => {
+            const room = MAX_CHAT_PHOTOS - pendingChatImages.length;
+            if (room <= 0) {
+              setStatus(`MAX ${MAX_CHAT_PHOTOS} PHOTOS`);
+              return;
+            }
+            const urls = [];
+            for (const file of files.slice(0, room)) {
+              urls.push(await fileToDataUrl(file, 1280, 0.72));
+            }
+            const added = addChatAttaches(urls);
+            setStatus(added === 1 ? "ATTACHED · ADD TEXT OR SEND" : `ATTACHED ${added} · ADD TEXT OR SEND`);
+          })().catch(() => setStatus("PASTE IMAGE FAILED"));
         });
       }
       const lensBtn = $("#lens-btn");
