@@ -587,6 +587,9 @@ function renderChatLog() {
   const log = $("#log");
   if (!log) return;
   log.innerHTML = "";
+  if (!db.chat.length) {
+    addLog("pip", "RADIO is Super Chat. Paste keys in KEYS. COMPARE tabs every keyed API. LENS will not name a shingle until it knows.");
+  }
   for (const m of db.chat.slice(-80)) {
     if (m.compare) {
       const st = beginCompareLog(m.compare);
@@ -630,7 +633,7 @@ function renderLens() {
       <div class="actions">
         <button type="button" id="lens-snap" class="primary">SNAP</button>
         <button type="button" id="lens-gallery">GALLERY</button>
-        <button type="button" id="lens-read" class="primary" ${L.photos.length ? "" : "disabled"}>READ LENS</button>
+        <button type="button" id="lens-read" ${L.photos.length ? 'class="primary"' : "disabled"}>READ LENS</button>
         <button type="button" id="lens-clear">CLEAR</button>
       </div>
       <div class="lens-strip" id="lens-strip">${L.photos

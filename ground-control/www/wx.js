@@ -7,7 +7,7 @@ let map = null;
 let pin = null;
 let hailLayer = null;
 let layers = {};
-let activeLayer = "dark";
+let activeLayer = "osm";
 
 const WMO = {
   0: "Clear",
@@ -937,8 +937,8 @@ export function bindRadarScrubber(root = document) {
 }
 
 const BASE_LAYERS = [
-  { id: "osm", label: "Street", kind: "base", url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
-  { id: "dark", label: "Night", kind: "base", url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", attribution: "© CARTO" },
+  { id: "osm", label: "Street", kind: "base", url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OSM" },
+  { id: "dark", label: "Night", kind: "base", url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
   { id: "sat", label: "Sat", kind: "base", url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attribution: "© Esri" },
 ];
 
@@ -2243,8 +2243,9 @@ export function mountMap(container, config, { onTap, center }) {
       if (layer.id === "precip") overlays.radar = tile;
     } else layers[layer.id] = tile;
   }
-  (layers.dark || layers[activeLayer] || layers.osm || Object.values(layers)[0])?.addTo(map);
-  if (layers.dark) activeLayer = "dark";
+  const startId = layers[activeLayer] ? activeLayer : layers.osm ? "osm" : Object.keys(layers)[0];
+  layers[startId]?.addTo(map);
+  if (startId) activeLayer = startId;
   activeWxProduct = overlays.precip ? "precip" : WX_PRODUCTS.find((id) => overlays[id]) || "precip";
   activeOverlays = new Set([activeWxProduct]);
   applyOverlays();

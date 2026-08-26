@@ -74,6 +74,7 @@ button {
   letter-spacing: 0.12em;
 }
 button.primary { background: var(--phos); color: var(--black); border-color: var(--phos); }
+button:disabled { opacity: 0.38; cursor: not-allowed; }
 button.on { border-color: var(--phos); color: var(--phos); }
 #view { flex: 1; overflow: auto; padding: 0.9rem 0.9rem calc(var(--tab-h) + var(--safe-bottom) + 3.6rem); min-height: 0; }
 body.vibe-tab #view { padding: 0; overflow: hidden; }
