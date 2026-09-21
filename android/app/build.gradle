@@ -16,20 +16,12 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
-    signingConfigs {
-        pip {
-            storeFile file("pip-debug.keystore")
-            storePassword "pipdebug"
-            keyAlias "pip"
-            keyPassword "pipdebug"
-        }
-    }
     buildTypes {
         debug {
-            signingConfig signingConfigs.pip
+            // Default debug key (~/.android/debug.keystore, auto-generated).
+            // No shared keystore is committed to this repo — see SECURITY.md.
         }
         release {
-            signingConfig signingConfigs.pip
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

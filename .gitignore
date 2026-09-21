@@ -9,7 +9,6 @@ local.properties
 .env.*
 *.jks
 *.keystore
-!android/app/pip-debug.keystore
 .DS_Store
 Thumbs.db
 .idea/
