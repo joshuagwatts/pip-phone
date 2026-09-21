@@ -1,5 +1,6 @@
 import { httpLanGet, httpLanPostJson } from "./net.js";
 import { vpnSystemActive, openProtonVpn } from "./proton.js";
+import { getSecret, setSecret } from "./secrets.js";
 
 const PORT = 7420;
 const FALLBACK_SUBNETS = ["192.168.1", "192.168.0", "10.0.0", "192.168.50", "192.168.2", "10.0.1"];
@@ -27,7 +28,13 @@ function baseUrl(settings) {
 }
 
 function token(settings) {
-  return String(settings.desktop_token || "").trim();
+  // Desktop pairing token lives in the secrets vault, never in settings.
+  return getSecret("desktop_token").trim();
+}
+
+/** Synchronous vault read for the desktop pairing token ("" when unpaired). */
+export function desktopToken() {
+  return getSecret("desktop_token").trim();
 }
 
 export function desktopConfigured(settings) {
@@ -159,7 +166,7 @@ export async function ensureDesktopSession(settings) {
   const out = await desktopLogin(settings, "");
   const next = String(out.token || "").trim();
   if (!next) throw new Error("desktop login returned no token");
-  settings.desktop_token = next;
+  await setSecret("desktop_token", next);
   settings.desktop_paired = true;
   return next;
 }
@@ -226,8 +233,8 @@ export async function desktopChat(settings, text, timeoutMs = 60000) {
     const status = e.status || 0;
     if (status === 401 || /401|login required/i.test(msg)) {
       const out = await desktopLogin(settings, "");
-      settings.desktop_token = String(out.token || "").trim();
-      if (!settings.desktop_token) throw new Error("re-login failed — tap CONNECT again");
+      await setSecret("desktop_token", String(out.token || "").trim());
+      if (!getSecret("desktop_token")) throw new Error("re-login failed — tap CONNECT again");
       raw = await postChat(settings, text, timeoutMs);
     } else {
       throw e;
@@ -337,9 +344,9 @@ export async function connectDesktop(settings, onProgress) {
   }
 
   settings.desktop_url = hit.url;
-  settings.desktop_token = hit.token;
+  await setSecret("desktop_token", hit.token);
   settings.desktop_paired = true;
-  settings.desktop_password = "";
+  // desktop_password is never persisted — re-pairing requires re-entering it.
   settings.desktop_live = true;
 
   if (onProgress) onProgress("TESTING GPU…");

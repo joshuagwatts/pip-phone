@@ -275,12 +275,23 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
 }
 
 /**
- * Brain chain — cloud keys speak as Pip whenever present.
- * Keys present: cloud hierarchy first (LIVE preferred) → desktop → error (Lite only if pinned)
- * No keys: desktop → Pip Lite guide
- * SECURE still limits OPP/CODE/vision scrapes; chat with pasted keys is intentional.
- * Pin compare/all: parallel tabs. Pin lite/local: Guide only.
+ * Brain chain.
+ * SECURE: desktop → on-device (Qwen/local) → Pip Lite. Cloud NEVER runs
+ * silently — only when the user explicitly picks a cloud brain (WHO ANSWERS
+ * pick or "talk to X" counts as per-turn consent; the LEAKED marker is the
+ * persistent indicator).
+ * LEAKY: cloud keys speak as Pip whenever present — cloud hierarchy first
+ * (LIVE preferred) → desktop → Lite.
+ * No keys: desktop → Pip Lite guide.
+ * SECURE also limits OPP/CODE/vision/web/geo scrapes; a picked cloud brain
+ * answering chat is intentional.
+ * Pin compare/all: parallel tabs — in SECURE compare asks for explicit
+ * consent every turn (see app.js sendChat). Pin lite/local: Guide only.
  */
+
+// brain_pin values that never imply cloud consent — anything else is an
+// explicit cloud provider pick.
+const EXPLICIT_LOCAL = new Set(["auto", "pip", "lite", "local", "qwen", "desktop", "compare", "all"]);
 async function routedComplete(settings, messages, lane, temperature, maxTokens, onProgress, job = "life", callbacks = {}) {
   track(onProgress);
   const errors = [];
@@ -310,6 +321,11 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const tryCloud = async () => {
     if (!hasKeys) throw new Error("no cloud keys on phone — paste them in DATA");
     if (!isChat && !cloud.leaky) throw new Error("SECURE blocks cloud for OPP/CODE — flip LEAKY");
+    // SECURE: pasted keys are not standing consent for chat. Only an explicit
+    // cloud-brain pick (WHO ANSWERS / "talk to X") may use them.
+    if (isChat && secure && EXPLICIT_LOCAL.has(pin)) {
+      throw new Error("SECURE keeps chat local — pick a cloud brain in WHO ANSWERS for a cloud turn");
+    }
     const chainList = isChat ? chatChain(settings, routeJob) : null;
     if (isChat && !(chainList || []).length) {
       throw new Error("no keyed chat brains — paste keys in DATA or unpin");
@@ -386,15 +402,22 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       steps.push(["compare", tryCompare]);
     } else if (pin === "desktop") {
       steps.push(["desktop", tryDesktop]);
-      if (hasKeys) steps.push(["cloud", tryCloud]);
+      if (secure) {
+        // SECURE: desktop pin stays local — on-device before Lite, never cloud.
+        if (allowQwen) steps.push(["local", tryQwen]);
+      } else if (hasKeys) {
+        steps.push(["cloud", tryCloud]);
+      }
       steps.push(["lite", tryLite]);
     } else if (pin !== "auto") {
       // Pinned cloud agent — that API only. No desktop/other-API steal.
       steps.push(["cloud", tryCloud]);
     } else if (hasKeys) {
       if (secure) {
+        // SECURE auto: local cascade only — desktop → on-device → Lite.
+        // Cloud needs an explicit brain pick (per-turn consent).
         if (desktopConfigured(settings)) steps.push(["desktop", tryDesktop]);
-        steps.push(["cloud", tryCloud]);
+        if (allowQwen) steps.push(["local", tryQwen]);
       } else {
         steps.push(["cloud", tryCloud]);
         if (desktopConfigured(settings)) steps.push(["desktop", tryDesktop]);
@@ -411,7 +434,6 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
     steps.push(["cloud", tryCloud]);
     steps.push(["desktop", tryDesktop]);
   }
-  void allowQwen;
   void liveCloud;
 
   const seen = new Set();
@@ -484,6 +506,8 @@ async function complete(messages, temperature = 0.7, maxTokens = 400, settings =
 export async function chat(settings, history, text, onProgress, kit, db, extras = {}) {
   track(onProgress);
   const operator = settings.operator || "Joshua";
+  const secure = privacyOn(settings);
+  const compareOff = Boolean(extras.compareOff);
   let momentLine = "";
   if (db) {
     try {
@@ -515,8 +539,9 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   const hasVision = visionImages.length > 0;
 
   let routePin = String(settings?.brain_pin || "auto").toLowerCase();
+  if (compareOff && routePin === "compare") routePin = "auto";
   let routeMode = "";
-  if (forceCompare || agent === "compare") routePin = "compare";
+  if (!compareOff && (forceCompare || agent === "compare")) routePin = "compare";
   else if (agent === "desktop") routePin = "desktop";
   else if (hasVision) routePin = "vision";
   else if (asSelf) routePin = agent;
@@ -537,7 +562,8 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   if (!context) {
     try {
       const { webBrief, wantsWeb } = await import("./web.js");
-      if (wantsWeb(askText)) {
+      // SECURE: no silent web lookups — the query leaves the device.
+      if (wantsWeb(askText) && !secure) {
         emit("WEB…");
         context = await Promise.race([
           webBrief(askText),

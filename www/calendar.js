@@ -146,7 +146,8 @@ export async function syncEventsFromDesktop(settings, db) {
   if (!settings.desktop_paired || !settings.desktop_url) return false;
   try {
     const { httpLanGet } = await import("./net.js");
-    const tok = String(settings.desktop_token || "").trim();
+    const { desktopToken } = await import("./desktop.js");
+    const tok = desktopToken();
     const base = settings.desktop_url.replace(/\/+$/, "");
     const rows = await httpLanGet(`${base}/api/events`, 12000, tok ? { Cookie: `pip_gate=${tok}` } : {});
     if (Array.isArray(rows)) {
@@ -171,7 +172,8 @@ export async function pushEventToDesktop(settings, event) {
   if (!settings.desktop_paired || !settings.desktop_url) return;
   try {
     const { httpLanPostJson } = await import("./net.js");
-    const tok = String(settings.desktop_token || "").trim();
+    const { desktopToken } = await import("./desktop.js");
+    const tok = desktopToken();
     const base = settings.desktop_url.replace(/\/+$/, "");
     await httpLanPostJson(
       `${base}/api/events`,

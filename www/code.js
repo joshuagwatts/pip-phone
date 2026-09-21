@@ -1,5 +1,5 @@
 /** CODE tab orchestration — local overlay agent + desktop phone/www upgrade when paired. */
-import { desktopConfigured } from "./desktop.js";
+import { desktopConfigured, desktopToken } from "./desktop.js";
 import { httpLanSSE } from "./net.js";
 import { streamPhoneCode } from "./codeagent.js";
 import { readFile, writeFile, clearOverlays, clearCodeChat, loadCodeChat } from "./codefs.js";
@@ -34,7 +34,7 @@ export async function* streamCodeApply(settings, { prompt, openPath, phoneUpgrad
 }
 
 async function* streamDesktopPhoneUpgrade(settings, prompt, openPath) {
-  const tok = String(settings.desktop_token || "").trim();
+  const tok = desktopToken();
   const base = String(settings.desktop_url || "").replace(/\/+$/, "");
   const headers = tok ? { Cookie: `pip_gate=${tok}` } : {};
   for await (const ev of httpLanSSE(

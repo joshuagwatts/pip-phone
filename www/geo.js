@@ -1,5 +1,7 @@
 /** Device location — GPS, IP, kit city. Never silently stick on Denver. */
 
+import { privacyOn } from "./cloud.js";
+
 export const DENVER = { lat: 39.7392, lon: -104.9903, city: "Denver" };
 
 export function isDenverFallback(lat, lon) {
@@ -83,6 +85,9 @@ async function cityFix(name, httpGet) {
 }
 
 export async function locateDevice(settings, httpGet, { force = false } = {}) {
+  // SECURE: no network geolocation — saved coords or on-device GPS only.
+  // IP/city lookups phone home to third parties, so they stay off.
+  const secure = privacyOn(settings);
   const savedLat = parseFloat(settings?.lat);
   const savedLon = parseFloat(settings?.lon);
   if (!force && validCoord(savedLat, savedLon) && !isDenverFallback(savedLat, savedLon)) {
@@ -92,10 +97,10 @@ export async function locateDevice(settings, httpGet, { force = false } = {}) {
   if (gps && validCoord(gps.lat, gps.lon) && !isDenverFallback(gps.lat, gps.lon)) {
     return persistCoords(settings, gps);
   }
-  const ip = await ipFix(httpGet);
+  const ip = secure ? null : await ipFix(httpGet);
   if (ip) return persistCoords(settings, ip);
   const place = settings?.city || "";
-  const named = await cityFix(place, httpGet);
+  const named = secure ? null : await cityFix(place, httpGet);
   if (named && !isDenverFallback(named.lat, named.lon)) return persistCoords(settings, named);
   if (gps && validCoord(gps.lat, gps.lon)) return persistCoords(settings, gps);
   return persistCoords(settings, { ...DENVER, source: "fallback" });

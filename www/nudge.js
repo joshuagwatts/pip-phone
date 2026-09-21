@@ -1,6 +1,6 @@
 /** Phone Pip chat reminders — desktop-style check-ins, on-device. No popups. */
 
-import { desktopConfigured } from "./desktop.js";
+import { desktopConfigured, desktopToken } from "./desktop.js";
 import { httpLanPostJson } from "./net.js";
 import { snapshot as motivSnap } from "./motivation.js";
 import { maybeLocalWakeLine } from "./morning.js";
@@ -163,7 +163,7 @@ export async function pingNudge(settings, db) {
   markPresence();
   if (desktopConfigured(settings)) {
     try {
-      const tok = String(settings.desktop_token || "").trim();
+      const tok = desktopToken();
       const base = String(settings.desktop_url || "").replace(/\/+$/, "");
       const out = await httpLanPostJson(
         `${base}/api/presence`,

@@ -1,13 +1,44 @@
-/** Pip phosphor lock — hold the thumbprint. Matches Pip theme; no Android system sheet. */
+/** PIP lock — real authentication, Pip-themed.
+ *
+ * Uses @capgo/capacitor-native-biometric on native (system biometric sheet,
+ * with device PIN/pattern fallback via useFallback). On web / devices with no
+ * biometric hardware, falls back to the secrets-vault passphrase (setup or
+ * verify). The old 1400ms press-and-hold timer is gone — it never
+ * authenticated anything.
+ */
+
+import { load as loadStore } from "./store.js";
+import {
+  secretsNeedAuth,
+  isNativePlatform,
+  isWebVaultSetup,
+  setupWebVault,
+  unlockWebVault,
+} from "./secrets.js";
 
 let unlocked = false;
 let unlocking = null;
 
-const HOLD_MS = 1400;
-const TICK_MS = 40;
+function nativeBio() {
+  try {
+    const cap = window.Capacitor;
+    if (!cap || !isNativePlatform()) return null;
+    return (cap.Plugins && cap.Plugins.NativeBiometric) || null;
+  } catch {
+    return null;
+  }
+}
 
-export function biometricAvailable() {
-  return true;
+/** Real capability check — was `return true` unconditionally (theater). */
+export async function biometricAvailable() {
+  const bio = nativeBio();
+  if (!bio) return false;
+  try {
+    const out = await bio.isAvailable();
+    return Boolean(out && out.isAvailable);
+  } catch {
+    return false;
+  }
 }
 
 export function isUnlocked() {
@@ -57,9 +88,8 @@ async function haptic(kind = "tick") {
 function ensureScanDom() {
   let el = document.getElementById("bio-scan");
   if (el) {
-    // Refresh print glyph after app upgrades (DOM may be stale from prior session).
     const print = el.querySelector(".bio-print");
-    if (print && print.dataset.v !== "3") {
+    if (print && print.dataset.v !== "4") {
       el.remove();
       el = null;
     }
@@ -71,14 +101,13 @@ function ensureScanDom() {
   el.hidden = true;
   el.innerHTML = `
     <div class="bio-scan-inner">
-      <div class="bio-ring" id="bio-ring" role="button" tabindex="0" aria-label="Hold to unlock Pip">
+      <div class="bio-ring" id="bio-ring" role="button" tabindex="0" aria-label="Authenticate to unlock Pip">
         <svg class="bio-progress" viewBox="0 0 100 100" aria-hidden="true">
           <circle class="bio-progress-track" cx="50" cy="50" r="46" />
           <circle class="bio-progress-fill" id="bio-progress" cx="50" cy="50" r="46" />
         </svg>
         <div class="bio-ring-glow"></div>
-        <svg class="bio-print" data-v="3" viewBox="0 0 24 24" aria-hidden="true">
-          <!-- Lucide-style fingerprint — readable thumbprint ridges -->
+        <svg class="bio-print" data-v="4" viewBox="0 0 24 24" aria-hidden="true">
           <g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/>
             <path d="M14 13.12c0 2.38 0 6.38-1 8.88"/>
@@ -94,7 +123,7 @@ function ensureScanDom() {
         <div class="bio-scanline"></div>
       </div>
       <p class="bio-title">PIP</p>
-      <p class="bio-sub" id="bio-sub">Press & hold the print</p>
+      <p class="bio-sub" id="bio-sub">Tap the print to authenticate</p>
       <button type="button" class="bio-btn" id="bio-retry" hidden>TRY AGAIN</button>
     </div>`;
   document.body.appendChild(el);
@@ -120,7 +149,7 @@ export function showScanUI(msg) {
   el.hidden = false;
   el.classList.remove("ok", "bad", "holding");
   el.classList.add("on");
-  setSub(msg || "Press & hold the print");
+  setSub(msg || "Tap the print to authenticate");
   setProgress(0);
   const retry = el.querySelector("#bio-retry");
   if (retry) retry.hidden = true;
@@ -146,121 +175,194 @@ export function hideScanUI(ok) {
   else finish();
 }
 
-function waitForHoldScan() {
+/** Real auth: system biometric sheet. useFallback lets the OS offer PIN/pattern. */
+async function verifyNative() {
+  const bio = nativeBio();
+  if (!bio) throw new Error("Biometric plugin unavailable.");
+  const avail = await bio.isAvailable().catch(() => null);
+  if (!avail || !avail.isAvailable) {
+    throw new Error("No biometric hardware on this device.");
+  }
+  await bio.verifyIdentity({
+    reason: "Unlock PIP and its secrets vault",
+    title: "PIP",
+    subtitle: "Authenticate",
+    description: "Confirm it's you to unlock PIP.",
+    useFallback: true,
+    maxAttempts: 5,
+  });
+  return true;
+}
+
+function waitForTapScan() {
   const el = ensureScanDom();
   const ring = el.querySelector("#bio-ring");
   const retry = el.querySelector("#bio-retry");
-
-  return new Promise((resolve) => {
-    let holding = false;
-    let started = 0;
-    let timer = 0;
-    let lastBuzz = 0;
-
-    const clear = () => {
-      holding = false;
-      if (timer) {
-        clearInterval(timer);
-        timer = 0;
-      }
-      el.classList.remove("holding");
-    };
-
+  return new Promise((resolve, reject) => {
+    let done = false;
     const fail = async (msg) => {
-      clear();
+      if (done) return;
       setProgress(0);
       el.classList.add("bad");
-      setSub(msg || "Hold until the ring fills");
+      setSub(msg || "Authentication failed");
       await haptic("bad");
       if (retry) {
         retry.hidden = false;
         retry.onclick = () => {
           el.classList.remove("bad");
-          setSub("Press & hold the print");
           retry.hidden = true;
           setProgress(0);
+          setSub("Tap the print to authenticate");
+          attempt();
         };
       }
     };
-
-    const succeed = async () => {
-      clear();
-      setProgress(1);
-      setSub("Welcome back");
-      await haptic("ok");
-      unlocked = true;
-      hideScanUI(true);
-      resolve(true);
-    };
-
-    const tick = () => {
-      if (!holding) return;
-      const p = (Date.now() - started) / HOLD_MS;
-      setProgress(p);
-      if (Date.now() - lastBuzz >= 160) {
-        lastBuzz = Date.now();
-        haptic("tick");
-      }
-      if (p >= 1) succeed();
-    };
-
-    const startHold = async (ev) => {
-      if (ev) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        try {
-          if (ev.pointerId != null) ring.setPointerCapture(ev.pointerId);
-        } catch {
-          /* ignore */
+    const attempt = async () => {
+      if (done) return;
+      try {
+        setSub("Waiting for system prompt…");
+        await haptic("start");
+        await verifyNative();
+        done = true;
+        setProgress(1);
+        setSub("Welcome back");
+        await haptic("ok");
+        unlocked = true;
+        hideScanUI(true);
+        resolve(true);
+      } catch (e) {
+        const msg = String(e?.message || e || "");
+        if (/cancel|dismiss|user/i.test(msg) && !/fail/i.test(msg)) {
+          // User backed out of the system sheet — stay locked, no error noise.
+          done = true;
+          hideScanUI(false);
+          reject(new Error("Unlock cancelled."));
+          return;
         }
+        fail(msg.slice(0, 90) || "Authentication failed");
       }
-      if (holding || unlocked) return;
-      holding = true;
-      started = Date.now();
-      lastBuzz = 0;
-      el.classList.remove("bad");
-      el.classList.add("holding");
-      setSub("Scanning… keep holding");
-      if (retry) retry.hidden = true;
-      await haptic("start");
-      timer = setInterval(tick, TICK_MS);
     };
-
-    const endHold = (ev) => {
+    ring.style.touchAction = "manipulation";
+    ring.onpointerdown = (ev) => {
       if (ev) {
         ev.preventDefault();
         ev.stopPropagation();
       }
-      if (!holding) return;
-      const held = Date.now() - started;
-      clear();
-      if (held < HOLD_MS) {
-        setProgress(0);
-        fail("Hold longer — keep your thumb on the print");
-      }
+      if (!done) attempt();
     };
-
-    ring.style.touchAction = "none";
-    ring.onpointerdown = startHold;
-    ring.onpointerup = endHold;
-    ring.onpointerleave = endHold;
-    ring.onpointercancel = endHold;
-    ring.oncontextmenu = (e) => e.preventDefault();
     ring.onkeydown = (e) => {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        startHold(e);
+        if (!done) attempt();
       }
     };
-    ring.onkeyup = (e) => {
-      if (e.key === "Enter" || e.key === " ") endHold(e);
-    };
+    ring.oncontextmenu = (e) => e.preventDefault();
   });
 }
 
+/* ---------- vault-passphrase fallback (web / no biometric hardware) ---------- */
+
+function ensurePassDom(setup) {
+  let el = document.getElementById("bio-pass");
+  if (el) el.remove();
+  el = document.createElement("div");
+  el.id = "bio-pass";
+  el.className = "bio-scan";
+  el.innerHTML = `
+    <div class="bio-scan-inner">
+      <p class="bio-title">PIP</p>
+      <p class="bio-sub" id="bio-pass-sub">${
+        setup
+          ? "Set a vault passphrase — it encrypts your API keys on this device. Minimum 8 characters. Don't lose it: PIP can't recover it."
+          : "Enter your vault passphrase"
+      }</p>
+      <input id="bio-pass-in" type="password" autocomplete="new-password" placeholder="passphrase"
+        style="font-size:16px;padding:10px 12px;margin:8px 0;width:min(78vw,320px);text-align:center;" />
+      ${
+        setup
+          ? `<input id="bio-pass-in2" type="password" autocomplete="new-password" placeholder="repeat passphrase"
+        style="font-size:16px;padding:10px 12px;margin:0 0 8px;width:min(78vw,320px);text-align:center;" />`
+          : ""
+      }
+      <p class="bio-sub" id="bio-pass-err" style="color:#ff7a7a;min-height:1.2em;"></p>
+      <button type="button" class="bio-btn" id="bio-pass-go">${setup ? "CREATE VAULT" : "UNLOCK"}</button>
+    </div>`;
+  document.body.appendChild(el);
+  document.body.classList.add("bio-locked");
+  return el;
+}
+
+function vaultPassphraseFlow() {
+  const setup = !isWebVaultSetup();
+  const el = ensurePassDom(setup);
+  const err = el.querySelector("#bio-pass-err");
+  const go = el.querySelector("#bio-pass-go");
+  const input = el.querySelector("#bio-pass-in");
+  return new Promise((resolve, reject) => {
+    const done = (ok) => {
+      el.remove();
+      document.body.classList.remove("bio-locked");
+      if (ok) {
+        unlocked = true;
+        resolve(true);
+      } else {
+        reject(new Error("Unlock cancelled."));
+      }
+    };
+    const submit = async () => {
+      err.textContent = "";
+      try {
+        if (setup) {
+          const p1 = input.value;
+          const p2 = el.querySelector("#bio-pass-in2").value;
+          if (p1 !== p2) throw new Error("Passphrases don't match.");
+          await setupWebVault(p1);
+        } else {
+          await unlockWebVault(input.value);
+        }
+        await haptic("ok");
+        done(true);
+      } catch (e) {
+        await haptic("bad");
+        err.textContent = String(e?.message || e || "Failed").slice(0, 120);
+      }
+    };
+    go.onclick = submit;
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") submit();
+      if (e.key === "Escape") done(false);
+    };
+    setTimeout(() => input.focus(), 60);
+  });
+}
+
+/* ---------- public API ---------- */
+
+/** Real unlock: system biometric sheet on native, vault passphrase otherwise. */
 export async function biometricUnlock() {
-  showScanUI("Press & hold the print");
-  await waitForHoldScan();
+  const bio = nativeBio();
+  let canNative = false;
+  if (bio) {
+    try {
+      const out = await bio.isAvailable();
+      canNative = Boolean(out && out.isAvailable);
+    } catch {
+      canNative = false;
+    }
+  }
+  if (canNative) {
+    showScanUI("Tap the print to authenticate");
+    try {
+      await waitForTapScan();
+    } catch (e) {
+      hideScanUI(false);
+      throw e;
+    }
+    unlocked = true;
+    return true;
+  }
+  // No biometric hardware (or web): vault passphrase. Never the press-and-hold timer.
+  await vaultPassphraseFlow();
   unlocked = true;
   return true;
 }
@@ -272,23 +374,40 @@ export async function requireAppUnlock(settings, { force = false } = {}) {
   }
   if (unlocked && !force) return true;
   if (unlocking) return unlocking;
-
   unlocking = (async () => {
     try {
-      showScanUI("Press & hold the print");
-      await waitForHoldScan();
+      await biometricUnlock();
       unlocked = true;
       return true;
     } finally {
       unlocking = null;
     }
   })();
-
   return unlocking;
 }
 
+/**
+ * Boot gate — called from boot.js BEFORE initSecrets() loads keys into memory.
+ * Requires auth only when there are secrets worth protecting and the user
+ * hasn't disabled the lock. Respects the biometric_lock toggle (default on).
+ */
+export async function requireBootAuth() {
+  if (!secretsNeedAuth()) return true;
+  let settings = {};
+  try {
+    settings = loadStore().settings || {};
+  } catch {
+    settings = {};
+  }
+  if (settings.biometric_lock === false) return true;
+  if (unlocked) return true;
+  await biometricUnlock();
+  unlocked = true;
+  return true;
+}
+
 export async function guardSecrets(settings, fn) {
-  if (!settings.biometric_lock) return fn();
+  if (!settings?.biometric_lock) return fn();
   if (unlocked) return fn();
   await requireAppUnlock(settings, { force: true });
   return fn();

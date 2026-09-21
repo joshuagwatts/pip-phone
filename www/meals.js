@@ -1,7 +1,7 @@
 /** Meal plan on phone — local store, syncs from paired desktop. */
 
 import { httpLanGet } from "./net.js";
-import { desktopConfigured } from "./desktop.js";
+import { desktopConfigured, desktopToken } from "./desktop.js";
 import { uid } from "./store.js";
 
 const SLOTS = ["breakfast", "lunch", "dinner", "snack"];
@@ -350,7 +350,7 @@ export function tryMealCommand(text, db) {
 export async function syncMealsFromDesktop(settings, db) {
   if (!desktopConfigured(settings)) return mealSnapshot(db);
   try {
-    const tok = String(settings.desktop_token || "").trim();
+    const tok = desktopToken();
     const base = String(settings.desktop_url || "").replace(/\/+$/, "");
     const headers =
       tok && tok !== "loopback"

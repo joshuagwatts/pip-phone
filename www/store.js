@@ -1,5 +1,21 @@
 const KEY = "pip.phone.v1";
 
+/** Secret fields must never persist in this blob (see www/secrets.js). Kept
+ *  local here to avoid an import cycle (secrets.js imports this module). */
+const SECRET_FIELDS = [
+  "groq",
+  "openrouter",
+  "cerebras",
+  "mistral",
+  "gemini",
+  "xai",
+  "deepseek",
+  "openai",
+  "anthropic",
+  "desktop_token",
+  "desktop_password",
+];
+
 export const KIT_LABELS = [
   ["full_name", "Full name"],
   ["email", "Email"],
@@ -32,21 +48,15 @@ function blank() {
       operator: "Joshua",
       humor: 89,
       honesty: 90,
-      privacy_mode: "leaky",
+      privacy_mode: "secure",
+      privacy_choice_v1: false,
+      keysConfigured: false,
       brain_pin: "auto",
       chat_agent: "pip",
-      groq: "",
-      openrouter: "",
-      cerebras: "",
-      mistral: "",
-      gemini: "",
-      xai: "",
-      deepseek: "",
-      openai: "",
-      anthropic: "",
+      // NOTE: API keys + desktop_token live in the secrets vault (www/secrets.js),
+      // never in this blob. desktop_password is never persisted at all —
+      // re-pairing requires re-entering it.
       desktop_url: "",
-      desktop_token: "",
-      desktop_password: "",
       desktop_paired: false,
       desktop_live: null,
       biometric_lock: true,
@@ -71,11 +81,20 @@ function blank() {
 export function load() {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || "null");
-    if (!raw || typeof raw !== "object") return blank();
+    if (!raw || typeof raw !== "object") {
+      // Fresh install: default SECURE, choice recorded — no prompt needed.
+      const fresh = blank();
+      fresh.settings.privacy_choice_v1 = true;
+      return fresh;
+    }
     const base = blank();
     const settings = { ...base.settings, ...(raw.settings || {}) };
     if (!String(settings.operator || "").trim()) settings.operator = "Joshua";
-    return {
+    // Defensive: strip any secret fields that survived in an old blob.
+    for (const f of SECRET_FIELDS) {
+      if (f in settings) delete settings[f];
+    }
+    const out = {
       ...base,
       ...raw,
       kit: { ...base.kit, ...(raw.kit || {}) },
@@ -88,12 +107,28 @@ export function load() {
       opp_sync_at: raw.opp_sync_at || "",
       opp_digest: raw.opp_digest || null,
     };
+    // Existing install that never made an explicit privacy choice:
+    // app.js shows the one-time chooser. Transient — not persisted.
+    if (!settings.privacy_choice_v1) out.needsPrivacyChoice = true;
+    return out;
   } catch {
     return blank();
   }
 }
 
 export function save(data) {
+  // Belt-and-braces: secrets live in the vault (www/secrets.js), never here.
+  // Strip them on every write so no code path can persist key material.
+  try {
+    const s = data && data.settings;
+    if (s) {
+      for (const f of SECRET_FIELDS) {
+        if (f in s) delete s[f];
+      }
+    }
+  } catch {
+    /* never let scrubbing break a save */
+  }
   localStorage.setItem(KEY, JSON.stringify(data));
 }
 

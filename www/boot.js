@@ -1,4 +1,11 @@
-/** Boot loader — serves localStorage code overlays via fetch hook before app starts. */
+/** Boot loader — serves localStorage code overlays via fetch hook, then:
+ *   1. biometric gate (real auth) when secrets exist worth protecting
+ *   2. secrets vault init (migrates legacy plaintext keys -> secure storage)
+ *   3. app.js
+ */
+
+import { requireBootAuth } from "./biometric.js";
+import { initSecrets } from "./secrets.js";
 
 const KEY = "pip.phone.code.v1";
 
@@ -44,13 +51,33 @@ if (files["style.css"]) {
   el.textContent = files["style.css"];
 }
 
-await import("./app.js").catch((err) => {
+function bootFail(msg, hint) {
   const root = document.getElementById("view");
-  const msg = String(err?.message || err || "boot failed");
+  const h = String(hint || "Try UPDATE PIP from GitHub, or clear app storage.");
   if (root) {
-    root.innerHTML = `<h3>PIP BOOT ERROR</h3><p class="muted">${msg.replace(/</g, "&lt;")}</p><p class="muted">Try UPDATE PIP from GitHub, or clear app storage.</p>`;
+    root.innerHTML = `<h3>PIP BOOT ERROR</h3><p class="muted">${String(msg).replace(/</g, "&lt;")}</p><p class="muted">${h.replace(/</g, "&lt;")}</p>`;
   }
   const st = document.getElementById("status");
   if (st) st.textContent = "BOOT FAILED";
+}
+
+try {
+  // 1. Auth gate — real biometric / vault passphrase — before secrets load.
+  await requireBootAuth().catch((e) => {
+    throw new Error(`Unlock needed: ${e?.message || e}`);
+  });
+  // 2. Secrets vault — migrates legacy plaintext keys, loads memory map.
+  await initSecrets().catch((e) => {
+    throw new Error(`Secrets vault failed: ${e?.message || e}`);
+  });
+} catch (e) {
+  console.error(e);
+  bootFail(e?.message || e, "PIP stays locked until you authenticate.");
+  throw e;
+}
+
+await import("./app.js").catch((err) => {
+  const msg = String(err?.message || err || "boot failed");
+  bootFail(msg);
   console.error(err);
 });

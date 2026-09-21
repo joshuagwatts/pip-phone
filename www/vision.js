@@ -2,6 +2,7 @@
 
 import { PROVIDERS, privacyOn, markHealth } from "./cloud.js";
 import { httpPostJson } from "./net.js";
+import { getSecret } from "./secrets.js";
 
 const VISION_ORDER = ["gemini", "openrouter"];
 
@@ -41,7 +42,8 @@ Don't Panic. Say when unsure.`,
 };
 
 function providerKey(settings, prov) {
-  return String(settings[prov.field] || "").trim();
+  // Keys live in the secrets vault (www/secrets.js), never in settings.
+  return String(getSecret(prov.field) || "").trim();
 }
 
 export function visionProvidersReady(settings) {

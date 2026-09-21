@@ -1,6 +1,7 @@
 import { orderFor, orderForEfficient, orderForConsultant } from "./command.js";
 import { httpPostJson, httpGet } from "./net.js";
 import { agentSystem } from "./crew.js";
+import { getSecret } from "./secrets.js";
 
 /** @type {Array<{id:string, label:string, field:string, base:string, life:string, boost:string, fishy?:boolean, headers?:Record<string,string>}>} */
 export const PROVIDERS = [
@@ -222,7 +223,9 @@ export function keyHint(settings, prov) {
   return `${key.slice(0, 4)}…${key.slice(-4)}`;
 }
 export function privacyOn(settings) {
-  const mode = String(settings.privacy_mode || "leaky").toLowerCase();
+  // Default SECURE. Fresh installs get "secure" from store.js blank(); the
+  // fallback here only covers blobs that predate the field entirely.
+  const mode = String(settings.privacy_mode || "secure").toLowerCase();
   return mode !== "leaky" && mode !== "leak" && mode !== "0" && mode !== "false" && mode !== "off";
 }
 
@@ -231,7 +234,9 @@ export function brainPin(settings) {
 }
 
 function providerKey(settings, prov) {
-  return normalizeApiKey(settings[prov.field]);
+  // Keys live in the secrets vault (www/secrets.js), never in settings.
+  // Synchronous read from the in-memory Map — no async refactor needed.
+  return normalizeApiKey(getSecret(prov.field));
 }
 
 /** Strip paste cruft — Bearer prefix, quotes, whitespace. */

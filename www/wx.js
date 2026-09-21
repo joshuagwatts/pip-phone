@@ -1,6 +1,6 @@
 /** WX map + storm dossier — runs on phone standalone (public APIs) or via paired desktop. */
 import { httpGet, httpLanGet, httpLanPostJson } from "./net.js";
-import { desktopConfigured } from "./desktop.js";
+import { desktopConfigured, desktopToken } from "./desktop.js";
 import { locateDevice } from "./geo.js";
 
 let map = null;
@@ -79,7 +79,7 @@ function zillowUrl(address) {
 async function api(path, opts = {}) {
   const settings = opts.settings;
   if (desktopConfigured(settings)) {
-    const tok = String(settings.desktop_token || "").trim();
+    const tok = desktopToken();
     const base = String(settings.desktop_url || "").replace(/\/+$/, "");
     const headers = tok ? { Cookie: `pip_gate=${tok}` } : {};
     if (opts.method === "POST") {

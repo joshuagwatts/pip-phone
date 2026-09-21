@@ -1,5 +1,5 @@
 /** Opportunity desk — search, fit scoring, desktop sync, chat commands. */
-import { desktopConfigured } from "./desktop.js";
+import { desktopConfigured, desktopToken } from "./desktop.js";
 import { httpLanGet, httpLanPostJson } from "./net.js";
 import { classify, labelOf } from "./kind.js";
 import { hunt as localHunt, scrapeUrl, newOpp, suggestAnswers } from "./opp.js";
@@ -48,7 +48,7 @@ const SCRAPE_CMD = /\b(?:scrape|read|add|open)\b/i;
 const DRAFT_CMD = /\b(?:draft|fill|complete)\s+(?:this|my|the)?\s*(?:application|form|opp)?/i;
 
 function lanHeaders(settings) {
-  const tok = String(settings.desktop_token || "").trim();
+  const tok = desktopToken();
   return tok ? { Cookie: `pip_gate=${tok}` } : {};
 }
 

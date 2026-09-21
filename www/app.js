@@ -2,10 +2,11 @@ import { load, save, KIT_LABELS } from "./store.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
 import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent, isSpent, clearSpent } from "./cloud.js";
-import { desktopConfigured, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
+import { desktopConfigured, desktopToken, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
 import { biometricAvailable, guardSecrets, requireAppUnlock } from "./biometric.js";
+import { getSecret, setSecret, clearSecret, hasSecrets } from "./secrets.js";
 import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } from "./opp.js";
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
@@ -93,12 +94,13 @@ function paintKeyRows() {
   }
 }
 
-/** Wipe a pasted API key from memory — block desktop from refilling until user pastes again. */
-function clearProviderKey(field) {
+/** Wipe a pasted API key from the vault — block desktop from refilling until user pastes again. */
+async function clearProviderKey(field) {
   if (!field) return;
   clearTimeout(keyCheckTimers[field]);
-  db.settings[field] = "";
+  await clearSecret(field);
   db.settings[`${field}_cleared`] = Date.now();
+  db.settings.keysConfigured = hasSecrets();
   const prov = PROVIDERS.find((p) => p.field === field);
   if (prov) {
     clearHealth(prov.id);
@@ -122,7 +124,7 @@ function queueKeyValidate(field) {
   clearTimeout(keyCheckTimers[field]);
   keyCheckTimers[field] = setTimeout(async () => {
     const prov = PROVIDERS.find((p) => p.field === field);
-    const key = normalizeApiKey(db.settings[field]);
+    const key = getSecret(field);
     if (!prov || !key) return;
     clearHealth(prov.id);
     clearSpent(prov.id);
@@ -132,7 +134,7 @@ function queueKeyValidate(field) {
     paintBrainStrip();
     paintKeyRows();
     try {
-      db.settings[field] = key;
+      await setSecret(field, key);
       await validateKeyed(db.settings, { only: prov.id });
       db.settings.brain_health = providerHealth();
       persist();
@@ -1232,7 +1234,7 @@ function renderData() {
   const keyRows = PROVIDERS.map((p) => {
     const info = keyTag(s, p, health[p.id]);
     const hint = keyHint(s, p);
-    const has = Boolean(normalizeApiKey(s[p.field]));
+    const has = Boolean(getSecret(p.field));
     const get = p.keyUrl
       ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener noreferrer">GET KEY</a>`
       : "";
@@ -1247,13 +1249,13 @@ function renderData() {
     </div>`;
   }).join("");
 
-  const keyedNow = PROVIDERS.filter((p) => normalizeApiKey(s[p.field])).map((p) => p.label.toUpperCase());
+  const keyedNow = PROVIDERS.filter((p) => getSecret(p.field)).map((p) => p.label.toUpperCase());
   const diag = httpDiag();
   const httpLine = `HTTP: ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE — cloud may fail"} · ${diag.platform}`;
 
   const pinModes = ["auto", "compare", "desktop", "lite", "local", "qwen"];
   const pinKeyed = ["anthropic", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].filter((id) =>
-    String(s[id] || "").trim(),
+    getSecret(id),
   );
   const pinIds = [...pinModes, ...pinKeyed];
   if ((s.brain_pin || "auto") && !pinIds.includes(s.brain_pin)) pinIds.push(s.brain_pin);
@@ -1316,7 +1318,7 @@ function renderData() {
       </select>
     </div>
     ${securePosture
-      ? `<p class="muted">SECURE: OPP/vision scrapes limited · chat still uses pasted keys when present · desktop if no keys.</p>`
+      ? `<p class="muted">SECURE: chat stays on this phone + your desktop unless you pick a cloud brain · OPP/CODE/vision/web/geo stay local.</p>`
       : `<p class="muted">LEAKY: cloud hierarchy speaks as Pip first · desktop only if PIN=desktop or no keys.</p>`}
     <div class="key-list">${keyRows}</div>
 
@@ -1336,7 +1338,7 @@ function renderData() {
 
   paintBrainStrip();
 
-  const grabSettings = () => {
+  const grabSettings = async () => {
     db.settings.operator = $("#set-op").value.trim();
     db.settings.humor = Number($("#set-humor").value);
     db.settings.honesty = Number($("#set-honesty").value);
@@ -1352,12 +1354,14 @@ function renderData() {
       const v = normalizeApiKey(el.value);
       // Blank field = keep existing key (so re-open DATA doesn't wipe).
       if (v) {
-        db.settings[p.field] = v;
+        await setSecret(p.field, v);
+        delete db.settings[`${p.field}_cleared`];
         clearSpent(p.id);
       }
     }
-    if (PROVIDERS.some((p) => String(db.settings[p.field] || "").trim()) && privacyOn(db.settings)) {
-      setStatus("KEYS SAVED · TAP LEAKY TO USE CLOUD");
+    db.settings.keysConfigured = hasSecrets();
+    if (PROVIDERS.some((p) => getSecret(p.field)) && privacyOn(db.settings)) {
+      setStatus("KEYS SAVED · SECURE: CLOUD ONLY WHEN YOU PICK A CLOUD AGENT");
     }
     db.settings.desktop_url = normalizeUrl($("#set-durl").value.trim());
     if ($("#set-durl")) $("#set-durl").value = db.settings.desktop_url;
@@ -1366,15 +1370,16 @@ function renderData() {
     persist();
   };
 
-  // Save API keys as you type — don't wait for SAVE / biometric.
+  // Save API keys as you type — into the secrets vault, never the settings blob.
   for (const p of PROVIDERS) {
     const el = $(`#set-${p.field}`);
     if (!el) continue;
-    el.addEventListener("input", () => {
+    el.addEventListener("input", async () => {
       const v = normalizeApiKey(el.value);
       if (!v) return;
       delete db.settings[`${p.field}_cleared`];
-      db.settings[p.field] = v;
+      await setSecret(p.field, v);
+      db.settings.keysConfigured = hasSecrets();
       clearHealth(p.id);
       clearSpent(p.id);
       if (db.settings.brain_health && typeof db.settings.brain_health === "object") {
@@ -1382,8 +1387,8 @@ function renderData() {
       }
       persist();
       const mem = $("#keys-memory");
-      const names = PROVIDERS.filter((x) => String(db.settings[x.field] || "").trim()).map((x) => x.label.toUpperCase());
-      if (mem) mem.textContent = names.length ? `IN MEMORY: ${names.join(" · ")}` : "NO KEYS IN MEMORY — paste below";
+      const names = PROVIDERS.filter((x) => getSecret(x.field)).map((x) => x.label.toUpperCase());
+      if (mem) mem.textContent = names.length ? `IN VAULT: ${names.join(" · ")}` : "NO KEYS IN VAULT — paste below";
       renderPrivacy();
       paintBrainStrip();
       queueKeyValidate(p.field);
@@ -1401,7 +1406,7 @@ function renderData() {
   };
 
   const runConnect = async () => {
-    grabSettings();
+    await grabSettings();
     setStatus("CONNECTING…");
     setDeskMsg("Connecting…", "key");
     try {
@@ -1453,8 +1458,7 @@ function renderData() {
   }
 
     $("#desk-clear").onclick = () => {
-    db.settings.desktop_token = "";
-    db.settings.desktop_password = "";
+    clearSecret("desktop_token").catch(() => {});
     db.settings.desktop_paired = false;
     db.settings.desktop_live = null;
     persist();
@@ -1486,7 +1490,7 @@ function renderData() {
   biometricAvailable().then(() => {
     const lockP = $("#bio-help");
     if (lockP) {
-      lockP.textContent = "Press & hold the phosphor print until the ring fills. Pip-themed lock — no Android popup.";
+      lockP.textContent = "System biometric (or vault passphrase on web) guards your keys. Tap the print — the OS sheet does the real check.";
     }
   }).catch(() => {});
 
@@ -1501,8 +1505,8 @@ function renderData() {
   const saveBtn = $("#data-save");
   if (saveBtn) {
     saveBtn.onclick = () => {
-      guardSecrets(db.settings, () => {
-        grabSettings();
+      guardSecrets(db.settings, async () => {
+        await grabSettings();
         setStatus("SAVED");
         updateBrainChip();
         paintBrainStrip();
@@ -1531,7 +1535,7 @@ function renderData() {
   const keysSyncBtn = $("#keys-sync");
   if (keysSyncBtn) {
     keysSyncBtn.onclick = async () => {
-      grabSettings();
+      await grabSettings();
       setStatus("SYNCING KEYS…");
       try {
         const out = await pullCloudKeys(db.settings, { replace: true });
@@ -2424,6 +2428,68 @@ async function attachChatPhoto({ capture = false } = {}) {
 
 let chatBusy = false;
 
+/**
+ * Blocking Pip-styled overlay. buttons: [{id, label, primary}].
+ * Resolves with the tapped button's id. No backdrop dismiss — explicit tap only.
+ */
+function pipOverlay({ kicker, title, body, buttons }) {
+  return new Promise((resolve) => {
+    const ov = document.createElement("div");
+    ov.style.cssText =
+      "position:fixed;inset:0;z-index:20000;display:flex;align-items:center;justify-content:center;" +
+      "background:rgba(1,6,3,.95);padding:26px;";
+    const btns = (buttons || [])
+      .map((b, i) => {
+        const primary = b.primary
+          ? "background:#123f22;border-color:#3f9e58;color:#eaffef;"
+          : "background:transparent;color:#9fd3aa;";
+        return `<button type="button" data-i="${i}" style="flex:1;padding:13px 10px;border:1px solid #2f6b3a;` +
+          `border-radius:8px;font-size:14px;letter-spacing:1px;${primary}">${esc(b.label)}</button>`;
+      })
+      .join("");
+    ov.innerHTML =
+      `<div style="width:100%;max-width:430px;border:1px solid #2f6b3a;border-radius:12px;padding:22px;` +
+      `background:#03130a;color:#c9f2d4;box-shadow:0 0 40px rgba(63,158,88,.25);">` +
+      `<div style="font-size:11px;letter-spacing:3px;color:#7fd08a;">${esc(kicker || "")}</div>` +
+      `<div style="font-size:19px;margin:8px 0 10px;color:#eaffef;">${esc(title || "")}</div>` +
+      `<div style="font-size:14px;line-height:1.6;color:#b9dcc2;">${body || ""}</div>` +
+      `<div style="display:flex;gap:10px;margin-top:18px;">${btns}</div></div>`;
+    ov.querySelectorAll("button").forEach((btn) => {
+      btn.onclick = () => {
+        const pick = (buttons || [])[Number(btn.getAttribute("data-i"))] || {};
+        ov.remove();
+        resolve(pick.id || "");
+      };
+    });
+    document.body.appendChild(ov);
+  });
+}
+
+/** One-time privacy chooser for installs that predate the SECURE default. */
+function maybePrivacyChoice() {
+  if (!db.needsPrivacyChoice) return Promise.resolve();
+  return pipOverlay({
+    kicker: "PRIVACY · YOUR CALL",
+    title: "How should Pip handle your words?",
+    body:
+      "<b style=\"color:#eaffef;\">SECURE</b> (recommended): chat stays on this phone and your desktop. " +
+      "Cloud brains answer only when you pick one.<br><br>" +
+      "<b style=\"color:#eaffef;\">LEAKY</b>: your pasted API keys speak as Pip automatically, like before. " +
+      "You can flip this anytime with the SECURE chip up top.",
+    buttons: [
+      { id: "secure", label: "SECURE", primary: true },
+      { id: "leaky", label: "LEAKY" },
+    ],
+  }).then((choice) => {
+    db.settings.privacy_mode = choice === "leaky" ? "leaky" : "secure";
+    db.settings.privacy_choice_v1 = true;
+    db.needsPrivacyChoice = false;
+    persist();
+    renderPrivacy();
+    setStatus(db.settings.privacy_mode === "leaky" ? "LEAKY // AS BEFORE" : "SECURE // LOCAL FIRST");
+  });
+}
+
 async function sendChat() {
   const box = $("#input");
   const text = (box.value || "").trim();
@@ -2597,7 +2663,7 @@ async function sendChat() {
     renderPrivacy();
     if (desktopConfigured(db.settings) && themeHit.ok) {
       try {
-        const tok = String(db.settings.desktop_token || "").trim();
+        const tok = desktopToken();
         const base = db.settings.desktop_url.replace(/\/+$/, "");
         await httpLanPostJson(`${base}/api/theme`, tok ? { Cookie: `pip_gate=${tok}` } : {}, { accent: themeHit.name }, 8000);
       } catch {
@@ -2665,11 +2731,33 @@ async function sendChat() {
   }
 
   try {
-  const isCompare =
+  let isCompare =
     !hasPhoto &&
     (chatAgent() === "compare" ||
       String(db.settings.brain_pin || "").toLowerCase() === "compare" ||
       /^\s*(compare|ask all|all brains?)\s*[:\-]?\s*/i.test(text));
+  let compareOff = false;
+  if (isCompare && privacyOn(db.settings)) {
+    // SECURE: compare fans one turn out to every keyed cloud API — nothing
+    // pre-approved. Explicit confirm each time, or keep it local.
+    const provs = compareProviders(db.settings, providerHealth());
+    const choice = await pipOverlay({
+      kicker: "COMPARE · EXPLICIT CONSENT",
+      title: "Ask every cloud brain?",
+      body:
+        `SECURE mode: compare sends this one turn to <b style="color:#eaffef;">${provs.length || "your keyed"}</b> ` +
+        "cloud APIs at once. Confirm each time — or keep it on this phone + desktop.",
+      buttons: [
+        { id: "yes", label: "ASK THEM ALL", primary: true },
+        { id: "no", label: "KEEP IT LOCAL" },
+      ],
+    });
+    if (choice !== "yes") {
+      isCompare = false;
+      compareOff = true;
+      setStatus("COMPARE OFF · STAYED LOCAL");
+    }
+  }
   let compareLive = null;
   if (isCompare) {
     const provs = compareProviders(db.settings, providerHealth());
@@ -2688,6 +2776,7 @@ async function sendChat() {
     db,
     {
       ...(hasPhoto ? { image: images[0], images } : {}),
+      compareOff,
       onComparePartial: compareLive
         ? (row, allRows, meta) => updateCompareLog(compareLive, allRows, meta, row)
         : undefined,
@@ -2834,6 +2923,7 @@ function boot() {
         privacyTog.onclick = () => {
           const secure = privacyOn(db.settings);
           db.settings.privacy_mode = secure ? "leaky" : "secure";
+          db.settings.privacy_choice_v1 = true;
           persist();
           renderPrivacy();
           setStatus(secure ? "LEAKY // MASTER BRAIN · LIVE KEYS FIRST" : "SECURE // DESKTOP FIRST · CLOUD = FALLBACK");
@@ -2992,9 +3082,10 @@ function boot() {
     };
 
     requireAppUnlock(db.settings)
+      .then(() => maybePrivacyChoice())
       .then(() => startUi())
       .catch(() => {
-        /* stay locked — only a completed hold unlocks */
+        /* stay locked */
       });
   } catch (e) {
     const msg = String(e.message || e);

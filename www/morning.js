@@ -1,5 +1,5 @@
 /** Morning wake + briefing — mirrors desktop Pip; syncs when paired. */
-import { desktopConfigured } from "./desktop.js";
+import { desktopConfigured, desktopToken } from "./desktop.js";
 import { httpLanGet, httpLanPostJson } from "./net.js";
 
 export const MORNING_STEPS = [
@@ -32,7 +32,7 @@ function lan(settings) {
 }
 
 function headers(settings) {
-  const tok = String(settings.desktop_token || "").trim();
+  const tok = desktopToken();
   return tok ? { Cookie: `pip_gate=${tok}` } : {};
 }
 

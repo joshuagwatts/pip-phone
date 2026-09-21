@@ -27,6 +27,29 @@ local subnet only — so the phone can reach the desktop server on LAN. It does
 not disable any firewall profile or reclassify networks. Pairing still requires
 the desktop password; empty-password auth is rejected.
 
+## Secrets handling (phone app, round 2 — 2026-09-21)
+
+- **API keys and the desktop pairing token live in the secrets vault**
+  (`www/secrets.js`), never in the persisted settings blob. Native builds use
+  `@aparajita/capacitor-secure-storage` (Android Keystore / iOS Keychain);
+  web builds use WebCrypto AES-GCM with a PBKDF2 passphrase (never plaintext).
+- **First run migrates** any legacy plaintext keys out of localStorage, then
+  wipes them. After migration, `pip.phone.v1` contains no key material.
+- **`desktop_password` is never persisted anywhere.** If the desktop session
+  expires, re-pair and re-enter the password — there is no silent re-mint.
+- **Boot gate:** `www/boot.js` runs `requireBootAuth()` (real OS biometric via
+  `@capgo/capacitor-native-biometric`, vault-passphrase fallback on web)
+  before the vault loads. The old press-and-hold "lock" was theater and is gone.
+- **Privacy default is SECURE** for new installs. SECURE chat runs
+  desktop → on-device → Pip Lite; cloud APIs answer only when explicitly picked
+  (per-turn consent, LEAKED marker persists). Compare asks for explicit consent
+  every turn. OPP/CODE/vision/web/geo stay local in SECURE. Existing installs
+  get a one-time SECURE-vs-LEAKY chooser — never silently flipped.
+- **Desktop side:** the desktop server keeps its own keys in env vars or
+  `data/keys.env` (git-ignored, never committed). It serves them to a paired
+  phone over `/api/phone/cloud-keys` (LAN only, token-authenticated); the phone
+  writes them straight into its vault.
+
 ## Reporting
 
 Found a security issue in PIP? Open a GitHub issue or contact the repo owner
