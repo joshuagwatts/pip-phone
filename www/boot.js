@@ -1,11 +1,13 @@
 /** Boot loader — serves localStorage code overlays via fetch hook, then:
  *   1. biometric gate (real auth) when secrets exist worth protecting
  *   2. secrets vault init (migrates legacy plaintext keys -> secure storage)
- *   3. app.js
+ *   3. memory engine init (DEK from vault, decrypt store, migrate moments)
+ *   4. app.js
  */
 
 import { requireBootAuth } from "./biometric.js";
 import { initSecrets } from "./secrets.js";
+import { initMemoryEngine } from "./memory-engine.js";
 
 const KEY = "pip.phone.code.v1";
 
@@ -69,6 +71,12 @@ try {
   // 2. Secrets vault — migrates legacy plaintext keys, loads memory map.
   await initSecrets().catch((e) => {
     throw new Error(`Secrets vault failed: ${e?.message || e}`);
+  });
+  // 3. Memory engine — DEK from the vault, decrypt store, migrate old moments.
+  //    Fails boot loudly on crypto failure: an unencrypted engine would
+  //    silently break the security promise.
+  await initMemoryEngine().catch((e) => {
+    throw new Error(`Memory engine failed: ${e?.message || e}`);
   });
 } catch (e) {
   console.error(e);

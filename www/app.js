@@ -16,7 +16,8 @@ import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
 import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
 import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThemeRequest } from "./theme.js";
-import { captureMoment, topMoments, rememberReply } from "./memory.js";
+import { capture as captureMemory, getTier as getMemoryTier, rememberNow } from "./memory-engine.js";
+import { renderMemoryTab } from "./memory-ui.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
@@ -197,6 +198,7 @@ function render() {
   }
   else if (tab === "wx") renderWx();
   else if (tab === "meals") renderMeals();
+  else if (tab === "memory") renderMemoryTab({ db, setStatus, rerender: () => render() });
   else renderOpp();
 }
 
@@ -891,7 +893,13 @@ function renderToday() {
   const wxLine = wx?.ok
     ? `${wx.city || ""} // ${Math.round(wx.temp_f)}F // ${wx.label || ""}`
     : "";
-  const moments = topMoments(db, 5);
+  const moments = (() => {
+    try {
+      return getMemoryTier("durable").slice(0, 5);
+    } catch {
+      return [];
+    }
+  })();
   root.innerHTML = `
     <div class="today-wrap">
       <div class="today-morning">
@@ -2500,6 +2508,28 @@ async function sendChat() {
   const sendBtn = $("#send");
   if (sendBtn) sendBtn.disabled = true;
   box.value = "";
+  // /remember — explicit "remember this": straight to durable memory, no chat turn.
+  const remMatch = text.match(/^\/remember(?:\s+([\s\S]*))?$/i);
+  if (remMatch && !hasPhoto) {
+    chatBusy = false;
+    if (sendBtn) sendBtn.disabled = true;
+    const said = (remMatch[1] || "").trim();
+    let what = said;
+    if (!what) {
+      const lastUser = [...db.chat].reverse().find((m) => m && m.role === "user" && String(m.content || "").trim().length >= 20);
+      what = lastUser ? String(lastUser.content) : "";
+    }
+    try {
+      const entry = what ? await rememberNow(what) : null;
+      addLog("pip", entry ? "Remembered — that's in long-term now." : "Nothing to remember yet — tell me something first, or type /remember followed by it.");
+      if (entry) setStatus("MEMORY · remembered long-term");
+    } catch (e) {
+      addLog("pip", `Couldn't store that: ${String((e && e.message) || e).slice(0, 100)}`);
+    }
+    persist();
+    if (sendBtn) sendBtn.disabled = false;
+    return;
+  }
   const photoLine =
     images.length > 1 ? `[${images.length} photos attached]` : hasPhoto ? "[photo attached]" : "";
   const userLine = hasPhoto ? (text ? `${text}\n${photoLine}` : photoLine) : text;
@@ -2523,7 +2553,7 @@ async function sendChat() {
     }
   }
   clearChatAttach();
-  captureMoment(db, text || (images.length > 1 ? "photos" : "photo"));
+  try { captureMemory(text || (images.length > 1 ? "photos" : "photo")); } catch { /* memory optional */ }
   persist();
   setStatus(pipStatus());
 
@@ -2600,7 +2630,7 @@ async function sendChat() {
         agent: speaker,
         leaked: true,
       });
-      rememberReply(db, reply);
+      try { captureMemory(reply, { role: "pip" }); } catch { /* memory optional */ }
       persist();
       addLog("pip", reply, {
         brain: out.provider,
@@ -2809,7 +2839,7 @@ async function sendChat() {
         addCompareLog(compare, { leaked, tokens });
       }
       persist();
-      rememberReply(db, reply);
+      try { captureMemory(reply, { role: "pip" }); } catch { /* memory optional */ }
       setStatus(`COMPARE · ${compare.filter((c) => c.ok).length}/${compare.length}`);
       // One-shot listen: addressed agent answers the speaker (CANCEL stops). No loop.
       await maybeCrewHandoff(text, compare);
@@ -2821,7 +2851,7 @@ async function sendChat() {
         agent: agent || "pip",
         leaked,
       });
-      rememberReply(db, reply);
+      try { captureMemory(reply, { role: "pip" }); } catch { /* memory optional */ }
       persist();
       addLog("pip", reply, {
         brain: provider || activeBrain().label,
@@ -2895,6 +2925,11 @@ function boot() {
       } catch {
         /* background sync optional */
       }
+      // Phase 1: run a missed nightly distillation once at boot (the 5-min
+      // keepalive tick in background.js also calls maybeDistill).
+      import("./memory-distill.js")
+        .then(({ maybeDistill }) => maybeDistill(db, { setStatus }).catch(() => {}))
+        .catch(() => {});
       if (desktopConfigured(db.settings)) {
         fetchOppDigest(db.settings, db).then(() => { if (tab === "opp") render(); }).catch(() => {});
       }

@@ -275,6 +275,33 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
 }
 
 /**
+ * Local-only completion for trusted background jobs (nightly distillation).
+ * Desktop Ollama -> on-device Qwen. NEVER cloud — throws when no local model
+ * is reachable so callers queue the job instead of leaking. Exported for
+ * memory-distill.js.
+ */
+export async function localOnlyComplete(settings, messages, temperature = 0.7, maxTokens = 500) {
+  if (desktopConfigured(settings)) {
+    try {
+      const reach = await desktopReachable(settings, 2500);
+      if (reach.ok) {
+        const user = [...messages].reverse().find((m) => m.role === "user");
+        const out = await desktopChat(settings, String((user && user.content) || ""), 90000);
+        const cleaned = sanitizeReply(out.text);
+        if (cleaned) return { text: cleaned, provider: "desktop", model: out.model || "ollama" };
+      }
+    } catch {
+      /* fall through to on-device */
+    }
+  }
+  const eng = await ensurePip(); // throws when Qwen won't wake — caller queues
+  const raw = await eng.complete(messages, temperature, maxTokens);
+  const cleaned = sanitizeReply(raw);
+  if (!cleaned) throw new Error("local blank reply");
+  return { text: cleaned, provider: "local", model: eng.kind || "qwen" };
+}
+
+/**
  * Brain chain.
  * SECURE: desktop → on-device (Qwen/local) → Pip Lite. Cloud NEVER runs
  * silently — only when the user explicitly picks a cloud brain (WHO ANSWERS
@@ -511,10 +538,13 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   let momentLine = "";
   if (db) {
     try {
-      const { storyBrief, chainBrief } = await import("./memory.js");
-      momentLine = [storyBrief(db, 10, 14), chainBrief(db)].filter(Boolean).join("\n");
+      // Phase 1: memory enters prompts ONLY through the engine's assembly
+      // function — scope hygiene in one place, never scattered at call sites.
+      const { assembleMemoryContext } = await import("./memory-engine.js");
+      const { chainBrief } = await import("./memory.js");
+      momentLine = [assembleMemoryContext({ query: text, limit: 8 }), chainBrief(db)].filter(Boolean).join("\n");
     } catch {
-      /* optional */
+      /* memory is optional — chat works without it */
     }
   }
   let askText = String(text || "");

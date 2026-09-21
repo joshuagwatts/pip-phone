@@ -3,6 +3,7 @@ import { desktopConfigured } from "./desktop.js";
 import { fullOppSync, fetchOppDigest } from "./oppdesk.js";
 import { fullMorningSync } from "./morning.js";
 import { setKeepAlive } from "./proton.js";
+import { maybeDistill } from "./memory-distill.js";
 
 let timer = null;
 let watching = false;
@@ -13,6 +14,9 @@ export function startBackground(db, { persist, render, setStatus, softRefresh })
     if (!db?.settings) return;
     try {
       await fullMorningSync(db.settings).catch(() => {});
+      // Nightly memory distillation — local models only, queued when none
+      // reachable. Runs at most once a day; never throws (see memory-distill).
+      await maybeDistill(db, { setStatus }).catch(() => {});
       if (desktopConfigured(db.settings)) {
         const out = await fullOppSync(db.settings, db);
         if (out.pushed || out.pulled) {
