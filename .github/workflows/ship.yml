@@ -153,13 +153,15 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.22** — Nearby storms, weather overlays, live alerts.
+            **Phone Pip v0.1.90** — Phase 1: the Memory Engine.
 
-            - Map layers: Night / Street / Sat plus Radar, Clouds, Vis overlays.
-            - House tap uses ~15 km of the pin (not every storm in the metro). Filter by date, hail size, wind.
-            - Weather refresh every 8 minutes. CHAT warns if NWS/Open-Meteo says it is getting seriously crummy.
+            - Memory now has four tiers: Working (this session), Daily (auto-distilled notes), Durable (only what you explicitly keep), People (one page per person).
+            - New MEMORY tab: see, search, edit, and forget anything Pip remembers.
+            - `/remember` in chat keeps something forever. Nightly on-device distillation proposes 0-3 things to keep — nothing promotes itself.
+            - All memory is encrypted at rest now (key lives in the device vault).
+            - Optional on-device semantic recall (one-time ~23MB download, behind a toggle in the MEMORY tab).
 
-            Install Pip.apk over your current build. Restart desktop Pip for the same WX behavior.
+            Install Pip.apk over your current build. First boot migrates your old moments, then wipes the plaintext copy.
           files: |
             Pip.apk
             Pip-Windows.exe
