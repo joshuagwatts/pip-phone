@@ -1238,7 +1238,7 @@ body.wx-map-expanded #view { overflow: hidden; }
 .wx-filters select { background: var(--panel); color: var(--text); border: 1px solid var(--line); font: inherit; font-size: 10px; padding: 0.15rem 0.25rem; }
 
 /* Biometric unlock — hold-to-scan, no Android sheet */
-body.bio-locked > *:not(#bio-scan) { visibility: hidden; }
+body.bio-locked > *:not(#bio-scan):not(#bio-pass) { visibility: hidden; }
 .bio-scan {
   position: fixed; inset: 0; z-index: 100;
   display: grid; place-items: center;

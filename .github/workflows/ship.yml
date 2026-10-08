@@ -153,15 +153,12 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.90** — Phase 1: the Memory Engine.
+            **Phone Pip v0.1.91** — desktop lock-screen fix.
 
-            - Memory now has four tiers: Working (this session), Daily (auto-distilled notes), Durable (only what you explicitly keep), People (one page per person).
-            - New MEMORY tab: see, search, edit, and forget anything Pip remembers.
-            - `/remember` in chat keeps something forever. Nightly on-device distillation proposes 0-3 things to keep — nothing promotes itself.
-            - All memory is encrypted at rest now (key lives in the device vault).
-            - Optional on-device semantic recall (one-time ~23MB download, behind a toggle in the MEMORY tab).
+            - Fixed: on desktop the lock screen was hiding its own passphrase box (black screen, no way to type) — the passphrase prompt is visible again.
+            - First launch on desktop asks you to SET a vault passphrase (min 8 chars, don't lose it) — it encrypts your API keys on that machine.
 
-            Install Pip.apk over your current build. First boot migrates your old moments, then wipes the plaintext copy.
+            Install Pip.apk over your current build / restart Pip-Windows.exe.
           files: |
             Pip.apk
             Pip-Windows.exe
