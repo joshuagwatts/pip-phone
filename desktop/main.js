@@ -14,6 +14,7 @@ function create() {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      preload: path.join(__dirname, "preload.js"),
       // Hunt reads public apply pages. file:// has CORS; this is the desktop
       // stand-in for Capacitor's native GET. Nothing is posted to forms.
       webSecurity: false,

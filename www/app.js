@@ -2498,6 +2498,56 @@ function maybePrivacyChoice() {
   });
 }
 
+/** One-tap approval card for agent actions — the exact command/detail is shown,
+ *  one tap per session per pattern. Rendered inline in chat, resolved by tap. */
+function agentApprove(title, detail) {
+  return new Promise((resolve) => {
+    const log = $("#log");
+    const div = document.createElement("div");
+    div.className = "bubble pip";
+    div.innerHTML = `<div class="who-row"><span class="who">PIP</span></div><div class="body"><b>${esc(title)}</b><pre class="agent-cmd">${esc(detail)}</pre><div class="agent-approve-row"><button type="button" class="bio-btn" data-ok="1">APPROVE</button><button type="button" class="bio-btn" data-ok="0">DENY</button></div></div>`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    div.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => {
+        div.querySelectorAll("button").forEach((x) => {
+          x.disabled = true;
+        });
+        resolve(b.dataset.ok === "1");
+      };
+    });
+  });
+}
+
+/** /agent flow — runs the ReAct loop, narrates steps as Pip, never leaks tool JSON. */
+async function runAgentFlow(goal) {
+  db.chat.push({ role: "user", content: "/agent " + goal });
+  markChatUser();
+  addLog("user", "/agent " + goal);
+  persist();
+  setStatus("AGENT · working");
+  const { runAgent } = await import("./agent.js");
+  const out = await runAgent(goal, {
+    settings: db.settings,
+    db,
+    persist,
+    onStep: (t) => addLog("pip", t, { toolLine: "AGENT" }),
+    approve: agentApprove,
+  });
+  if (out.guidance && !db.settings.agent_guidance_v1) {
+    addLog("pip", out.guidance, { toolLine: "AGENT" });
+    db.settings.agent_guidance_v1 = true;
+  }
+  const meta =
+    out.steps && out.steps.length
+      ? `AGENT · ${out.steps.length} steps · ${String(out.backend || "").toUpperCase()}`
+      : "AGENT";
+  addLog("pip", out.answer, { toolLine: meta });
+  db.chat.push({ role: "pip", content: out.answer });
+  persist();
+  setStatus("PIP ON DECK");
+}
+
 async function sendChat() {
   const box = $("#input");
   const text = (box.value || "").trim();
@@ -2528,6 +2578,24 @@ async function sendChat() {
     }
     persist();
     if (sendBtn) sendBtn.disabled = false;
+    return;
+  }
+  // /agent — ReAct tool loop (agentic core). Additive: normal chat untouched.
+  const agentMatch = text.match(/^\/agent(?:\s+([\s\S]*))?$/i);
+  if (agentMatch && !hasPhoto) {
+    chatBusy = false;
+    if (sendBtn) sendBtn.disabled = false;
+    const goal = (agentMatch[1] || "").trim();
+    if (!goal) {
+      addLog(
+        "pip",
+        "Give me a goal — /agent followed by what you want done. Example: /agent check my memory for roofing deadlines, then remind me tomorrow at 8am.",
+      );
+      return;
+    }
+    runAgentFlow(goal).catch((e) => {
+      addLog("pip", `Agent run hit a snag: ${String((e && e.message) || e).slice(0, 140)}`);
+    });
     return;
   }
   const photoLine =
@@ -3053,6 +3121,17 @@ function boot() {
       setInterval(() => {
         if (document.hidden) return;
         pingNudge(db.settings, db).then(injectNudge).catch(() => {});
+        // Agent reminders due — surface once each via the same inject path.
+        import("./tools.js")
+          .then(({ dueReminders }) => {
+            let dirty = false;
+            for (const r of dueReminders(db)) {
+              injectNudge("REMINDER · " + r.text);
+              dirty = true;
+            }
+            if (dirty) persist();
+          })
+          .catch(() => {});
       }, 20000);
       const cap = window.Capacitor;
       if (cap?.Plugins?.App?.addListener) {

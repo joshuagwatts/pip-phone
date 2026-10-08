@@ -1314,6 +1314,13 @@ body.bio-locked > *:not(#bio-scan):not(#bio-pass) { visibility: hidden; }
   margin-top: 1.1rem; border: 1px solid var(--phos); background: transparent;
   color: var(--phos); letter-spacing: 0.2em; padding: 0.55rem 1rem; font: inherit; font-size: 11px;
 }
+/* Agent approval card (inline in chat) */
+.agent-cmd {
+  background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; margin: 8px 0; white-space: pre-wrap; word-break: break-word; font-size: 12px;
+}
+.agent-approve-row { display: flex; gap: 8px; }
+.agent-approve-row .bio-btn { margin-top: 0.4rem; }
 .bio-scan.ok .bio-ring { border-color: var(--phos); }
 .bio-scan.ok .bio-sub { color: var(--phos); }
 .bio-scan.bad .bio-ring { border-color: var(--leak); }
