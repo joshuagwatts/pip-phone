@@ -153,12 +153,13 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.91** — desktop lock-screen fix.
+            **Phone Pip v0.1.92** — the agentic core.
 
-            - Fixed: on desktop the lock screen was hiding its own passphrase box (black screen, no way to type) — the passphrase prompt is visible again.
-            - First launch on desktop asks you to SET a vault passphrase (min 8 chars, don't lose it) — it encrypts your API keys on that machine.
+            - New `/agent` command in chat: give Pip a goal and it works the job — calls tools, reads the results, keeps going until done, then reports back.
+            - Tools: memory search, web fetch, files, reminders, calculator, and on desktop, shell commands (new commands ask for one tap; everything is logged).
+            - Local and free: desktop Ollama does the thinking — `ollama pull qwen3:4b` on your PC. Phone falls back to on-device. Cloud stays consent-gated.
 
-            Install Pip.apk over your current build / restart Pip-Windows.exe.
+            Install Pip.apk over your current build / restart Pip-Windows.exe. Desktop needs Ollama running with qwen3:4b for the full agent.
           files: |
             Pip.apk
             Pip-Windows.exe
