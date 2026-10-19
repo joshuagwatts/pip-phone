@@ -153,13 +153,15 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.92** — the agentic core.
+            **Phone Pip v0.1.93** — audit-2 rollout fixes.
 
-            - New `/agent` command in chat: give Pip a goal and it works the job — calls tools, reads the results, keeps going until done, then reports back.
-            - Tools: memory search, web fetch, files, reminders, calculator, and on desktop, shell commands (new commands ask for one tap; everything is logged).
-            - Local and free: desktop Ollama does the thinking — `ollama pull qwen3:4b` on your PC. Phone falls back to on-device. Cloud stays consent-gated.
+            - Web fetch hardened: redirects re-checked every hop, IPv6/private-address tricks blocked, public URLs still fine.
+            - Chat, reminders, and the agent run log are encrypted at rest now (same vault key as memory); old plaintext migrates on first unlock, then wiped.
+            - Desktop pairing no longer probes with a blank password — CONNECT asks for your desktop password (existing pairing keeps working until re-pair).
+            - Wifi/VPN bypass asks instead of switching silently (ask/always/never in DATA).
+            - File-write approvals show the content before you tap; the OPP hunter announces itself in secure mode.
 
-            Install Pip.apk over your current build / restart Pip-Windows.exe. Desktop needs Ollama running with qwen3:4b for the full agent.
+            Install Pip.apk over your current build / restart Pip-Windows.exe.
           files: |
             Pip.apk
             Pip-Windows.exe
