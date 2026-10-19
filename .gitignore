@@ -9,6 +9,8 @@ local.properties
 .env.*
 *.jks
 *.keystore
+*.p12
+*.pfx
 .DS_Store
 Thumbs.db
 .idea/

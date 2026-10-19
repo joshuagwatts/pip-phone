@@ -71,11 +71,27 @@ jobs:
       - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
-      - name: Build debug APK
+      - name: Check signing secrets
+        run: |
+          if [ -z "${{ secrets.PIP_KS_B64 }}" ]; then
+            echo "::error::PIP_KS_B64 secret is missing — add the 4 PIP_KS_* secrets (repo Settings → Secrets and variables → Actions) before shipping."
+            exit 1
+          fi
+      - name: Decode release keystore
+        env:
+          PIP_KS_B64: ${{ secrets.PIP_KS_B64 }}
+        run: |
+          echo "$PIP_KS_B64" | base64 -d > /tmp/pip-release.p12
+          echo "PIP_KS_PATH=/tmp/pip-release.p12" >> $GITHUB_ENV
+      - name: Build release APK
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleDebug
+        env:
+          PIP_KS_STORE_PW: ${{ secrets.PIP_KS_STORE_PW }}
+          PIP_KS_KEY_ALIAS: ${{ secrets.PIP_KS_KEY_ALIAS }}
+          PIP_KS_KEY_PW: ${{ secrets.PIP_KS_KEY_PW }}
+        run: chmod +x gradlew && ./gradlew assembleRelease
       - name: Name the file Pip.apk
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk Pip.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk Pip.apk
       - uses: actions/upload-artifact@v4
         with:
           name: Pip-apk
