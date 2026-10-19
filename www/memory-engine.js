@@ -121,6 +121,25 @@ async function decryptBlob(bundle) {
   return JSON.parse(td.decode(pt));
 }
 
+/**
+ * M2: generic DEK-envelope for other at-rest blobs (chat/events/agent run
+ * log via www/store-vault.js). Same DEK, same AES-GCM, fresh IV per save.
+ * The DEK lives only in the secrets vault; these helpers throw when the
+ * engine isn't ready so callers can never silently fall back to plaintext.
+ */
+export async function encryptStoreBlob(obj) {
+  if (!ready) throw new Error("Memory engine not ready — refusing to encrypt.");
+  return encryptBlob(obj);
+}
+
+export async function decryptStoreBlob(bundle) {
+  if (!ready) throw new Error("Memory engine not ready — refusing to decrypt.");
+  if (!bundle || typeof bundle !== "object" || !bundle.iv || !bundle.data) {
+    throw new Error("bad blob");
+  }
+  return decryptBlob(bundle);
+}
+
 function lsGet(k) {
   try {
     return localStorage.getItem(k);

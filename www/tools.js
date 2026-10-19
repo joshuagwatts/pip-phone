@@ -12,6 +12,7 @@
 
 import { privacyOn } from "./cloud.js";
 import { shellAvailable, shellExec, shellWhyNot } from "./shell.js";
+import { vaultAppendRunLog, vaultRunLog } from "./store-vault.js";
 
 /* ---------------------------------------------------------- arg validation */
 
@@ -221,8 +222,8 @@ export function parseWhen(when) {
 /* --------------------------------------------------------------- run log */
 
 /** Append-only, on-device — seeds the blueprint's consent ledger. */
-const RUNLOG_KEY = "pip.agent.runs.v1";
-const RUNLOG_CAP = 300;
+/* M2: the run log lives in the encrypted sidecar (www/store-vault.js),
+ * served from the decrypted in-memory cache. Plaintext key retired. */
 
 function summarizeArgs(tool, args) {
   try {
@@ -235,14 +236,17 @@ function summarizeArgs(tool, args) {
 
 export function logToolCall({ runId, tool, args, lane, backend, ok, ms, note }) {
   try {
-    const raw = JSON.parse(localStorage.getItem(RUNLOG_KEY) || "[]");
-    raw.push({
-      ts: Date.now(), runId: runId || "", tool, lane: lane || "",
-      backend: backend || "", ok: Boolean(ok), ms: Number(ms) || 0,
-      args: summarizeArgs(tool, args), note: String(note || "").slice(0, 160),
+    vaultAppendRunLog({
+      ts: Date.now(),
+      runId: runId || "",
+      tool,
+      lane: lane || "",
+      backend: backend || "",
+      ok: Boolean(ok),
+      ms: Number(ms) || 0,
+      args: summarizeArgs(tool, args),
+      note: String(note || "").slice(0, 160),
     });
-    while (raw.length > RUNLOG_CAP) raw.shift();
-    localStorage.setItem(RUNLOG_KEY, JSON.stringify(raw));
   } catch {
     /* logging never breaks the run */
   }
@@ -250,8 +254,7 @@ export function logToolCall({ runId, tool, args, lane, backend, ok, ms, note }) 
 
 export function getRunLog(limit = 50) {
   try {
-    const raw = JSON.parse(localStorage.getItem(RUNLOG_KEY) || "[]");
-    return raw.slice(-Math.max(1, limit));
+    return vaultRunLog(limit);
   } catch {
     return [];
   }
@@ -484,7 +487,15 @@ export async function execTool(name, args, ctx = {}) {
   if (tool.approve === "file") {
     const p = String(v.args.path || "");
     if (!approvedFiles.has(p)) {
-      const ok = ctx.approve ? await ctx.approve("Write this file?", `${p}\n(${(v.args.content || "").length} bytes into the app overlay)`).catch(() => false) : false;
+      // M3: the card shows WHAT will be written — path, size, and a content
+      // preview — so a prompt-injected overlay can't hide behind a filename.
+      const content = String(v.args.content || "");
+      const preview = content.slice(0, 600);
+      const detail =
+        `${p}\n(${content.length} bytes into the app overlay)\n` +
+        `--- content preview ---\n${preview}` +
+        (content.length > 600 ? `\n… (${content.length - 600} more chars)` : "");
+      const ok = ctx.approve ? await ctx.approve("Write this file?", detail).catch(() => false) : false;
       if (!ok) return done(false, "Declined — file not written.", "approval denied");
       approvedFiles.add(p);
     }

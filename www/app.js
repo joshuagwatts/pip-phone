@@ -1,4 +1,5 @@
 import { load, save, KIT_LABELS } from "./store.js";
+import { loadStoreVault, scheduleVaultSave, flushVaultSave } from "./store-vault.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
 import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent, isSpent, clearSpent } from "./cloud.js";
@@ -11,7 +12,7 @@ import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } fro
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
 import { hasNativeHttp, openUrl, httpLanGet, httpLanPostJson, httpDiag } from "./net.js";
-import { openProtonVpn } from "./proton.js";
+import { openProtonVpn, setVpnBypassAsker, getVpnBypassMode, setVpnBypassMode } from "./proton.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
 import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
@@ -70,6 +71,8 @@ let pane = "list";
 let oppId = "";
 let oppFilter = { q: "", type: "all", sort: "near", radiusKm: 80 };
 let oppPlain = false;
+// M4: SECURE-mode hunt notice — shown once per session before any web hunt.
+let huntWebNoticed = false;
 let calState = { calMonth: ym(), calDay: ymd() };
 let vibeMode = "motivation";
 let vibeStem = "sendoff";
@@ -157,6 +160,12 @@ function setStatus(msg) {
 
 function persist() {
   save(db);
+  // M2: chat/events/runlog persist encrypted (debounced) — never plaintext.
+  try {
+    scheduleVaultSave(db);
+  } catch {
+    /* ignore */
+  }
 }
 
 function esc(s) {
@@ -1283,6 +1292,7 @@ function renderData() {
     <p class="muted">Same Wi‑Fi. Tap CONNECT (scans your whole subnet). If it fails: desktop DATA → COPY URL → paste below → CONNECT. Windows may need Open-Firewall.bat once.</p>
     <div class="desk-status ${paired ? (deskLive === false ? "bad" : deskLive === true ? "on" : "key") : "off"}" id="desk-status">${esc(deskLine)}</div>
     <div class="field"><span>DESKTOP URL (optional)</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="blank = auto-find · or http://192.168.x.x:7420" /></div>
+    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" value="" placeholder="typed each pair — never stored" autocomplete="off" /></div>
     <div class="actions">
       <button type="button" id="desk-connect" class="primary">CONNECT</button>
       <button type="button" id="desk-clear">FORGET</button>
@@ -1293,6 +1303,12 @@ function renderData() {
     <div class="actions">
       <button type="button" id="proton-open">OPEN PROTON</button>
     </div>
+    <div class="field"><span>VPN LAN BYPASS</span><select id="set-vpnbypass">
+      <option value="ask">ASK EACH SESSION</option>
+      <option value="always">ALWAYS ALLOW</option>
+      <option value="never">NEVER (LAN may fail on VPN)</option>
+    </select></div>
+    <p class="muted">When Proton is on, PIP can step outside the VPN to reach your desktop on Wi‑Fi. "Ask" prompts once per session — never silently.</p>
     <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> BACKGROUND OPP SYNC</label>
 
     <h3>BRAIN KEYS</h3>
@@ -1417,8 +1433,11 @@ function renderData() {
     await grabSettings();
     setStatus("CONNECTING…");
     setDeskMsg("Connecting…", "key");
+    // H2: password is typed per pair and never persisted — read once, clear right away.
+    const dpassEl = $("#set-dpass");
+    const dpass = String(dpassEl?.value || "");
     try {
-      const out = await connectDesktop(db.settings, (msg) => setStatus(msg));
+      const out = await connectDesktop(db.settings, (msg) => setStatus(msg), { password: dpass });
       persist();
       if ($("#set-durl")) $("#set-durl").value = out.url;
       const model = String(out.model || "ollama").toUpperCase();
@@ -1446,6 +1465,13 @@ function renderData() {
       setDeskMsg(msg.slice(0, 90), "bad");
       setStatus(msg.toUpperCase().slice(0, 80));
       paintBrainStrip();
+    } finally {
+      // Never leave the typed password in the DOM.
+      try {
+        if (dpassEl) dpassEl.value = "";
+      } catch {
+        /* ignore */
+      }
     }
   };
 
@@ -1462,6 +1488,18 @@ function renderData() {
       setStatus("OPENING PROTON…");
       const ok = await openProtonVpn();
       setStatus(ok ? "PROTON · TURN ON ALLOW LAN CONNECTIONS" : "INSTALL PROTON VPN FROM PLAY STORE");
+    };
+  }
+
+  // M1: visible bypass-mode setting — same control the prompt writes to.
+  const vpnBypassSel = $("#set-vpnbypass");
+  if (vpnBypassSel) {
+    vpnBypassSel.value = getVpnBypassMode();
+    vpnBypassSel.onchange = () => {
+      const m = setVpnBypassMode(vpnBypassSel.value);
+      vpnBypassSel.value = m;
+      persist();
+      setStatus(`VPN BYPASS · ${m.toUpperCase()}`);
     };
   }
 
@@ -1716,6 +1754,24 @@ async function syncOpps() {
 }
 
 async function runHunt(allTypes = false) {
+  // M4: in SECURE mode the hunt leaves the device — say so once per session,
+  // with a real choice, before any httpGet fires.
+  if (privacyOn(db.settings) && !huntWebNoticed) {
+    const pick = await pipOverlay({
+      kicker: "SECURE · HEADS UP",
+      title: "Hunting hits the public web",
+      body: "The opportunity hunt scrapes public boards (artcall, colossal, Brave search). That's outside this phone — proceed?",
+      buttons: [
+        { id: "go", label: "HUNT", primary: true },
+        { id: "no", label: "CANCEL" },
+      ],
+    });
+    if (pick !== "go") {
+      setStatus("HUNT CANCELLED");
+      return;
+    }
+    huntWebNoticed = true;
+  }
   setStatus("HUNTING…");
   try {
     db.kit.city = ($("#hunt-city")?.value || db.kit.city || "").trim();
@@ -2958,8 +3014,40 @@ async function sendChat() {
   }
 }
 
-function boot() {
+async function boot() {
   try {
+    // M2: unlock the encrypted chat/events/runlog sidecar FIRST — the DEK is
+    // ready (boot.js ran initMemoryEngine before importing app.js). Throws
+    // loudly on crypto failure; the app never runs on silently-plaintext chat.
+    // Also migrates any legacy plaintext into the vault on first boot.
+    await loadStoreVault(db);
+    // Best-effort flush of the encrypted sidecar when the page hides.
+    try {
+      window.addEventListener("pagehide", () => {
+        try {
+          flushVaultSave();
+        } catch {
+          /* ignore */
+        }
+      });
+    } catch {
+      /* ignore */
+    }
+    // M1: the VPN-bypass question gets a real UI asker — PIP never steps
+    // outside the VPN silently. Registered before anything can hit the LAN.
+    setVpnBypassAsker(async () => {
+      const pick = await pipOverlay({
+        kicker: "VPN · LAN ACCESS",
+        title: "Step outside the VPN?",
+        body: "Proton is on. To reach your desktop on Wi‑Fi, PIP has to step outside the VPN for this call — LAN traffic only, nothing else changes.",
+        buttons: [
+          { id: "once", label: "ONCE", primary: true },
+          { id: "always", label: "ALWAYS" },
+          { id: "never", label: "NEVER" },
+        ],
+      });
+      return pick || "never";
+    });
     bootTheme(db.settings);
     applyAllOverlays();
     hydrateHealth(db.settings.brain_health);

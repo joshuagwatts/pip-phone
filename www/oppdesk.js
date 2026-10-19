@@ -1,6 +1,7 @@
 /** Opportunity desk — search, fit scoring, desktop sync, chat commands. */
 import { desktopConfigured, desktopToken } from "./desktop.js";
 import { httpLanGet, httpLanPostJson } from "./net.js";
+import { privacyOn } from "./cloud.js";
 import { classify, labelOf } from "./kind.js";
 import { hunt as localHunt, scrapeUrl, newOpp, suggestAnswers } from "./opp.js";
 import {
@@ -455,9 +456,12 @@ export async function tryOppCommand(text, db, ctx = {}) {
           : "";
     return {
       ok: true,
-      reply: intent.focus
-        ? `Hunting ${intent.focus}${where ? ` near ${where}` : ""}${rad}. Near → far. Real open calls — I'll scrape forms that match your KIT.`
-        : `Hunting profile-fit open calls${where ? ` near ${where}` : ""}${rad}.`,
+      // M4: in SECURE mode the hunt leaves the device — say so up front.
+      reply:
+        (privacyOn(db.settings) ? "Heads up — hunting hits the public web (outside this phone). " : "") +
+        (intent.focus
+          ? `Hunting ${intent.focus}${where ? ` near ${where}` : ""}${rad}. Near → far. Real open calls — I'll scrape forms that match your KIT.`
+          : `Hunting profile-fit open calls${where ? ` near ${where}` : ""}${rad}.`),
       switchTab: "opp",
       async run() {
         ctx.setStatus?.("HUNTING…");

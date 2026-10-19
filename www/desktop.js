@@ -1,6 +1,6 @@
 import { httpLanGet, httpLanPostJson } from "./net.js";
 import { vpnSystemActive, openProtonVpn } from "./proton.js";
-import { getSecret, setSecret } from "./secrets.js";
+import { getSecret, setSecret, clearSecret } from "./secrets.js";
 
 const PORT = 7420;
 const FALLBACK_SUBNETS = ["192.168.1", "192.168.0", "10.0.0", "192.168.50", "192.168.2", "10.0.1"];
@@ -123,24 +123,24 @@ async function probeDesktop(url, timeoutMs = 4000) {
       err.hard = true;
       throw err;
     }
+    // H2: discovery NEVER sends a credential. If we paired before, the status
+    // check rides on the STORED token; a fresh pairing mints its token later
+    // via desktopLogin with a typed password — never an empty one.
+    const tok = token();
+    const hdr = tok && tok !== "loopback" ? authHeaders() : {};
     let st = {};
     try {
-      st = await httpLanGet(`${base}/api/auth/status`, timeoutMs);
+      st = await httpLanGet(`${base}/api/auth/status`, timeoutMs, hdr);
     } catch (e) {
       lastErr = String(e.message || e);
     }
-    const login = await httpLanPostJson(`${base}/api/auth/login`, {}, { password: "" }, timeoutMs);
-    const tok = String(login.token || login._cookie || "").trim();
-    if (!tok && !login.ok) {
-      const detail = String(login.detail || lastErr || "login failed").trim();
-      throw Object.assign(new Error(detail), { hard: true });
-    }
     return {
       url: base,
-      token: tok || "",
+      token: "",
       listen: st.listen || "",
       phone_lan: Boolean(st.phone_lan || st.on),
       urls: (st.urls || []).map(normalizeUrl).filter(Boolean),
+      tokenValid: Boolean(tok && tok !== "loopback"),
     };
   } catch (e) {
     // Surface auth/LAN problems; keep scanning on dead sockets.
@@ -153,7 +153,10 @@ async function probeDesktop(url, timeoutMs = 4000) {
 export async function desktopLogin(settings, password = "") {
   const url = baseUrl(settings);
   if (!url) throw new Error("set desktop URL first");
-  const res = await httpLanPostJson(`${url}/api/auth/login`, {}, { password: password || "" }, 10000);
+  const pw = String(password || "");
+  // H2: never send an empty credential — the old probe POSTed {password:""}.
+  if (!pw) throw new Error("Type your desktop password — Pip never sends an empty credential, and never stores the password.");
+  const res = await httpLanPostJson(`${url}/api/auth/login`, {}, { password: pw }, 10000);
   const cookie = String(res.token || res._cookie || "").trim();
   if (!cookie) throw new Error(res.detail || "login failed — turn ON LAN on desktop DATA");
   return { token: cookie, loopback: Boolean(res.loopback), open_lan: Boolean(res.open_lan) };
@@ -163,12 +166,8 @@ export async function ensureDesktopSession(settings) {
   if (!baseUrl(settings)) throw new Error("set desktop URL first");
   const tok = token(settings);
   if (tok && tok !== "loopback") return tok;
-  const out = await desktopLogin(settings, "");
-  const next = String(out.token || "").trim();
-  if (!next) throw new Error("desktop login returned no token");
-  await setSecret("desktop_token", next);
-  settings.desktop_paired = true;
-  return next;
+  // H2: no silent empty-password login — re-pairing needs the typed password.
+  throw new Error("Desktop session expired — tap CONNECT and enter your desktop password.");
 }
 
 export async function desktopReachable(settings, timeoutMs = 2500) {
@@ -232,10 +231,9 @@ export async function desktopChat(settings, text, timeoutMs = 60000) {
     const msg = String(e.message || e);
     const status = e.status || 0;
     if (status === 401 || /401|login required/i.test(msg)) {
-      const out = await desktopLogin(settings, "");
-      await setSecret("desktop_token", String(out.token || "").trim());
-      if (!getSecret("desktop_token")) throw new Error("re-login failed — tap CONNECT again");
-      raw = await postChat(settings, text, timeoutMs);
+      // H2: no silent empty-password re-login — the user re-pairs with a typed password.
+      await clearSecret("desktop_token").catch(() => {});
+      throw new Error("Desktop session expired — tap CONNECT and enter your desktop password.");
     } else {
       throw e;
     }
@@ -307,7 +305,7 @@ async function protonBlockHint() {
 /**
  * One-shot connect: use typed URL if present, else scan full Wi‑Fi subnet.
  */
-export async function connectDesktop(settings, onProgress) {
+export async function connectDesktop(settings, onProgress, opts = {}) {
   const typed = normalizeUrl(settings.desktop_url);
   let hit = null;
   const protonHint = await protonBlockHint();
@@ -337,11 +335,15 @@ export async function connectDesktop(settings, onProgress) {
     }
   }
 
-  if (!hit.token) {
-    settings.desktop_url = hit.url;
-    const login = await desktopLogin(settings, "");
-    hit.token = login.token;
+  // H2: pairing mints a token only via a TYPED desktop password — the old
+  // probe POSTed {password:""} and the server must reject empty logins.
+  const password = String((opts && opts.password) || "");
+  if (!password) {
+    throw new Error("Enter your desktop password to pair — it is never stored on this phone.");
   }
+  settings.desktop_url = hit.url;
+  const login = await desktopLogin(settings, password);
+  hit.token = login.token;
 
   settings.desktop_url = hit.url;
   await setSecret("desktop_token", hit.token);
@@ -361,7 +363,7 @@ export async function connectDesktop(settings, onProgress) {
 
 /** @deprecated — use connectDesktop */
 export async function findAndPair(settings, password, onProgress) {
-  return connectDesktop(settings, onProgress);
+  return connectDesktop(settings, onProgress, { password });
 }
 
 export async function desktopDraft() {
