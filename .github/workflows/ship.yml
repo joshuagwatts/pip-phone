@@ -153,15 +153,12 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.93** — audit-2 rollout fixes.
+            **Phone Pip v0.1.94** — critical phone repair + permanent signing.
 
-            - Web fetch hardened: redirects re-checked every hop, IPv6/private-address tricks blocked, public URLs still fine.
-            - Chat, reminders, and the agent run log are encrypted at rest now (same vault key as memory); old plaintext migrates on first unlock, then wiped.
-            - Desktop pairing no longer probes with a blank password — CONNECT asks for your desktop password (existing pairing keeps working until re-pair).
-            - Wifi/VPN bypass asks instead of switching silently (ask/always/never in DATA).
-            - File-write approvals show the content before you tap; the OPP hunter announces itself in secure mode.
+            - FIXED: the phone app could not boot at all ("Memory engine failed: plugin.setItem is not a function"). The vault now falls back to your passphrase when native secure storage isn't wired up, and the encryption key properly survives reboots. Verified end-to-end.
+            - One permanent signing key for all future releases — updates install cleanly from here on. No more signature mismatches.
 
-            Install Pip.apk over your current build / restart Pip-Windows.exe.
+            **One-time reinstall required:** Android will not install this over your current app (new signature). Uninstall PIP, install this APK fresh, set a vault passphrase on first launch. Future updates install over the top — no reinstall ever again.
           files: |
             Pip.apk
             Pip-Windows.exe

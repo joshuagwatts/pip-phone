@@ -34,6 +34,14 @@ export const SECRET_FIELDS = [
 ];
 
 const STORE_KEY = "pip.phone.v1";
+
+/**
+ * Vault keys outside SECRET_FIELDS that must still be readable via getSecret()
+ * after initSecrets(). The memory DEK is the critical one: without it every
+ * boot mints a fresh DEK and can never decrypt the previous boot's blobs.
+ * (Kept as a literal here to avoid a secrets.js <-> memory-engine.js cycle.)
+ */
+const EXTRA_VAULT_KEYS = ["memory_dek"];
 const VAULT_META_KEY = "pip.phone.vault.meta.v1";
 const VAULT_DATA_KEY = "pip.phone.vault.secrets.v1";
 const NATIVE_FLAG_KEY = "pip.phone.vault.native.v1";
@@ -99,11 +107,34 @@ function nativePlugin() {
     const cap = window.Capacitor;
     if (!cap || !isNativePlatform()) return null;
     // @aparajita/capacitor-secure-storage registers as "SecureStorage".
+    // Capability-check, not just presence: the app never imports the plugin
+    // module, so on builds where it isn't registered cap.Plugins.SecureStorage
+    // can be a dead object. Only use it when it really implements the API;
+    // otherwise the passphrase vault below is the backend (works everywhere).
     const p = cap.Plugins && cap.Plugins.SecureStorage;
-    return p || null;
+    if (
+      !p ||
+      typeof p.setItem !== "function" ||
+      typeof p.getItem !== "function" ||
+      typeof p.removeItem !== "function"
+    ) {
+      return null;
+    }
+    return p;
   } catch {
     return null;
   }
+}
+
+/**
+ * True when the secrets backend can actually store a secret right now: native
+ * secure storage with a working API, or a passphrase-derived web key already
+ * in memory. The memory DEK needs a home even on fresh installs with no API
+ * keys yet, so boot must ensure this before initMemoryEngine runs.
+ */
+export function vaultUsable() {
+  if (nativePlugin()) return true;
+  return Boolean(webKey);
 }
 
 export function secretsBackend() {
@@ -307,6 +338,16 @@ export async function initSecrets() {
   for (const f of SECRET_FIELDS) {
     const v = await backend.get(f);
     if (cleanSecret(v)) memory.set(f, v);
+  }
+  // The DEK (and any future non-field vault keys) must be readable via
+  // getSecret() or every boot mints a fresh key and loses the old blobs.
+  for (const f of EXTRA_VAULT_KEYS) {
+    try {
+      const v = await backend.get(f);
+      if (cleanSecret(v)) memory.set(f, v);
+    } catch {
+      /* a missing DEK just means "generate one" downstream */
+    }
   }
 
   s.keysConfigured = hasSecrets();
