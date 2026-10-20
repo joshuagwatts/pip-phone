@@ -66,7 +66,7 @@ import { pingNudge, markChatUser } from "./nudge.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
-let tab = "opp";
+let tab = ""; // no panel open at boot — chat is home
 let pane = "list";
 let oppId = "";
 let oppFilter = { q: "", type: "all", sort: "near", radiusKm: 80 };
@@ -188,22 +188,68 @@ function leaveWx() {
   destroyMap();
 }
 
+const PANEL_TITLES = {
+  opp: "OPP",
+  today: "TODAY",
+  meals: "MEALS",
+  wx: "WX",
+  vibe: "VIBE",
+  kit: "KIT",
+  memory: "MEMORY",
+  data: "DATA",
+};
+
+/** Open a module as a slide-over panel over chat. One panel at a time. */
+function openPanel(name) {
+  // Locked phone: the launcher is hidden by bio-locked CSS, but never trust
+  // the DOM alone — refuse here too.
+  if (document.body.classList.contains("bio-locked")) return;
+  if (!PANEL_TITLES[name]) return;
+  tab = name;
+  pane = "list";
+  closeModuleSheet();
+  render();
+  const title = $("#panel-title");
+  if (title) title.textContent = PANEL_TITLES[name];
+  const panel = $("#panel");
+  if (panel) panel.setAttribute("aria-hidden", "false");
+  document.body.classList.add("panel-open");
+}
+
+/** Dismiss the panel — back to chat with zero state loss. */
+function closePanel() {
+  const panel = $("#panel");
+  if (panel) panel.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("panel-open");
+  tab = "";
+  render(); // runs leaveVibe/leaveWx cleanup; renders nothing with no panel
+}
+
+function openModuleSheet() {
+  if (document.body.classList.contains("bio-locked")) return;
+  const sheet = $("#module-sheet");
+  if (sheet) sheet.hidden = false;
+}
+
+function closeModuleSheet() {
+  const sheet = $("#module-sheet");
+  if (sheet) sheet.hidden = true;
+}
+
 function render() {
   if (tab === "guide") tab = "opp";
   document.body.classList.toggle("vibe-tab", tab === "vibe");
   document.body.classList.toggle("wx-tab", tab === "wx");
-  $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   if (tab !== "vibe") leaveVibe();
   if (tab !== "wx") leaveWx();
+  if (!tab) return; // chat home — no panel open, nothing to paint
   if (tab === "kit") renderKit();
   else if (tab === "data") renderData();
   else if (tab === "vibe") renderVibe();
   else if (tab === "today") renderToday();
   else if (tab === "code") {
-    tab = "data";
-    document.body.classList.add("comm");
     setStatus("CODING LIVES IN CHAT — ASK PIP TO EDIT THE APP");
-    renderData();
+    openPanel("data");
   }
   else if (tab === "wx") renderWx();
   else if (tab === "meals") renderMeals();
@@ -735,7 +781,7 @@ function agentOptions() {
     { id: "compare", section: "modes" },
   ];
   const apis = [];
-  for (const id of ["anthropic", "groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
+  for (const id of ["anthropic", "groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai", "pollinations"]) {
     if (keyed.has(id)) apis.push({ id, section: "apis" });
   }
   if (desktopConfigured(db.settings)) apis.push({ id: "desktop", section: "apis" });
@@ -753,6 +799,11 @@ function agentStatFor(id, { keyed, health, missing }) {
       cls: "mode",
       text: id === "compare" ? "ALL" : id === "auto" ? "FAST" : "CONSULT",
     };
+  }
+  // Keyless providers are always available — FREE, never "KEYED".
+  if (PROVIDERS.some((p) => p.id === id && p.keyless)) {
+    if (isSpent(id)) return { cls: "bad", text: "MAXED" };
+    return { cls: "live", text: "FREE" };
   }
   if (missing || !keyed.has(id)) return { cls: "bad", text: "NO KEY" };
   if (isSpent(id)) return { cls: "bad", text: "MAXED" };
@@ -940,9 +991,8 @@ function renderToday() {
   const go = $("#today-wake");
   if (go) {
     go.onclick = () => {
-      tab = "vibe";
       vibeMode = "motivation";
-      render();
+      openPanel("vibe");
     };
   }
   $("#brief-again").onclick = async () => {
@@ -1251,6 +1301,16 @@ function renderData() {
   const keyRows = PROVIDERS.map((p) => {
     const info = keyTag(s, p, health[p.id]);
     const hint = keyHint(s, p);
+    // Keyless providers (Pollinations) need no paste field — just the FREE tag.
+    if (p.keyless) {
+      return `<div class="key-row ${esc(info.state)}">
+      <div class="key-meta">
+        <span class="key-name">${esc(p.label.toUpperCase())}</span>
+        <span class="key-tag">${esc(info.tag)}</span>
+      </div>
+      <p class="muted key-tip">${esc(p.tip || "")}</p>
+    </div>`;
+    }
     const has = Boolean(getSecret(p.field));
     const get = p.keyUrl
       ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener noreferrer">GET KEY</a>`
@@ -1274,7 +1334,9 @@ function renderData() {
   const pinKeyed = ["anthropic", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].filter((id) =>
     getSecret(id),
   );
-  const pinIds = [...pinModes, ...pinKeyed];
+  // Keyless providers are always pinnable — no key to check.
+  const pinFree = PROVIDERS.filter((p) => p.keyless).map((p) => p.id);
+  const pinIds = [...pinModes, ...pinKeyed, ...pinFree];
   if ((s.brain_pin || "auto") && !pinIds.includes(s.brain_pin)) pinIds.push(s.brain_pin);
 
   $("#view").innerHTML = `
@@ -1336,7 +1398,9 @@ function renderData() {
                       ? "compare (keyed only)"
                       : id === "auto"
                         ? "auto (CHAT dropdown decides)"
-                        : id;
+                        : id === "pollinations"
+                          ? "pollinations (free · no key)"
+                          : id;
           return `<option value="${id}" ${on ? "selected" : ""}>${label}</option>`;
         }).join("")}
       </select>
@@ -1369,7 +1433,7 @@ function renderData() {
     db.settings.brain_pin = ($("#brain-pin") && $("#brain-pin").value) || db.settings.brain_pin;
     const pinNow = String(db.settings.brain_pin || "auto").toLowerCase();
     if (pinNow === "auto") db.settings.chat_agent = db.settings.chat_agent || "pip";
-    else if (["compare", "desktop", "auto", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai", "anthropic"].includes(pinNow)) {
+    else if (["compare", "desktop", "auto", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai", "anthropic", "pollinations"].includes(pinNow)) {
       db.settings.chat_agent = pinNow;
     }
     for (const p of PROVIDERS) {
@@ -2838,8 +2902,7 @@ async function sendChat() {
     persist();
     addLog("pip", mealHit.reply);
     if (mealHit.switchTab) {
-      tab = mealHit.switchTab;
-      render();
+      openPanel(mealHit.switchTab);
     }
     setStatus(mealHit.ok ? "MEALS UPDATED" : "MEALS");
     return;
@@ -2869,8 +2932,7 @@ async function sendChat() {
     }
     addLog("pip", oppHit.reply);
     if (oppHit.switchTab) {
-      tab = oppHit.switchTab;
-      render();
+      openPanel(oppHit.switchTab);
     }
     persist();
     setStatus(oppHit.ok ? "OPP" : "OPP");
@@ -3089,14 +3151,56 @@ async function boot() {
       if (desktopConfigured(db.settings)) {
         fetchOppDigest(db.settings, db).then(() => { if (tab === "opp") render(); }).catch(() => {});
       }
-      $("#tabs").onclick = (e) => {
-        const b = e.target.closest("[data-tab]");
-        if (!b) return;
-        tab = b.dataset.tab;
-        pane = "list";
-        document.body.classList.remove("comm");
-        render();
+      // Chat-first: the ▦ launcher opens the module sheet; modules slide
+      // over chat as panels. One panel at a time; opening another swaps.
+      const grid = $("#module-grid");
+      if (grid) {
+        grid.onclick = (e) => {
+          const b = e.target.closest("[data-panel]");
+          if (!b) return;
+          openPanel(b.dataset.panel);
+        };
+      }
+      const panelTog = $("#panel-tog");
+      if (panelTog) panelTog.onclick = () => {
+        const sheet = $("#module-sheet");
+        if (sheet && !sheet.hidden) closeModuleSheet();
+        else openModuleSheet();
       };
+      const sheetBg = $("#module-sheet-bg");
+      if (sheetBg) sheetBg.onclick = () => closeModuleSheet();
+      const sheetX = $("#module-sheet-x");
+      if (sheetX) sheetX.onclick = () => closeModuleSheet();
+      const panelX = $("#panel-x");
+      if (panelX) panelX.onclick = () => closePanel();
+      const panelScrim = $("#panel-scrim");
+      if (panelScrim) panelScrim.onclick = () => closePanel();
+      // Swipe-right on the panel sheet dismisses it back to chat.
+      const panelSheet = $("#panel-sheet");
+      if (panelSheet) {
+        let swipeX = null;
+        let swipeDX = 0;
+        panelSheet.addEventListener("touchstart", (e) => {
+          if (e.touches.length !== 1) return;
+          swipeX = e.touches[0].clientX;
+          swipeDX = 0;
+          panelSheet.style.transition = "none";
+        }, { passive: true });
+        panelSheet.addEventListener("touchmove", (e) => {
+          if (swipeX == null) return;
+          swipeDX = e.touches[0].clientX - swipeX;
+          if (swipeDX > 0) panelSheet.style.transform = `translateX(${swipeDX}px)`;
+        }, { passive: true });
+        const endSwipe = () => {
+          panelSheet.style.transition = "";
+          panelSheet.style.transform = "";
+          if (swipeDX > 90) closePanel();
+          swipeX = null;
+          swipeDX = 0;
+        };
+        panelSheet.addEventListener("touchend", endSwipe);
+        panelSheet.addEventListener("touchcancel", endSwipe);
+      }
       $("#view")?.addEventListener("click", (e) => {
         const btn = e.target.closest(".key-clear");
         if (!btn || tab !== "data") return;
@@ -3104,11 +3208,6 @@ async function boot() {
         e.stopPropagation();
         clearProviderKey(btn.getAttribute("data-field"));
       });
-      $("#comm-tog").onclick = () => document.body.classList.add("comm");
-      $("#comm-close").onclick = () => {
-        closeAgentSheet();
-        document.body.classList.remove("comm");
-      };
       const privacyTog = $("#privacy-tog");
       if (privacyTog) {
         privacyTog.onclick = () => {

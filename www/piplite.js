@@ -258,7 +258,10 @@ function bestEntry(text) {
   let bestScore = 0;
   for (const e of ENTRIES) {
     const s = scoreEntry(e, q);
-    if (s > bestScore) {
+    // Ties go to the later (more specific) entry — the cover menu is the
+    // generic fallback and must not edge out a topical match on equal score
+    // (e.g. "can you help me apply" tied cover/OPP at 21 and lost to the menu).
+    if (s > bestScore || (s === bestScore && s > 0)) {
       bestScore = s;
       best = e;
     }
@@ -270,6 +273,13 @@ function bestEntry(text) {
 function shotReply(text) {
   const q = norm(text);
   if (!q) return null;
+  // Tiny talk heuristics FIRST — short social inputs must never substring-match
+  // inside longer few-shot lines (e.g. "yo" inside "can you help me apply").
+  if (/^(hey|hi|hello|yo|sup)\b/.test(q)) return "Pip is happy to help. What's on the bench?";
+  if (/\b(thanks|thank you|thx)\b/.test(q)) return "Anytime. Don't Panic — next move when you're ready.";
+  if (/\b(tired|exhausted|burnt?\s*out)\b/.test(q)) return "Then rest like it counts. After that, one small thing. The days compound.";
+  if (/\b(motivat|inspire|pump)\b/.test(q)) return "You already opened the phone. Hunt or draft. That's the whole religion.";
+  if (/\b(love you|miss you)\b/.test(q)) return "Crew stays. What's the next real move?";
   // Exact-ish match against few-shot user lines
   let best = null;
   let bestScore = 0;
@@ -280,7 +290,9 @@ function shotReply(text) {
     const needle = norm(u.content);
     let s = 0;
     if (q === needle) s = 100;
-    else if (q.includes(needle) || needle.includes(q)) s = 60;
+    // needle.includes(q) is gated on input length — a 2-3 letter input like
+    // "yo" must not substring-match inside a longer needle like "...you...".
+    else if (q.includes(needle) || (q.length >= 4 && needle.includes(q))) s = 60;
     else {
       const words = needle.split(" ").filter((w) => w.length > 2);
       const hits = words.filter((w) => q.includes(w)).length;
@@ -292,12 +304,6 @@ function shotReply(text) {
     }
   }
   if (bestScore >= 36) return best;
-  // Tiny talk heuristics
-  if (/^(hey|hi|hello|yo|sup)\b/.test(q)) return "Pip is happy to help. What's on the bench?";
-  if (/\b(thanks|thank you|thx)\b/.test(q)) return "Anytime. Don't Panic — next move when you're ready.";
-  if (/\b(tired|exhausted|burnt?\s*out)\b/.test(q)) return "Then rest like it counts. After that, one small thing. The days compound.";
-  if (/\b(motivat|inspire|pump)\b/.test(q)) return "You already opened the phone. Hunt or draft. That's the whole religion.";
-  if (/\b(love you|miss you)\b/.test(q)) return "Crew stays. What's the next real move?";
   return null;
 }
 

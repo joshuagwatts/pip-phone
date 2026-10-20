@@ -169,12 +169,13 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.94** — critical phone repair + permanent signing.
+            **Phone Pip v0.1.95** — Super Chat + chat-first UI.
 
-            - FIXED: the phone app could not boot at all ("Memory engine failed: plugin.setItem is not a function"). The vault now falls back to your passphrase when native secure storage isn't wired up, and the encryption key properly survives reboots. Verified end-to-end.
-            - One permanent signing key for all future releases — updates install cleanly from here on. No more signature mismatches.
+            - SUPER CHAT: the chat is now multi-model. Five modes — single, compare, auto ("best for the situation"), frugal (tokenomics: cost estimates, session spend), and discuss (multi-LLM round-table debate with rebuttals). Pollinations works free with no key; OpenAI/Anthropic/Gemini/OpenRouter/Groq/Grok/Cerebras/DeepSeek/Mistral work with your keys in DATA.
+            - CHAT-FIRST UI: chat is the home screen. OPP / TODAY / MEALS / WX / VIBE / KIT / MEMORY are now slide-over panels (tap the launcher, swipe away) instead of tabs.
+            - FIXED: "Yo" no longer gets a random canned response (the matcher saw "yo" inside "you"). Greetings greet; errors speak plainly.
 
-            **One-time reinstall required:** Android will not install this over your current app (new signature). Uninstall PIP, install this APK fresh, set a vault passphrase on first launch. Future updates install over the top — no reinstall ever again.
+            No reinstall needed — installs right over v0.1.94.
           files: |
             Pip.apk
             Pip-Windows.exe

@@ -122,6 +122,20 @@ export const PROVIDERS = [
     keyUrl: "https://console.anthropic.com/settings/keys",
     tip: "Anthropic · Claude Haiku by default · OpenAI-compat /v1.",
   },
+  {
+    id: "pollinations",
+    label: "Pollinations",
+    field: "", // keyless — no vault field, no key to paste, nothing to clear
+    base: "https://text.pollinations.ai/openai",
+    // "openai" is a server alias → gpt-oss-20b (verified keyless 2026-10-19).
+    // Fallbacks are the other documented aliases in case the default rotates.
+    life: "openai",
+    boost: "openai",
+    models: ["openai", "openai-fast", "gpt-oss-20b"],
+    keyless: true,
+    keyUrl: "",
+    tip: "Free · no key needed · anonymous tier — can be slow or rate-limited.",
+  },
 ];
 
 const SPENT_KEY = "pip.phone.spent.v1";
@@ -149,7 +163,7 @@ function spentUntil(msg) {
 }
 
 export function isQuotaFail(msg) {
-  return /429|rate.?limit|too many requests|quota|insufficient.?quota|credit|billing|usage.?limit|token.?limit|exceeded your|resource.?exhausted|out of credits|spend.?limit|monthly.?limit|free.?tier.*limit|tokens? per (day|minute|hour)/i.test(
+  return /429|rate.?limit|too many requests|quota|insufficient.?quota|credit|billing|usage.?limit|token.?limit|exceeded your|resource.?exhausted|out of credits|spend.?limit|monthly.?limit|free.?tier.*limit|limit.?reached|tokens? per (day|minute|hour)/i.test(
     String(msg || ""),
   );
 }
@@ -206,7 +220,78 @@ export function usableProviders(settings) {
   return keyedProviders(settings).filter((p) => !isSpent(p.id));
 }
 
+/**
+ * Availability for Super Chat modes: keyless providers are always ready;
+ * keyed providers need a vault key and no recent quota trip.
+ */
+export function providerReady(settings, id) {
+  const prov = PROVIDERS.find((p) => p.id === String(id || "").toLowerCase());
+  if (!prov) return false;
+  if (isSpent(prov.id)) return false;
+  return prov.keyless || Boolean(providerKey(settings, prov));
+}
+
+/**
+ * Uniform single-shot completion for Super Chat modes.
+ * Resolves keyless/keyed, skips spent providers, tracks health + quota.
+ * @returns {Promise<{text:string, usage:{in:number,out:number}|null, provider:string, model:string, tokens:number}>}
+ */
+export async function completeProvider(
+  providerId,
+  settings,
+  messages,
+  { temperature = 0.7, maxTokens = 1024, lane = "life", _rateRetried = false } = {},
+) {
+  const prov = PROVIDERS.find((p) => p.id === String(providerId || "").toLowerCase());
+  if (!prov) throw new Error(`unknown provider: ${providerId}`);
+  if (isSpent(prov.id)) throw new Error(`${prov.label} maxed — quota/rate limit`);
+  const key = providerKey(settings, prov);
+  if (!key && !prov.keyless) throw new Error(`${prov.label} needs a key — paste in DATA`);
+  try {
+    const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens);
+    markHealth(prov.id, true);
+    const u = out.usage || {};
+    const usage = {
+      in: Number(u.prompt_tokens) || 0,
+      out: Number(u.completion_tokens) || 0,
+    };
+    if (!usage.in && !usage.out && Number(u.total_tokens)) usage.in = Number(u.total_tokens);
+    return {
+      text: out.text,
+      usage: usage.in || usage.out ? usage : null,
+      provider: out.provider,
+      model: out.model,
+      tokens: out.tokens || 0,
+    };
+  } catch (e) {
+    const msg = String(e.message || e);
+    // Transient per-IP rate limit ("Retry after Ns") — wait once and retry
+    // instead of burning the provider for hours. Bounded, single retry.
+    if (!_rateRetried) {
+      const m = msg.match(/retry after (\d+)\s*s/i);
+      if (m) {
+        const waitMs = Math.min((Number(m[1]) + 3) * 1000, 120000);
+        await new Promise((r) => setTimeout(r, waitMs));
+        return completeProvider(providerId, settings, messages, {
+          temperature,
+          maxTokens,
+          lane,
+          _rateRetried: true,
+        });
+      }
+    }
+    if (isQuotaFail(msg)) markSpent(prov.id, msg);
+    else markHealth(prov.id, false, msg.slice(0, 120));
+    throw e;
+  }
+}
+
 export function keyTag(settings, prov, health = null) {
+  // Keyless providers (Pollinations) are always "on" — no key to paste.
+  if (prov.keyless) {
+    if (isSpent(prov.id)) return { tag: "MAXED", state: "bad" };
+    return { tag: "FREE", state: "on" };
+  }
   const key = providerKey(settings, prov);
   if (!key) return { tag: "NO KEY", state: "off" };
   if (isSpent(prov.id)) return { tag: "MAXED", state: "bad" };
@@ -236,6 +321,8 @@ export function brainPin(settings) {
 function providerKey(settings, prov) {
   // Keys live in the secrets vault (www/secrets.js), never in settings.
   // Synchronous read from the in-memory Map — no async refactor needed.
+  // Keyless providers need no vault key at all.
+  if (prov.keyless) return "";
   return normalizeApiKey(getSecret(prov.field));
 }
 
@@ -255,7 +342,8 @@ export function clearHealth(id) {
 }
 
 export function keyedProviders(settings) {
-  return PROVIDERS.filter((p) => providerKey(settings, p));
+  // Keyless providers are always available — no key to check.
+  return PROVIDERS.filter((p) => p.keyless || providerKey(settings, p));
 }
 
 const liveHealth = {};
@@ -298,7 +386,7 @@ function isAuthFail(msg) {
 
 /** Parse "tell Gemini to share with Groq" / "Gemini say something to Groq" relay intents. */
 export function parseAgentRelay(text) {
-  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt|claude|anthropic|haiku|sonnet";
+  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt|claude|anthropic|haiku|sonnet|pollinations";
   const norm = (id) => {
     const x = String(id || "").toLowerCase();
     if (x === "grok") return "xai";
@@ -404,7 +492,7 @@ export async function agentRelayComplete(
   // Speak mode: FROM talks TO the other agent — that speech is the deliverable.
   if (speak && fromProv) {
     const fromKey = providerKey(settings, fromProv);
-    if (!fromKey) throw new Error(`No ${fromProv.label} key — paste in DATA`);
+    if (!fromKey && !fromProv.keyless) throw new Error(`No ${fromProv.label} key — paste in DATA`);
     fromLabel = fromProv.label || fromId;
     const toLabel = toProv?.label || toId || "the other agent";
     const out = await openaiWithFallback(fromProv, fromKey, "life", [
@@ -437,11 +525,11 @@ export async function agentRelayComplete(
 
   if (!toProv) throw new Error(`Unknown agent: ${toId || "?"}`);
   const toKey = providerKey(settings, toProv);
-  if (!toKey) throw new Error(`No ${toProv.label} key — paste in DATA`);
+  if (!toKey && !toProv.keyless) throw new Error(`No ${toProv.label} key — paste in DATA`);
 
   if (fromProv && fromId !== toId) {
     const fromKey = providerKey(settings, fromProv);
-    if (!fromKey) throw new Error(`No ${fromProv.label} key — paste in DATA`);
+    if (!fromKey && !fromProv.keyless) throw new Error(`No ${fromProv.label} key — paste in DATA`);
     fromLabel = fromProv.label || fromId;
     const prep = await openaiWithFallback(fromProv, fromKey, "life", [
       {
@@ -500,14 +588,13 @@ async function validateOne(settings, prov) {
 
 export async function probeModels(settings, prov) {
   const key = providerKey(settings, prov);
-  if (!key) {
+  if (!key && !prov.keyless) {
     return { ok: false, id: prov.id, error: "no key" };
   }
   try {
-    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 12000, {
-      Authorization: `Bearer ${key}`,
-      ...(prov.headers || {}),
-    });
+    const headers = { ...(prov.headers || {}) };
+    if (!prov.keyless && key) headers.Authorization = `Bearer ${key}`;
+    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 12000, headers);
     if (!status) throw new Error("network failed (status 0)");
     if (status === 401 || status === 403) throw new Error(`http ${status} unauthorized`);
     if (status >= 400) throw new Error(`http ${status}`);
@@ -711,13 +798,14 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
   }
   if (tools && tools.length) payload.tools = tools;
   let data;
+  // Keyless providers get no Authorization header at all — an empty
+  // "Bearer " can trip anonymous endpoints that accept no auth.
+  const headers = { ...(prov.headers || {}) };
+  if (!prov.keyless && key) headers.Authorization = `Bearer ${key}`;
   try {
     data = await httpPostJson(
       `${prov.base.replace(/\/$/, "")}/chat/completions`,
-      {
-        Authorization: `Bearer ${key}`,
-        ...(prov.headers || {}),
-      },
+      headers,
       payload,
       45000,
     );
@@ -836,7 +924,7 @@ export async function cloudCompleteTools(settings, messages, tools, lane = "boos
   for (const prov of chain(settings, lane)) {
     if (isSpent(prov.id)) continue;
     const key = providerKey(settings, prov);
-    if (!key) continue;
+    if (!key && !prov.keyless) continue;
     try {
       const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools);
       markHealth(prov.id, true);
@@ -867,7 +955,7 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
   for (const prov of chainList) {
     if (isSpent(prov.id)) continue;
     const key = providerKey(settings, prov);
-    if (!key) continue;
+    if (!key && !prov.keyless) continue;
     try {
       const out = await openaiWithFallback(prov, key, laneForJob(job), messages, temperature, maxTokens);
       markHealth(prov.id, true);
@@ -889,7 +977,7 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
 /** One-shot chat ping — validates key beyond /models. */
 export async function chatPing(settings, prov) {
   const key = providerKey(settings, prov);
-  if (!key) return { ok: false, id: prov.id, error: "no key" };
+  if (!key && !prov.keyless) return { ok: false, id: prov.id, error: "no key" };
   try {
     const out = await openaiWithFallback(
       prov,
@@ -932,7 +1020,7 @@ export function compareProviders(settings, health = null) {
 
 /** "Say something to Gemini" / crew cross-talk in COMPARE. */
 export function parseCrossAgentIntent(text) {
-  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt|claude|anthropic|haiku|sonnet";
+  const agents = "groq|openrouter|gemini|grok|xai|cerebras|mistral|deepseek|openai|chatgpt|claude|anthropic|haiku|sonnet|pollinations";
   const t = String(text || "").trim();
   const relay = parseAgentRelay(t);
   if (relay?.from && relay?.to) {
@@ -1091,7 +1179,7 @@ export async function compareComplete(
 
   const jobs = keyed.map((prov, index) => {
     const key = providerKey(settings, prov);
-    if (!key) {
+    if (!key && !prov.keyless) {
       const row = { provider: prov.id, label: prov.label || prov.id, text: "", error: "no key", ok: false };
       emitPartial(row, index);
       return Promise.resolve(row);
@@ -1158,7 +1246,7 @@ export async function cloudComplete(settings, messages, lane = "life", temperatu
   const errors = [];
   for (const prov of chain(settings, lane)) {
     const key = providerKey(settings, prov);
-    if (!key) continue;
+    if (!key && !prov.keyless) continue;
     try {
       const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens);
       markHealth(prov.id, true);
@@ -1174,7 +1262,7 @@ export async function probeProvider(settings, providerId) {
   const prov = PROVIDERS.find((p) => p.id === providerId);
   if (!prov) return { ok: false, error: "unknown provider" };
   const key = providerKey(settings, prov);
-  if (!key) return { ok: false, error: "no key" };
+  if (!key && !prov.keyless) return { ok: false, error: "no key" };
   try {
     const out = await openaiOnce(
       prov,

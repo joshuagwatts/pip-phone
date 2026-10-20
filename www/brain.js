@@ -7,6 +7,7 @@ import {
   cloudComplete,
   cloudStatus,
   compareComplete,
+  keyedProviders,
   liveProviderIds,
   markHealth,
   parseCrossAgentIntent,
@@ -329,6 +330,10 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
   const allowQwen = !skipLocalModel(settings);
   const hasKeys = chatCloudEnabled(settings);
+  // Keyless-only (Pollinations) is NOT a real key: a fresh install with no
+  // pasted keys still gets Lite in SECURE auto. Only real keys or a paired
+  // desktop demote Lite to Guide-only.
+  const hasRealKeys = keyedProviders(settings).some((p) => !p.keyless);
   const liveCloud = liveProviderIds(settings);
   const pin = String(settings?.brain_pin || "auto").toLowerCase();
 
@@ -405,8 +410,8 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       operator: settings?.operator || "",
     });
     if (!hit?.text) throw new Error("lite blank");
-    // With keys or desktop, Lite is Guide-only (pin lite/local), never general chat.
-    if (pin !== "lite" && pin !== "local" && (hasKeys || desktopConfigured(settings))) {
+    // With real keys or desktop, Lite is Guide-only (pin lite/local), never general chat.
+    if (pin !== "lite" && pin !== "local" && (hasRealKeys || desktopConfigured(settings))) {
       throw new Error("lite skipped — use cloud/desktop");
     }
     return hit;
@@ -525,6 +530,20 @@ async function complete(messages, temperature = 0.7, maxTokens = 400, settings =
     return out.text;
   }
   throw new Error("no brain settings — pair desktop or paste LIVE keys");
+}
+
+/**
+ * Turn a cascade error like "compare: compare needs cloud keys in DATA"
+ * into a human line: "COMPARE needs cloud keys in DATA".
+ * Dedupe the step-name prefix; never jargon.
+ */
+function humanizeCascadeError(errMsg) {
+  const raw = String(errMsg || "").trim();
+  const m = raw.match(/^\s*([A-Za-z][\w-]*)\s*:\s*([\s\S]*)$/);
+  if (!m) return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
+  const step = m[1];
+  const rest = m[2].trim().replace(new RegExp(`^${step}\\b\\s*`, "i"), "");
+  return `${step.toUpperCase()}${rest ? " " + rest : ""}`.trim();
 }
 
 /**
@@ -711,10 +730,10 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
     const live = liveProviderIds(settings);
     const tip = errMsg
       ? hasVision
-        ? `Vision failed (${errMsg}). Need Gemini / OpenAI / OpenRouter key · LEAKY on.`
+        ? `Vision failed (${humanizeCascadeError(errMsg)}). Need Gemini / OpenAI / OpenRouter key · LEAKY on.`
         : live.length && routePin === "auto"
-          ? `Cloud brains failed (${errMsg}). Fix red keys in DATA · or pick another agent next to LENS.`
-          : `Couldn't reach ${agentLabel(asSelf ? agent : "pip")}. ${errMsg}. Pick another agent or fix keys in DATA.`
+          ? `Cloud brains failed (${humanizeCascadeError(errMsg)}). Fix red keys in DATA · or pick another agent next to LENS.`
+          : `${humanizeCascadeError(errMsg)}. Pick another agent, or fix keys in DATA.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true, agent: asSelf ? agent : "pip" };
@@ -834,4 +853,4 @@ function parseJson(text) {
   }
 }
 
-export { cloudStatus, privacyOn };
+export { cloudStatus, privacyOn, humanizeCascadeError };
