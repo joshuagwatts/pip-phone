@@ -159,9 +159,10 @@ function spentUntil(msg) {
     d.setHours(24, 5, 0, 0);
     return d.getTime();
   }
-  // Transient throttles (402/429) usually clear in minutes — don't bench the provider for hours.
+  // Transient throttles (402/429) are often momentary capacity blips — brief
+  // backoff so a single blip doesn't bench the provider, but retry storms stop.
   if (/\b402\b|429|payment.?required|too many requests/i.test(m)) {
-    return Date.now() + 15 * 60 * 1000;
+    return Date.now() + 2 * 60 * 1000;
   }
   return Date.now() + 3 * 60 * 60 * 1000;
 }

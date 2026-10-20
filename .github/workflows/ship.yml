@@ -169,12 +169,12 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.96** — Pollinations throttle handling.
+            **Phone Pip v0.1.97** — Pollinations throttle tuning.
 
-            - FIXED: when Pollinations throttles free requests (http 402), Pip now says so plainly — "Pollinations free tier throttled — wait a bit or pick another agent" — instead of a raw error chain. No more "fix keys in DATA" for a keyless provider.
-            - Stops hammering: one 402 backs Pollinations off for 15 minutes instead of retrying 6 doomed model variants every turn.
+            - The 402s are momentary capacity blips, not a hard limit — so the backoff is now 2 minutes instead of 15. One blip no longer benches Pollinations for a quarter hour.
+            - (From v0.1.96: throttles show a plain-English message, no retry storm, no "fix keys in DATA" for the keyless provider.)
 
-            No reinstall needed — installs right over v0.1.95.
+            No reinstall needed — installs right over v0.1.96.
           files: |
             Pip.apk
             Pip-Windows.exe
