@@ -728,12 +728,15 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
 
   if (!hit?.text) {
     const live = liveProviderIds(settings);
+    const throttled = /throttl|rate.?limit|quota|maxed|402|payment.?required/i.test(errMsg || "");
     const tip = errMsg
       ? hasVision
         ? `Vision failed (${humanizeCascadeError(errMsg)}). Need Gemini / OpenAI / OpenRouter key · LEAKY on.`
         : live.length && routePin === "auto"
           ? `Cloud brains failed (${humanizeCascadeError(errMsg)}). Fix red keys in DATA · or pick another agent next to LENS.`
-          : `${humanizeCascadeError(errMsg)}. Pick another agent, or fix keys in DATA.`
+          : throttled
+            ? `${humanizeCascadeError(errMsg)} Wait a bit or pick another agent.`
+            : `${humanizeCascadeError(errMsg)}. Pick another agent, or fix keys in DATA.`
       : FALLBACK;
     setTurn({ leaked: false, provider: "", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true, agent: asSelf ? agent : "pip" };

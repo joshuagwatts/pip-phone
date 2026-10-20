@@ -169,13 +169,12 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.95** — Super Chat + chat-first UI.
+            **Phone Pip v0.1.96** — Pollinations throttle handling.
 
-            - SUPER CHAT: the chat is now multi-model. Five modes — single, compare, auto ("best for the situation"), frugal (tokenomics: cost estimates, session spend), and discuss (multi-LLM round-table debate with rebuttals). Pollinations works free with no key; OpenAI/Anthropic/Gemini/OpenRouter/Groq/Grok/Cerebras/DeepSeek/Mistral work with your keys in DATA.
-            - CHAT-FIRST UI: chat is the home screen. OPP / TODAY / MEALS / WX / VIBE / KIT / MEMORY are now slide-over panels (tap the launcher, swipe away) instead of tabs.
-            - FIXED: "Yo" no longer gets a random canned response (the matcher saw "yo" inside "you"). Greetings greet; errors speak plainly.
+            - FIXED: when Pollinations throttles free requests (http 402), Pip now says so plainly — "Pollinations free tier throttled — wait a bit or pick another agent" — instead of a raw error chain. No more "fix keys in DATA" for a keyless provider.
+            - Stops hammering: one 402 backs Pollinations off for 15 minutes instead of retrying 6 doomed model variants every turn.
 
-            No reinstall needed — installs right over v0.1.94.
+            No reinstall needed — installs right over v0.1.95.
           files: |
             Pip.apk
             Pip-Windows.exe

@@ -159,11 +159,15 @@ function spentUntil(msg) {
     d.setHours(24, 5, 0, 0);
     return d.getTime();
   }
+  // Transient throttles (402/429) usually clear in minutes — don't bench the provider for hours.
+  if (/\b402\b|429|payment.?required|too many requests/i.test(m)) {
+    return Date.now() + 15 * 60 * 1000;
+  }
   return Date.now() + 3 * 60 * 60 * 1000;
 }
 
 export function isQuotaFail(msg) {
-  return /429|rate.?limit|too many requests|quota|insufficient.?quota|credit|billing|usage.?limit|token.?limit|exceeded your|resource.?exhausted|out of credits|spend.?limit|monthly.?limit|free.?tier.*limit|limit.?reached|tokens? per (day|minute|hour)/i.test(
+  return /429|\b402\b|payment.?required|rate.?limit|too many requests|quota|insufficient.?quota|credit|billing|usage.?limit|token.?limit|exceeded your|resource.?exhausted|out of credits|spend.?limit|monthly.?limit|free.?tier.*limit|limit.?reached|tokens? per (day|minute|hour)/i.test(
     String(msg || ""),
   );
 }
@@ -847,11 +851,11 @@ async function openaiWithFallback(prov, key, lane, messages, temperature, maxTok
     } catch (e) {
       const msg = String(e.message || e);
       errors.push(msg.slice(0, 120));
-      // Bad key won't magically work on another model ID.
-      if (isAuthFail(msg)) break;
+      // Bad key won't magically work on another model ID — same for a throttled endpoint.
+      if (isAuthFail(msg) || isQuotaFail(msg)) break;
     }
   }
-  if (!errors.some(isAuthFail)) {
+  if (!errors.some(isAuthFail) && !errors.some(isQuotaFail)) {
     const slim = slimMessagesForCloud(messages);
     for (const model of models.slice(0, 3)) {
       try {
@@ -860,9 +864,15 @@ async function openaiWithFallback(prov, key, lane, messages, temperature, maxTok
       } catch (e) {
         const msg = String(e.message || e);
         errors.push(`slim/${model}: ${msg.slice(0, 100)}`);
-        if (isAuthFail(msg)) break;
+        if (isAuthFail(msg) || isQuotaFail(msg)) break;
       }
     }
+  }
+  if (errors.length && errors.every(isQuotaFail)) {
+    const free = prov.keyless ? "free tier " : "";
+    throw new Error(
+      `${prov.label} ${free}throttled — rate-limited right now. Wait a bit or pick another agent.`,
+    );
   }
   throw new Error(errors.join(" · ") || `${prov.id} failed`);
 }
@@ -965,7 +975,9 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
       if (isQuotaFail(msg)) markSpent(prov.id, msg);
       else if (isAuthFail(msg)) markHealth(prov.id, false, msg);
       // Soft miss — keep prior LIVE so hierarchy isn't poisoned by one timeout.
-      errors.push(`${prov.id}: ${msg.slice(0, 120)}`);
+      // Dedupe: openaiWithFallback already prefixes the provider id.
+      const dedup = msg.replace(new RegExp(`^${prov.id}\\s*:\\s*`, "i"), "");
+      errors.push(`${prov.id}: ${dedup.slice(0, 120)}`);
     }
   }
   if (pinned) {
