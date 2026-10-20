@@ -1169,7 +1169,13 @@ export async function compareComplete(
 ) {
   void job;
   const keyed = compareProviders(settings, health);
-  if (!keyed.length) throw new Error("no keyed chat brains — paste keys in DATA");
+  if (!keyed.length) {
+    // Distinguish "nothing keyed" from "brains exist but are throttled right now".
+    const resting = keyedProviders(settings).some((p) => isSpent(p.id));
+    if (resting)
+      throw new Error("all compare brains throttled — wait a couple minutes or pick another agent");
+    throw new Error("no keyed chat brains — paste keys in DATA");
+  }
   const user = [...(messages || [])].reverse().find((m) => m && m.role === "user");
   const ask = String((user && user.content) || "").trim() || "hey";
   const operator = settings?.operator || "Joshua";
