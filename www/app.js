@@ -1,6 +1,7 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { loadStoreVault, scheduleVaultSave, flushVaultSave } from "./store-vault.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
+import { runAuto, runDiscuss, runFrugal } from "./superchat.js";
 import { AGENT_META, agentLabel } from "./crew.js";
 import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent, isSpent, clearSpent, mutedList, clearMutes } from "./cloud.js";
 import { desktopConfigured, desktopToken, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
@@ -706,7 +707,7 @@ function chatAgent() {
 function setChatAgent(id, silent = false) {
   const next = String(id || "pip").toLowerCase();
   db.settings.chat_agent = next;
-  if (next === "pip" || next === "auto") db.settings.brain_pin = "auto";
+  if (next === "pip" || next === "auto" || next === "discuss" || next === "frugal") db.settings.brain_pin = "auto";
   else if (next === "compare") db.settings.brain_pin = "compare";
   else db.settings.brain_pin = next;
   persist();
@@ -720,14 +721,14 @@ function setChatAgent(id, silent = false) {
 function tryAgentSwitch(text) {
   const t = String(text || "").trim();
   const m = t.match(
-    /^\s*(?:talk to|switch to|use|ask)\s+(pip|auto|compare|groq|openrouter|cerebras|mistral|gemini|grok|xai|deepseek|openai|chatgpt|claude|anthropic|haiku|sonnet|desktop)\b\s*$/i,
+    /^\s*(?:talk to|switch to|use|ask)\s+(pip|auto|compare|discuss|frugal|groq|openrouter|cerebras|mistral|gemini|grok|xai|deepseek|openai|chatgpt|claude|anthropic|haiku|sonnet|desktop)\b\s*$/i,
   );
   if (!m) return null;
   let id = m[1].toLowerCase();
   if (id === "grok") id = "xai";
   if (id === "chatgpt") id = "openai";
   if (id === "claude" || id === "haiku" || id === "sonnet") id = "anthropic";
-  if (id !== "pip" && id !== "auto" && id !== "desktop" && id !== "compare") {
+  if (id !== "pip" && id !== "auto" && id !== "desktop" && id !== "compare" && id !== "discuss" && id !== "frugal") {
     const keyed = cloudStatus(db.settings).keyed || [];
     if (!keyed.includes(id)) {
       return { ok: false, reply: `No ${agentLabel(id)} key yet. DATA → paste key, then pick ${agentLabel(id)}.` };
@@ -750,7 +751,11 @@ function tryAgentSwitch(text) {
           ? "COMPARE on — every keyed API answers; one bubble with tabs + overview."
           : id === "auto"
             ? "AUTO on — efficient cascade. Fast/cheap first, light voice, no Pip theater."
-            : `You're with ${meta.label}. ${meta.blurb || "Their voice, not Pip's."}`,
+            : id === "discuss"
+              ? "DISCUSS on — send a topic and the brains debate it turn by turn. Best answer wins."
+              : id === "frugal"
+                ? "FRUGAL on — the cheapest brain that can do the job answers, cost shown."
+                : `You're with ${meta.label}. ${meta.blurb || "Their voice, not Pip's."}`,
   };
 }
 
@@ -779,6 +784,8 @@ function agentOptions() {
     { id: "pip", section: "modes" },
     { id: "auto", section: "modes" },
     { id: "compare", section: "modes" },
+    { id: "discuss", section: "modes" },
+    { id: "frugal", section: "modes" },
   ];
   const apis = [];
   for (const id of ["anthropic", "groq", "nvidia", "cloudflare", "openrouter", "gemini", "zai", "cerebras", "deepseek", "openai", "mistral", "xai", "ollama", "pollinations"]) {
@@ -794,10 +801,19 @@ function agentOptions() {
 }
 
 function agentStatFor(id, { keyed, health, missing }) {
-  if (id === "pip" || id === "auto" || id === "compare") {
+  if (id === "pip" || id === "auto" || id === "compare" || id === "discuss" || id === "frugal") {
     return {
       cls: "mode",
-      text: id === "compare" ? "ALL" : id === "auto" ? "FAST" : "CONSULT",
+      text:
+        id === "compare"
+          ? "ALL"
+          : id === "auto"
+            ? "FAST"
+            : id === "discuss"
+              ? "DEBATE"
+              : id === "frugal"
+                ? "CHEAP"
+                : "CONSULT",
     };
   }
   // Keyless providers are always available — FREE, never "KEYED".
@@ -2721,6 +2737,162 @@ async function runAgentFlow(goal) {
   setStatus("PIP ON DECK");
 }
 
+/* ------------------------------------------------------- Super Chat modes ---
+ * DISCUSS / FRUGAL are explicit agent picks: the user selected the mode and
+ * tapped send, so that tap IS the per-turn consent superchat requires (same
+ * treatment as COMPARE's explicit launch). Never a default route. AUTO tries
+ * superchat's task-based picker first WITHOUT a consent flag — in SECURE it
+ * refuses (throws) and the caller falls back to the brain.js cascade, whose
+ * consent behavior stays exactly as shipped.
+ */
+function superChatMessages() {
+  return db.chat
+    .filter((m) => m && typeof m.content === "string" && m.content.trim() && !m.image)
+    .slice(-12)
+    .map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }));
+}
+
+function superLeak(userBubble) {
+  markBubbleLeaked(userBubble);
+  const last = db.chat.filter((m) => m.role === "user").pop();
+  if (last) last.leaked = true;
+}
+
+async function runSuperDiscuss(text, userBubble) {
+  setStatus("DISCUSS · BRAINS DEBATING…");
+  let out = null;
+  try {
+    out = await runDiscuss(db.settings, text, { perTurnConsent: true });
+    if (out && out.needsConfirm) {
+      // Over the cost cap — surface it in chat, then one tap confirms.
+      const note =
+        out.note || `This debate would cost ~$${Number(out.estimate || 0).toFixed(4)} — over the cap.`;
+      addLog("pip", note, { agent: "discuss", toolLine: "DISCUSS · COST CHECK" });
+      db.chat.push({ role: "pip", content: note, brain: "discuss", agent: "discuss" });
+      persist();
+      const pick = await pipOverlay({
+        kicker: "DISCUSS · COST CAP",
+        title: "Run this debate?",
+        body:
+          `Estimated <b style="color:#eaffef;">$${Number(out.estimate || 0).toFixed(4)}</b> — over the ` +
+          `$${Number(out.maxCost || 0.05).toFixed(2)} cap. Seats: ${esc((out.seats || []).map((s) => s.tag).join(" · "))}.`,
+        buttons: [
+          { id: "go", label: "RUN IT", primary: true },
+          { id: "no", label: "CANCEL" },
+        ],
+      });
+      if (pick !== "go") {
+        const skip = "Debate skipped — over the cost cap. Cheaper seats or a shorter topic brings the estimate down.";
+        addLog("pip", skip, { agent: "discuss" });
+        db.chat.push({ role: "pip", content: skip, brain: "discuss", agent: "discuss" });
+        persist();
+        setStatus("DISCUSS · SKIPPED");
+        return;
+      }
+      setStatus("DISCUSS · BRAINS DEBATING…");
+      out = await runDiscuss(db.settings, text, { perTurnConsent: true, confirmed: true });
+    }
+  } catch (e) {
+    const msg = String(e.message || e);
+    addLog("pip", msg, { agent: "discuss", toolLine: "DISCUSS" });
+    db.chat.push({ role: "pip", content: msg, brain: "discuss", agent: "discuss" });
+    persist();
+    setStatus("DISCUSS ERROR");
+    return;
+  }
+  if (!out || !Array.isArray(out.thread)) {
+    addLog("pip", "Debate came back empty — try again or pick a brain.", { agent: "discuss" });
+    setStatus("DISCUSS · EMPTY");
+    return;
+  }
+  superLeak(userBubble);
+  const seatTags = (out.seats || []).map((s) => s.tag).join(" · ");
+  const head = `Debate: ${out.topic} — ${seatTags} · ${out.rounds} rebuttal round${out.rounds === 1 ? "" : "s"}.`;
+  addLog("pip", head, { agent: "discuss", toolLine: "DISCUSS" });
+  db.chat.push({ role: "pip", content: head, brain: "discuss", agent: "discuss", leaked: true });
+  for (const rd of out.thread) {
+    for (const t of rd.turns || []) {
+      addLog("pip", t.text, {
+        brain: t.provider,
+        provider: t.provider,
+        agent: t.provider,
+        leaked: true,
+        toolLine: `${t.tag} · ${rd.kind === "openers" ? "OPENING TAKE" : `REBUTTAL ${rd.round}`}`,
+      });
+      db.chat.push({ role: "pip", content: t.text, brain: t.provider, agent: t.provider, leaked: true });
+    }
+  }
+  const synth = out.synthesis || {};
+  if (synth.text) {
+    addLog("pip", synth.text, {
+      brain: synth.provider,
+      provider: synth.provider,
+      agent: synth.provider,
+      leaked: true,
+      tokens: Number(out.usage?.in || 0) + Number(out.usage?.out || 0),
+      toolLine: "VERDICT · BEST ANSWER",
+    });
+    db.chat.push({ role: "pip", content: synth.text, brain: synth.provider, agent: synth.provider, leaked: true });
+    try { captureMemory(synth.text, { role: "pip" }); } catch { /* memory optional */ }
+  }
+  persist();
+  updateBrainChip();
+  setStatus(`DISCUSS · VERDICT IN · ${agentLabel(synth.provider || "discuss")}`);
+}
+
+async function runSuperFrugal(text, userBubble) {
+  setStatus("FRUGAL · CHEAPEST CAPABLE BRAIN…");
+  try {
+    const res = await runFrugal(db.settings, superChatMessages(), { perTurnConsent: true });
+    superLeak(userBubble);
+    db.chat.push({ role: "pip", content: res.text, brain: res.provider, agent: "frugal", leaked: true });
+    try { captureMemory(res.text, { role: "pip" }); } catch { /* memory optional */ }
+    persist();
+    addLog("pip", res.text, {
+      brain: res.provider,
+      provider: res.provider,
+      agent: "frugal",
+      leaked: true,
+      tokens: res.tokens,
+      toolLine: `FRUGAL · ${res.pickReason || "cheapest capable"} · ~$${Number(res.cost || 0).toFixed(6)}`,
+    });
+    updateBrainChip();
+    setStatus(`FRUGAL · ${agentLabel(res.provider)} · ~$${Number(res.cost || 0).toFixed(4)}`);
+  } catch (e) {
+    const msg = String(e.message || e);
+    addLog("pip", msg, { agent: "frugal", toolLine: "FRUGAL" });
+    db.chat.push({ role: "pip", content: msg, brain: "frugal", agent: "frugal" });
+    persist();
+    setStatus("FRUGAL ERROR");
+  }
+}
+
+/** AUTO via superchat: task-classified best-fit brain. True when it answered;
+ *  false → caller falls through to the brain.js cascade, untouched. */
+async function trySuperAuto(userBubble) {
+  try {
+    const res = await runAuto(db.settings, superChatMessages(), {});
+    if (!res || !res.text) return false;
+    superLeak(userBubble);
+    db.chat.push({ role: "pip", content: res.text, brain: res.provider, agent: "auto", leaked: true });
+    try { captureMemory(res.text, { role: "pip" }); } catch { /* memory optional */ }
+    persist();
+    addLog("pip", res.text, {
+      brain: res.provider,
+      provider: res.provider,
+      agent: "auto",
+      leaked: true,
+      tokens: res.tokens,
+      toolLine: `AUTO · ${res.task || "general"} · ${res.pickReason || ""}`,
+    });
+    updateBrainChip();
+    setStatus(`AUTO · ${agentLabel(res.provider)}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function sendChat() {
   const box = $("#input");
   const text = (box.value || "").trim();
@@ -2997,6 +3169,30 @@ async function sendChat() {
     }
     return;
   }
+  }
+
+  // Super Chat routing — DISCUSS/FRUGAL are explicit picks: route BEFORE the
+  // brain.js cascade so they can't fall through to a single-model reply.
+  // AUTO tries superchat's task-based picker first; any refusal/failure
+  // falls through to the cascade below, untouched.
+  if (!hasPhoto) {
+    const agentNow = chatAgent();
+    if (agentNow === "discuss") {
+      await runSuperDiscuss(text, userBubble);
+      return;
+    }
+    if (agentNow === "frugal") {
+      await runSuperFrugal(text, userBubble);
+      return;
+    }
+    if (
+      agentNow === "auto" &&
+      String(db.settings.brain_pin || "").toLowerCase() !== "compare" &&
+      !/^\s*(compare|ask all|all brains?)\s*[:\-]?\s*/i.test(text)
+    ) {
+      const answered = await trySuperAuto(userBubble);
+      if (answered) return;
+    }
   }
 
   try {

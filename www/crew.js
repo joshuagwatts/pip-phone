@@ -109,6 +109,8 @@ export const AGENT_META = {
   pollinations: { label: "POLLINATIONS", blurb: "Free · no key · gpt-oss-20b · can be slow" },
   desktop: { label: "DESKTOP", blurb: "Your PC GPU · private local models" },
   compare: { label: "COMPARE", blurb: "All keyed APIs · one bubble · tab each reply + overview" },
+  discuss: { label: "DISCUSS", blurb: "Brains debate each other · best answer wins" },
+  frugal: { label: "FRUGAL", blurb: "Cheapest brain that can do it · cost shown" },
 };
 
 export function agentLabel(id) {

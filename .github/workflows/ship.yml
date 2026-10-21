@@ -169,14 +169,14 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.100** — five more free brains.
+            **Phone Pip v0.1.101** — all the speech modes, in the chat.
 
-            - NEW in DATA: NVIDIA NIM (one free key, 100+ models), Cloudflare Workers AI (10,000 free neurons/day — needs token + account ID, both have fields in DATA), Z.ai (GLM Flash models are $0), Ollama Cloud (free plan).
-            - OpenRouter now falls back through its :free models, so a key with no credits still answers.
-            - All five route through chat/compare/auto/frugal and the mute system like the rest. Keys sync from desktop automatically once entered there.
-            - Honest note: these are wired and tested structurally, but not live-tested — first real check is your first key.
+            - DISCUSS mode (new in the agent picker): pick it, type a topic — the brains debate it turn by turn, each one reading the others, and the final bubble is the VERDICT with the best answer. If a debate would cost real money, Pip asks before running it.
+            - FRUGAL mode (new in the picker): the cheapest brain that can do the job answers, with the ~cost shown.
+            - AUTO now uses the real task-based picker — it reads your message and assigns the best-fit brain, and labels why.
+            - Plus COMPARE (all brains side by side) and single-brain picking, as before. All five new free brains from v0.1.100 work in every mode.
 
-            No reinstall needed — installs right over v0.1.99.
+            No reinstall needed — installs right over v0.1.100.
           files: |
             Pip.apk
             Pip-Windows.exe
