@@ -15,6 +15,8 @@
 import {
   PROVIDERS,
   completeProvider,
+  isDeadModelFail,
+  isQuotaFail,
   providerReady,
   privacyOn,
 } from "./cloud.js";
@@ -306,6 +308,27 @@ function seatLabel(seats, i) {
   return s.tag || prov?.label || s.id;
 }
 
+/**
+ * One short, human reason for a failed seat — NEVER the raw fallback chain.
+ * A provider's openaiWithFallback error can be a 9-segment wall of every
+ * model it tried; a debate only ever surfaces the classified gist.
+ */
+export function shortFailReason(msg) {
+  const m = String(msg?.message || msg || "");
+  if (isDeadModelFail(m)) return "model gone — muted";
+  if (/muted/i.test(m)) return "muted";
+  if (isQuotaFail(m)) return "quota spent";
+  if (/needs a key|no key|not keyed/i.test(m)) return "no key";
+  const first = (m.split(/(?<=[.!?])\s+/)[0] || m).trim();
+  return (first || "failed").slice(0, 100);
+}
+
+/** The whole debate died — one line: "DISCUSS failed — id: reason · id: reason". */
+function discussFailLine(failReasons) {
+  const pairs = [...failReasons.entries()].map(([id, r]) => `${id}: ${r}`);
+  return `DISCUSS failed — ${pairs.join(" · ") || "no answers"}`.slice(0, 240);
+}
+
 /** Pre-call cost estimate for a discuss run (worst case: full maxTokens each turn). */
 export function estimateDiscussCost(seatIds, rounds, topic, maxTokens, includeSynthesis = true) {
   const turnsPerSeat = 1 + rounds;
@@ -332,6 +355,8 @@ export function estimateDiscussCost(seatIds, rounds, topic, maxTokens, includeSy
  * A final synthesis closes the thread.
  * Cost-capped: estimate > maxCost without confirmed:true → { needsConfirm:true }
  * (the UI shows the estimate and re-calls with confirmed:true).
+ * Seat failures are survivable: a failed seat sits out with a short reason
+ * (result.failures); only an all-seats failure throws, as one short line.
  * opts.completeFn injectable for tests.
  */
 export async function runDiscuss(settings, topic, opts = {}) {
@@ -385,6 +410,25 @@ export async function runDiscuss(settings, topic, opts = {}) {
   const run = completeFn || ((s, id, m, o) => complete(s, id, m, o));
   const thread = []; // [{ round, turns: [{ seat, provider, tag, text, usage, cost }] }]
 
+  // A seat that fails does NOT kill the debate: its turn is recorded with a
+  // SHORT classified reason and the panel goes on without it. Only when
+  // every seat fails does the run throw — and then it's one short line.
+  const failReasons = new Map(); // providerId -> first short reason
+  let okTurns = 0;
+  const tryTurn = async (i, messages, o) => {
+    const s = seatObjs[i];
+    try {
+      const r = await run(settings, s.id, messages, o);
+      okTurns++;
+      return { seat: i, provider: s.id, tag: s.tag, text: r.text, usage: r.usage, cost: r.cost || 0 };
+    } catch (e) {
+      const reason = shortFailReason(e);
+      if (!failReasons.has(s.id)) failReasons.set(s.id, reason);
+      return { seat: i, provider: s.id, tag: s.tag, text: "", usage: null, cost: 0, failed: true, error: reason };
+    }
+  };
+  const turnText = (t) => t.text || `(sat out — ${t.error || "failed"})`;
+
   // Full transcript so far: every completed round + the current round's turns
   // already spoken. Rebuttals run sequentially in fixed speaking order, so
   // each seat's prompt includes the rebuttals that landed before its turn —
@@ -394,13 +438,13 @@ export async function runDiscuss(settings, topic, opts = {}) {
     for (const rd of thread) {
       parts.push(
         `--- Round ${rd.round} (${rd.kind}) ---\n` +
-          rd.turns.map((t) => `${t.tag}: ${t.text}`).join("\n\n"),
+          rd.turns.map((t) => `${t.tag}: ${turnText(t)}`).join("\n\n"),
       );
     }
     if (thisRoundTurns.length) {
       parts.push(
         `--- Round ${roundNo} (rebuttal, in progress) ---\n` +
-          thisRoundTurns.map((t) => `${t.tag}: ${t.text}`).join("\n\n"),
+          thisRoundTurns.map((t) => `${t.tag}: ${turnText(t)}`).join("\n\n"),
       );
     }
     return parts.join("\n\n");
@@ -413,21 +457,21 @@ export async function runDiscuss(settings, topic, opts = {}) {
     const turns = [];
     for (let i = 0; i < seatObjs.length; i++) {
       const s = seatObjs[i];
-      const r = await run(
-        settings,
-        s.id,
-        [
-          { role: "system", content: s.persona },
-          {
-            role: "user",
-            content:
-              `DEBATE TOPIC: ${cleanTopic}\n\nGive your opening take in under ${maxTokens} tokens. ` +
-              `Be direct and opinionated — this is a debate, not an essay. Take a clear stance.`,
-          },
-        ],
-        { perTurnConsent, temperature, maxTokens },
+      turns.push(
+        await tryTurn(
+          i,
+          [
+            { role: "system", content: s.persona },
+            {
+              role: "user",
+              content:
+                `DEBATE TOPIC: ${cleanTopic}\n\nGive your opening take in under ${maxTokens} tokens. ` +
+                `Be direct and opinionated — this is a debate, not an essay. Take a clear stance.`,
+            },
+          ],
+          { perTurnConsent, temperature, maxTokens },
+        ),
       );
-      turns.push({ seat: i, provider: s.id, tag: s.tag, text: r.text, usage: r.usage, cost: r.cost || 0 });
     }
     thread.push({ round: 0, kind: "openers", turns });
   }
@@ -443,74 +487,83 @@ export async function runDiscuss(settings, topic, opts = {}) {
       const s = seatObjs[i];
       const soFar = transcriptSoFar(r, turns);
       const justSpoke = turns.map((t) => t.tag).join(", ");
-      const res = await run(
-        settings,
-        s.id,
-        [
-          { role: "system", content: s.persona },
-          {
-            role: "user",
-            content:
-              `DEBATE TOPIC: ${cleanTopic}\n\n` +
-              `Speaking order this round: ${SPEAK_ORDER}. You are ${s.tag}, ` +
-              (i === 0
-                ? `speaking first — engage the transcript below head-on.\n\n`
-                : `speaking after ${justSpoke} — their rebuttals are the freshest part of the transcript.\n\n`) +
-              `FULL DEBATE TRANSCRIPT SO FAR:\n\n${soFar}\n\n` +
-              `Now give YOUR rebuttal. Respond DIRECTLY to the other panelists' points` +
-              (turns.length
-                ? ` — especially what ${justSpoke} just argued this round: agree where they're right, ` +
-                  `push back where they're wrong, quote them by name when you do.`
-                : `: agree where they're right, push back where they're wrong, quote them by name when you do.`) +
-              ` Don't repeat your opener; move the discussion forward. Under ${maxTokens} tokens.`,
-          },
-        ],
-        { perTurnConsent, temperature, maxTokens },
+      turns.push(
+        await tryTurn(
+          i,
+          [
+            { role: "system", content: s.persona },
+            {
+              role: "user",
+              content:
+                `DEBATE TOPIC: ${cleanTopic}\n\n` +
+                `Speaking order this round: ${SPEAK_ORDER}. You are ${s.tag}, ` +
+                (i === 0
+                  ? `speaking first — engage the transcript below head-on.\n\n`
+                  : `speaking after ${justSpoke} — their rebuttals are the freshest part of the transcript.\n\n`) +
+                `FULL DEBATE TRANSCRIPT SO FAR:\n\n${soFar}\n\n` +
+                `Now give YOUR rebuttal. Respond DIRECTLY to the other panelists' points` +
+                (turns.length
+                  ? ` — especially what ${justSpoke} just argued this round: agree where they're right, ` +
+                    `push back where they're wrong, quote them by name when you do.`
+                  : `: agree where they're right, push back where they're wrong, quote them by name when you do.`) +
+                ` Don't repeat your opener; move the discussion forward. Under ${maxTokens} tokens.`,
+            },
+          ],
+          { perTurnConsent, temperature, maxTokens },
+        ),
       );
-      turns.push({
-        seat: i,
-        provider: s.id,
-        tag: s.tag,
-        text: res.text,
-        usage: res.usage,
-        cost: res.cost || 0,
-      });
     }
     thread.push({ round: r, kind: "rebuttal", turns });
   }
 
   // Synthesis — strongest ready provider (or explicit pick) reads the thread.
+  // Prefer a seat that actually answered; a dead seat can't moderate.
+  const answeredIds = new Set();
+  for (const rd of thread) for (const t of rd.turns) if (!t.failed) answeredIds.add(t.provider);
   const synthId =
     synthesizer && providerReady(settings, synthesizer)
       ? String(synthesizer).toLowerCase()
-      : seatIds[0];
+      : answeredIds.has(seatIds[0])
+        ? seatIds[0]
+        : seatIds.find((id) => answeredIds.has(id)) || seatIds[0];
   const fullThread = thread
     .map((rd) =>
       `## Round ${rd.round} (${rd.kind})\n` +
-      rd.turns.map((t) => `### ${t.tag}\n${t.text}`).join("\n\n"),
+      rd.turns.map((t) => `### ${t.tag}\n${turnText(t)}`).join("\n\n"),
     )
     .join("\n\n");
-  const synthRes = await run(
-    settings,
-    synthId,
-    [
-      {
-        role: "system",
-        content:
-          "You are the moderator synthesizing a panel debate. Read the full thread. " +
-          "Write a tight synthesis: where the panel agreed, where they split, and your " +
-          "bottom-line recommendation. Quote the strongest point from each side. No fluff.",
-      },
-      { role: "user", content: `DEBATE TOPIC: ${cleanTopic}\n\nFULL THREAD:\n\n${fullThread}` },
-    ],
-    { perTurnConsent, temperature: 0.5, maxTokens: 500 },
-  );
-  const synthesis = {
-    provider: synthId,
-    text: synthRes.text,
-    usage: synthRes.usage,
-    cost: synthRes.cost || 0,
-  };
+  let synthesis = { provider: synthId, text: "", usage: null, cost: 0 };
+  try {
+    const synthRes = await run(
+      settings,
+      synthId,
+      [
+        {
+          role: "system",
+          content:
+            "You are the moderator synthesizing a panel debate. Read the full thread. " +
+            "Write a tight synthesis: where the panel agreed, where they split, and your " +
+            "bottom-line recommendation. Quote the strongest point from each side. No fluff.",
+        },
+        { role: "user", content: `DEBATE TOPIC: ${cleanTopic}\n\nFULL THREAD:\n\n${fullThread}` },
+      ],
+      { perTurnConsent, temperature: 0.5, maxTokens: 500 },
+    );
+    synthesis = {
+      provider: synthId,
+      text: synthRes.text,
+      usage: synthRes.usage,
+      cost: synthRes.cost || 0,
+    };
+  } catch (e) {
+    const reason = shortFailReason(e);
+    if (!failReasons.has(synthId)) failReasons.set(synthId, reason);
+    synthesis = { provider: synthId, text: "", usage: null, cost: 0, error: reason };
+  }
+
+  // Every seat sat out — the debate never happened. One short line, never
+  // the concatenated raw error chains.
+  if (!okTurns) throw new Error(discussFailLine(failReasons));
 
   const usage = { in: 0, out: 0 };
   let cost = 0;
@@ -530,6 +583,7 @@ export async function runDiscuss(settings, topic, opts = {}) {
     rounds: safeRounds,
     thread,
     synthesis,
+    failures: [...failReasons.entries()].map(([provider, reason]) => ({ provider, reason })),
     usage,
     cost,
     estimate,

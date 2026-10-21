@@ -136,16 +136,22 @@ export const PROVIDERS = [
     label: "NVIDIA NIM",
     field: "nvidia",
     base: "https://integrate.api.nvidia.com/v1",
-    life: "meta/llama-3.3-70b-instruct",
-    boost: "nvidia/nemotron-3-super-120b-a12b",
+    // Oct 2026: llama-3.3-70b + gpt-oss-120b hit end-of-life on NIM and the
+    // old nemotron-3-super wasn't enabled per-account — every wired model
+    // was dead. These are the current catalog IDs (dead ones now mute
+    // themselves on first strike via isDeadModelFail).
+    life: "deepseek-ai/deepseek-v4-flash",
+    boost: "moonshotai/kimi-k2-instruct",
     models: [
-      "meta/llama-3.3-70b-instruct",
-      "nvidia/nemotron-3-super-120b-a12b",
-      "openai/gpt-oss-120b",
-      "openai/gpt-oss-20b",
+      "deepseek-ai/deepseek-v4-flash",
+      "deepseek-ai/deepseek-v4.1-flash",
+      "moonshotai/kimi-k2-instruct",
+      "meta/llama-3.1-405b-instruct",
+      "z-ai/glm-5.3",
+      "nvidia/llama-3.3-nemotron-super-49b-v1",
     ],
     keyUrl: "https://build.nvidia.com",
-    tip: "Free key · 100+ open models · ~40 req/min.",
+    tip: "Free key · DeepSeek V4 Flash · Kimi K2 · dead models mute themselves.",
   },
   {
     id: "cloudflare",
@@ -232,6 +238,19 @@ function spentUntil(msg) {
 
 export function isQuotaFail(msg) {
   return /429|\b402\b|payment.?required|rate.?limit|too many requests|quota|insufficient.?quota|credit|billing|usage.?limit|token.?limit|exceeded your|resource.?exhausted|out of credits|spend.?limit|monthly.?limit|free.?tier.*limit|limit.?reached|tokens? per (day|minute|hour)/i.test(
+    String(msg || ""),
+  );
+}
+
+/**
+ * True when the provider says the MODEL itself is gone — end-of-life,
+ * not enabled on the account, or an unknown/invalid model id. These are
+ * permanent, not transient: the voice is spent and mutes on first strike.
+ * Anchored to model/function wording on purpose — a bare 404 or a bare
+ * "not found" (could be a URL, a file, anything) does NOT qualify.
+ */
+export function isDeadModelFail(msg) {
+  return /end of life|no longer available|not found for account|function '[^']+': not found|model[^.]*not found|does not exist|invalid model|unknown model|model_not_found/i.test(
     String(msg || ""),
   );
 }
@@ -345,10 +364,21 @@ function saveStreaks(map) {
     localStorage.setItem(STREAK_KEY, JSON.stringify(map));
   } catch {}
 }
-/** Count a non-quota failure; 3 in a row mutes the provider for 30 min. */
-export function noteProviderFailure(id) {
+/**
+ * The failure seam every caller routes through (completeProvider,
+ * chatComplete, compareComplete). A dead-model error (see isDeadModelFail)
+ * mutes the provider for 24h on the FIRST strike — the model is gone, so
+ * retrying it is pure waste. Anything else keeps the streak behavior:
+ * 3 consecutive non-quota failures mute for 30 min.
+ * Returns true when this call dead-model muted the provider.
+ */
+export function noteProviderFailure(id, msg = "") {
   const key = String(id || "");
-  if (!key) return;
+  if (!key) return false;
+  if (msg && isDeadModelFail(msg)) {
+    muteProvider(key, "dead model", 24 * 60 * 60 * 1000);
+    return true;
+  }
   const map = loadStreaks();
   const n = (Number(map[key]) || 0) + 1;
   if (n >= 3) {
@@ -438,10 +468,15 @@ export async function completeProvider(
         });
       }
     }
-    if (isQuotaFail(msg)) markSpent(prov.id, msg);
+    // Dead-model check comes FIRST: an end-of-life chain must mute the voice
+    // on the spot, never get read as a quota trip or a streak failure.
+    if (isDeadModelFail(msg)) {
+      noteProviderFailure(prov.id, msg);
+      markHealth(prov.id, false, "dead model — muted 24h");
+    } else if (isQuotaFail(msg)) markSpent(prov.id, msg);
     else {
       markHealth(prov.id, false, msg.slice(0, 120));
-      noteProviderFailure(prov.id);
+      noteProviderFailure(prov.id, msg);
     }
     throw e;
   }
@@ -1152,9 +1187,10 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
       return out;
     } catch (e) {
       const msg = String(e.message || e);
-      if (isQuotaFail(msg)) markSpent(prov.id, msg);
+      if (isDeadModelFail(msg)) noteProviderFailure(prov.id, msg);
+      else if (isQuotaFail(msg)) markSpent(prov.id, msg);
       else if (isAuthFail(msg)) markHealth(prov.id, false, msg);
-      else noteProviderFailure(prov.id);
+      else noteProviderFailure(prov.id, msg);
       // Soft miss — keep prior LIVE so hierarchy isn't poisoned by one timeout.
       // Dedupe: openaiWithFallback already prefixes the provider id.
       const dedup = msg.replace(new RegExp(`^${prov.id}\\s*:\\s*`, "i"), "");
@@ -1398,8 +1434,9 @@ export async function compareComplete(
         };
       } catch (e) {
         const err = String(e.message || e).slice(0, 160);
-        if (isQuotaFail(err)) markSpent(prov.id, err);
-        else noteProviderFailure(prov.id);
+        if (isDeadModelFail(err)) noteProviderFailure(prov.id, err);
+        else if (isQuotaFail(err)) markSpent(prov.id, err);
+        else noteProviderFailure(prov.id, err);
         return {
           provider: prov.id,
           label: prov.label || prov.id,
@@ -1412,8 +1449,9 @@ export async function compareComplete(
     return withTimeout(run(), timeoutMs, prov.label || prov.id)
       .catch((e) => {
         const err = String(e.message || e).slice(0, 160);
-        if (isQuotaFail(err)) markSpent(prov.id, err);
-        else noteProviderFailure(prov.id);
+        if (isDeadModelFail(err)) noteProviderFailure(prov.id, err);
+        else if (isQuotaFail(err)) markSpent(prov.id, err);
+        else noteProviderFailure(prov.id, err);
         return {
           provider: prov.id,
           label: prov.label || prov.id,

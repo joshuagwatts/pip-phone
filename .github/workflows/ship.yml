@@ -169,14 +169,13 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.101** — all the speech modes, in the chat.
+            **Phone Pip v0.1.102** — dead voices mute themselves.
 
-            - DISCUSS mode (new in the agent picker): pick it, type a topic — the brains debate it turn by turn, each one reading the others, and the final bubble is the VERDICT with the best answer. If a debate would cost real money, Pip asks before running it.
-            - FRUGAL mode (new in the picker): the cheapest brain that can do the job answers, with the ~cost shown.
-            - AUTO now uses the real task-based picker — it reads your message and assigns the best-fit brain, and labels why.
-            - Plus COMPARE (all brains side by side) and single-brain picking, as before. All five new free brains from v0.1.100 work in every mode.
+            - Your NVIDIA test found the truth: the models wired in v0.1.100 were end-of-lifed by NVIDIA. NVIDIA now points at current models (DeepSeek V4 Flash, Kimi K2, Llama 3.1 405B, GLM-5.3).
+            - Any brain whose model is gone (end-of-life, not on your account) now mutes itself for 24h on the FIRST failure — no more retrying a corpse for every debate seat. DATA shows it as "dead model"; UNMUTE ALL clears it.
+            - DISCUSS no longer dies with an error wall: a brain that can't answer sits out with a one-line note, the debate continues with the living brains, and if all of them fail you get one short line saying why.
 
-            No reinstall needed — installs right over v0.1.100.
+            No reinstall needed — installs right over v0.1.101.
           files: |
             Pip.apk
             Pip-Windows.exe

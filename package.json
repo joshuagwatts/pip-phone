@@ -1,7 +1,7 @@
 {
   "name": "pip-phone",
   "private": true,
-  "version": "0.1.101",
+  "version": "0.1.102",
   "description": "Standalone Pip — Android, iPhone, Mac, Windows",
   "main": "desktop/main.js",
   "scripts": {

@@ -2793,7 +2793,11 @@ async function runSuperDiscuss(text, userBubble) {
       out = await runDiscuss(db.settings, text, { perTurnConsent: true, confirmed: true });
     }
   } catch (e) {
-    const msg = String(e.message || e);
+    // Belt-and-suspenders: never render a raw error wall — dedupe repeated
+    // " · " segments and cap the displayed line.
+    const msg = [...new Set(String(e.message || e).split(" · ").map((s) => s.trim()).filter(Boolean))]
+      .join(" · ")
+      .slice(0, 240);
     addLog("pip", msg, { agent: "discuss", toolLine: "DISCUSS" });
     db.chat.push({ role: "pip", content: msg, brain: "discuss", agent: "discuss" });
     persist();
@@ -2810,8 +2814,14 @@ async function runSuperDiscuss(text, userBubble) {
   const head = `Debate: ${out.topic} — ${seatTags} · ${out.rounds} rebuttal round${out.rounds === 1 ? "" : "s"}.`;
   addLog("pip", head, { agent: "discuss", toolLine: "DISCUSS" });
   db.chat.push({ role: "pip", content: head, brain: "discuss", agent: "discuss", leaked: true });
+  if (Array.isArray(out.failures) && out.failures.length) {
+    const sat = `Sat out: ${out.failures.map((f) => `${f.provider} (${f.reason})`).join(" · ")}`;
+    addLog("pip", sat, { agent: "discuss", toolLine: "DISCUSS" });
+    db.chat.push({ role: "pip", content: sat, brain: "discuss", agent: "discuss", leaked: true });
+  }
   for (const rd of out.thread) {
     for (const t of rd.turns || []) {
+      if (t.failed) continue; // sat out — named in the line above, no empty bubble
       addLog("pip", t.text, {
         brain: t.provider,
         provider: t.provider,
