@@ -2,7 +2,7 @@ import { load, save, KIT_LABELS } from "./store.js";
 import { loadStoreVault, scheduleVaultSave, flushVaultSave } from "./store-vault.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
-import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent, isSpent, clearSpent } from "./cloud.js";
+import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent, isSpent, clearSpent, mutedList, clearMutes } from "./cloud.js";
 import { desktopConfigured, desktopToken, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
@@ -1376,6 +1376,10 @@ function renderData() {
     <h3>BRAIN KEYS</h3>
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
     <p class="muted" id="keys-memory">${keyedNow.length ? `IN MEMORY: ${esc(keyedNow.join(" · "))}` : "NO KEYS IN MEMORY — paste below"}</p>
+    ${mutedList().length ? `<p class="muted" id="keys-muted">MUTED: ${mutedList().map((m) => `${esc(m.id.toUpperCase())} (${esc(m.reason || "benched")})`).join(" · ")}</p>
+    <div class="actions">
+      <button type="button" id="keys-unmute">UNMUTE ALL</button>
+    </div>` : ""}
     <p class="muted">${esc(httpLine)}</p>
     <div class="actions">
       ${paired ? `<button type="button" id="keys-sync">SYNC FROM DESKTOP</button>` : ""}
@@ -1639,6 +1643,16 @@ function renderData() {
       renderData();
       renderPrivacy();
       setStatus("THEME RESET · PHOSPHOR GREEN");
+    };
+  }
+
+  const unmuteBtn = $("#keys-unmute");
+  if (unmuteBtn) {
+    unmuteBtn.onclick = () => {
+      clearMutes();
+      clearSpent();
+      setStatus("ALL BRAINS UNMUTED");
+      renderData();
     };
   }
 

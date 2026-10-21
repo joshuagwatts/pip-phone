@@ -198,6 +198,8 @@ export function markSpent(id, error = "") {
     at: Date.now(),
   };
   saveSpent(map);
+  // Spent = muted too, so DATA can show one uniform bench list.
+  muteProvider(key, "quota spent", spentUntil(error) - Date.now());
   markHealth(key, false, `MAXED · ${String(error || "quota").slice(0, 80)}`);
 }
 
@@ -220,9 +222,93 @@ export function spentMap() {
   return out;
 }
 
-/** Keyed providers that still have budget (not maxed). */
+// ---- Provider mute: spent or repeatedly-failing providers get benched.
+// A muted provider is skipped by chat/compare/auto/frugal routing until its
+// timer runs out or Joshua unmutes it in DATA. Quota trips mute via markSpent;
+// 3 consecutive non-quota failures mute for 30 minutes ("acting worthless").
+const MUTE_KEY = "pip.phone.muted.v1";
+const STREAK_KEY = "pip.phone.failstreak.v1";
+
+function loadMute() {
+  try {
+    return JSON.parse(localStorage.getItem(MUTE_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+function saveMute(map) {
+  try {
+    localStorage.setItem(MUTE_KEY, JSON.stringify(map));
+  } catch {}
+}
+export function muteProvider(id, reason = "", ms = 30 * 60 * 1000) {
+  const key = String(id || "");
+  if (!key) return;
+  const map = loadMute();
+  map[key] = { until: Date.now() + Math.max(0, ms), reason: String(reason || "").slice(0, 80), at: Date.now() };
+  saveMute(map);
+}
+export function isMuted(id) {
+  const row = loadMute()[String(id || "")];
+  return Boolean(row && row.until > Date.now());
+}
+export function unmuteProvider(id) {
+  const map = loadMute();
+  delete map[String(id || "")];
+  saveMute(map);
+}
+export function clearMutes() {
+  saveMute({});
+}
+export function mutedList() {
+  const now = Date.now();
+  return Object.entries(loadMute())
+    .filter(([, r]) => r && r.until > now)
+    .map(([id, r]) => ({ id, reason: r.reason || "", until: r.until }));
+}
+/** Benched = quota-spent OR muted. Routing skips benched providers. */
+export function isBenched(id) {
+  return isSpent(id) || isMuted(id);
+}
+function loadStreaks() {
+  try {
+    return JSON.parse(localStorage.getItem(STREAK_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+function saveStreaks(map) {
+  try {
+    localStorage.setItem(STREAK_KEY, JSON.stringify(map));
+  } catch {}
+}
+/** Count a non-quota failure; 3 in a row mutes the provider for 30 min. */
+export function noteProviderFailure(id) {
+  const key = String(id || "");
+  if (!key) return;
+  const map = loadStreaks();
+  const n = (Number(map[key]) || 0) + 1;
+  if (n >= 3) {
+    muteProvider(key, "kept failing", 30 * 60 * 1000);
+    map[key] = 0;
+  } else {
+    map[key] = n;
+  }
+  saveStreaks(map);
+}
+export function noteProviderSuccess(id) {
+  const key = String(id || "");
+  if (!key) return;
+  const map = loadStreaks();
+  if (map[key]) {
+    map[key] = 0;
+    saveStreaks(map);
+  }
+}
+
+/** Keyed providers that still have budget (not maxed or muted). */
 export function usableProviders(settings) {
-  return keyedProviders(settings).filter((p) => !isSpent(p.id));
+  return keyedProviders(settings).filter((p) => !isBenched(p.id));
 }
 
 /**
@@ -232,7 +318,7 @@ export function usableProviders(settings) {
 export function providerReady(settings, id) {
   const prov = PROVIDERS.find((p) => p.id === String(id || "").toLowerCase());
   if (!prov) return false;
-  if (isSpent(prov.id)) return false;
+  if (isBenched(prov.id)) return false;
   return prov.keyless || Boolean(providerKey(settings, prov));
 }
 
@@ -249,12 +335,14 @@ export async function completeProvider(
 ) {
   const prov = PROVIDERS.find((p) => p.id === String(providerId || "").toLowerCase());
   if (!prov) throw new Error(`unknown provider: ${providerId}`);
+  if (isMuted(prov.id) && !isSpent(prov.id)) throw new Error(`${prov.label} muted — unmute in DATA`);
   if (isSpent(prov.id)) throw new Error(`${prov.label} maxed — quota/rate limit`);
   const key = providerKey(settings, prov);
   if (!key && !prov.keyless) throw new Error(`${prov.label} needs a key — paste in DATA`);
   try {
     const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens);
     markHealth(prov.id, true);
+    noteProviderSuccess(prov.id);
     const u = out.usage || {};
     const usage = {
       in: Number(u.prompt_tokens) || 0,
@@ -286,7 +374,10 @@ export async function completeProvider(
       }
     }
     if (isQuotaFail(msg)) markSpent(prov.id, msg);
-    else markHealth(prov.id, false, msg.slice(0, 120));
+    else {
+      markHealth(prov.id, false, msg.slice(0, 120));
+      noteProviderFailure(prov.id);
+    }
     throw e;
   }
 }
@@ -959,22 +1050,26 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
   const ask = typeof user?.content === "string" ? user.content : "";
   const chainList = chatChain(settings, job, ask);
   if (!chainList.length) {
+    if (pinned && isMuted(pin) && !isSpent(pin))
+      throw new Error(`${pin.toUpperCase()} muted — unmute in DATA or pick another agent`);
     if (pinned && isSpent(pin)) throw new Error(`${pin.toUpperCase()} maxed — quota/rate limit. Try another agent or wait.`);
     if (pinned) throw new Error(`${pin.toUpperCase()} not keyed — paste key in DATA or pick another agent`);
     throw new Error("no keyed chat brains — paste keys in DATA or unpin");
   }
   for (const prov of chainList) {
-    if (isSpent(prov.id)) continue;
+    if (isBenched(prov.id)) continue;
     const key = providerKey(settings, prov);
     if (!key && !prov.keyless) continue;
     try {
       const out = await openaiWithFallback(prov, key, laneForJob(job), messages, temperature, maxTokens);
       markHealth(prov.id, true);
+      noteProviderSuccess(prov.id);
       return out;
     } catch (e) {
       const msg = String(e.message || e);
       if (isQuotaFail(msg)) markSpent(prov.id, msg);
       else if (isAuthFail(msg)) markHealth(prov.id, false, msg);
+      else noteProviderFailure(prov.id);
       // Soft miss — keep prior LIVE so hierarchy isn't poisoned by one timeout.
       // Dedupe: openaiWithFallback already prefixes the provider id.
       const dedup = msg.replace(new RegExp(`^${prov.id}\\s*:\\s*`, "i"), "");
@@ -1028,7 +1123,7 @@ function normAgentId(id) {
 /** Brains with keys attached — skip maxed + known-bad until re-paste/re-validate. */
 export function compareProviders(settings, health = null) {
   const h = health || liveHealth;
-  return keyedProviders(settings).filter((p) => !isSpent(p.id) && h[p.id]?.ok !== false);
+  return keyedProviders(settings).filter((p) => !isBenched(p.id) && h[p.id]?.ok !== false);
 }
 
 /** "Say something to Gemini" / crew cross-talk in COMPARE. */
@@ -1219,6 +1314,7 @@ export async function compareComplete(
       } catch (e) {
         const err = String(e.message || e).slice(0, 160);
         if (isQuotaFail(err)) markSpent(prov.id, err);
+        else noteProviderFailure(prov.id);
         return {
           provider: prov.id,
           label: prov.label || prov.id,
@@ -1232,6 +1328,7 @@ export async function compareComplete(
       .catch((e) => {
         const err = String(e.message || e).slice(0, 160);
         if (isQuotaFail(err)) markSpent(prov.id, err);
+        else noteProviderFailure(prov.id);
         return {
           provider: prov.id,
           label: prov.label || prov.id,

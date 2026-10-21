@@ -169,12 +169,13 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.98** — error-message polish.
+            **Phone Pip v0.1.99** — provider mute system.
 
-            - No more doubled advice: throttle messages no longer print "Wait a bit or pick another agent" twice.
-            - COMPARE now says "all compare brains throttled — wait a couple minutes" when the brains are just resting, instead of wrongly telling you to paste keys in DATA.
+            - Brains that spend their quota get muted automatically, and a brain that fails 3 turns in a row gets muted for 30 minutes — Pip stops wasting turns on worthless providers.
+            - Muted brains are listed in DATA with the reason, with an UNMUTE ALL button. Routing (chat, compare, auto, frugal) skips muted brains entirely.
+            - Reminder: you never re-type API keys after a reinstall — pair your desktop in DATA and the keys sync into the phone automatically.
 
-            No reinstall needed — installs right over v0.1.97.
+            No reinstall needed — installs right over v0.1.98.
           files: |
             Pip.apk
             Pip-Windows.exe
