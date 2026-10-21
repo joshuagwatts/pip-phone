@@ -102,6 +102,7 @@ export const AGENT_META = {
   deepseek: { label: "DEEPSEEK", blurb: "Efficient · strong coding and analysis" },
   openai: { label: "OPENAI", blurb: "ChatGPT family · vision and general work" },
   anthropic: { label: "CLAUDE", blurb: "Anthropic · Haiku default · sharp prose and careful reasoning" },
+  pollinations: { label: "POLLINATIONS", blurb: "Free · no key · gpt-oss-20b · can be slow" },
   desktop: { label: "DESKTOP", blurb: "Your PC GPU · private local models" },
   compare: { label: "COMPARE", blurb: "All keyed APIs · one bubble · tab each reply + overview" },
 };

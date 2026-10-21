@@ -6,9 +6,14 @@
   are git-ignored at both the repo root and `android/`.
 - **Debug builds** use each developer machine's own auto-generated debug key
   (`~/.android/debug.keystore`). Nothing shared, nothing in git.
-- **Release builds** are unsigned from CI. If a signed release is ever needed
-  (e.g. Play Store), generate a real release key and store it in CI secrets or
-  a local-only keystore — never in the repo.
+- **Release builds** are signed with ONE permanent release key (RSA-2048,
+  30-year self-signed cert, generated 2026-10-19), so Android accepts every
+  release as an update to the last. The keystore lives ONLY in two places:
+  the `PIP_KS_*` GitHub Actions secrets (base64 PKCS12 + passwords, injected
+  by `ship.yml` at build time) and an offline backup in the maintainer's
+  private workspace (`pip-release-keystore.b64` + `.pip-signing-secrets.json`,
+  0600 — lose these and no future build can ever update installed apps).
+  It is never committed to the repo.
 
 ## Incident note (2026-09-20)
 

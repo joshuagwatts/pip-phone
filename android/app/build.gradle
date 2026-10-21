@@ -16,6 +16,22 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            // ONE permanent PIP release key for all CI builds, so Android
+            // accepts updates (same signature every release). The keystore is
+            // NEVER committed — CI decodes it from the PIP_KS_B64 secret into
+            // PIP_KS_PATH; see .github/workflows/ship.yml. Debug builds are
+            // untouched (auto-generated debug key, per-developer).
+            if (System.getenv("PIP_KS_PATH")) {
+                storeFile file(System.getenv("PIP_KS_PATH"))
+                storePassword System.getenv("PIP_KS_STORE_PW")
+                keyAlias System.getenv("PIP_KS_KEY_ALIAS")
+                keyPassword System.getenv("PIP_KS_KEY_PW")
+                storeType "PKCS12"
+            }
+        }
+    }
     buildTypes {
         debug {
             // Default debug key (~/.android/debug.keystore, auto-generated).
@@ -24,6 +40,10 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // Permanent release signature — only when CI injects the key.
+            if (System.getenv("PIP_KS_PATH")) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }

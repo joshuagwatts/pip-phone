@@ -1,4 +1,5 @@
 import { load, save, KIT_LABELS } from "./store.js";
+import { loadStoreVault, scheduleVaultSave, flushVaultSave } from "./store-vault.js";
 import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
 import { AGENT_META, agentLabel } from "./crew.js";
 import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent, isSpent, clearSpent } from "./cloud.js";
@@ -11,12 +12,13 @@ import { mergeDraft, newOpp, questionsFromPaste, scrapeUrl, suggestAnswers } fro
 import { classify, labelOf } from "./kind.js";
 import { ingestLinks, needsIngest } from "./digest.js";
 import { hasNativeHttp, openUrl, httpLanGet, httpLanPostJson, httpDiag } from "./net.js";
-import { openProtonVpn } from "./proton.js";
+import { openProtonVpn, setVpnBypassAsker, getVpnBypassMode, setVpnBypassMode } from "./proton.js";
 import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
 import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
 import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThemeRequest } from "./theme.js";
-import { captureMoment, topMoments, rememberReply } from "./memory.js";
+import { capture as captureMemory, getTier as getMemoryTier, rememberNow } from "./memory-engine.js";
+import { renderMemoryTab } from "./memory-ui.js";
 import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
@@ -64,11 +66,13 @@ import { pingNudge, markChatUser } from "./nudge.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
-let tab = "opp";
+let tab = ""; // no panel open at boot — chat is home
 let pane = "list";
 let oppId = "";
 let oppFilter = { q: "", type: "all", sort: "near", radiusKm: 80 };
 let oppPlain = false;
+// M4: SECURE-mode hunt notice — shown once per session before any web hunt.
+let huntWebNoticed = false;
 let calState = { calMonth: ym(), calDay: ymd() };
 let vibeMode = "motivation";
 let vibeStem = "sendoff";
@@ -156,6 +160,12 @@ function setStatus(msg) {
 
 function persist() {
   save(db);
+  // M2: chat/events/runlog persist encrypted (debounced) — never plaintext.
+  try {
+    scheduleVaultSave(db);
+  } catch {
+    /* ignore */
+  }
 }
 
 function esc(s) {
@@ -178,25 +188,72 @@ function leaveWx() {
   destroyMap();
 }
 
+const PANEL_TITLES = {
+  opp: "OPP",
+  today: "TODAY",
+  meals: "MEALS",
+  wx: "WX",
+  vibe: "VIBE",
+  kit: "KIT",
+  memory: "MEMORY",
+  data: "DATA",
+};
+
+/** Open a module as a slide-over panel over chat. One panel at a time. */
+function openPanel(name) {
+  // Locked phone: the launcher is hidden by bio-locked CSS, but never trust
+  // the DOM alone — refuse here too.
+  if (document.body.classList.contains("bio-locked")) return;
+  if (!PANEL_TITLES[name]) return;
+  tab = name;
+  pane = "list";
+  closeModuleSheet();
+  render();
+  const title = $("#panel-title");
+  if (title) title.textContent = PANEL_TITLES[name];
+  const panel = $("#panel");
+  if (panel) panel.setAttribute("aria-hidden", "false");
+  document.body.classList.add("panel-open");
+}
+
+/** Dismiss the panel — back to chat with zero state loss. */
+function closePanel() {
+  const panel = $("#panel");
+  if (panel) panel.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("panel-open");
+  tab = "";
+  render(); // runs leaveVibe/leaveWx cleanup; renders nothing with no panel
+}
+
+function openModuleSheet() {
+  if (document.body.classList.contains("bio-locked")) return;
+  const sheet = $("#module-sheet");
+  if (sheet) sheet.hidden = false;
+}
+
+function closeModuleSheet() {
+  const sheet = $("#module-sheet");
+  if (sheet) sheet.hidden = true;
+}
+
 function render() {
   if (tab === "guide") tab = "opp";
   document.body.classList.toggle("vibe-tab", tab === "vibe");
   document.body.classList.toggle("wx-tab", tab === "wx");
-  $("#tabs").querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   if (tab !== "vibe") leaveVibe();
   if (tab !== "wx") leaveWx();
+  if (!tab) return; // chat home — no panel open, nothing to paint
   if (tab === "kit") renderKit();
   else if (tab === "data") renderData();
   else if (tab === "vibe") renderVibe();
   else if (tab === "today") renderToday();
   else if (tab === "code") {
-    tab = "data";
-    document.body.classList.add("comm");
     setStatus("CODING LIVES IN CHAT — ASK PIP TO EDIT THE APP");
-    renderData();
+    openPanel("data");
   }
   else if (tab === "wx") renderWx();
   else if (tab === "meals") renderMeals();
+  else if (tab === "memory") renderMemoryTab({ db, setStatus, rerender: () => render() });
   else renderOpp();
 }
 
@@ -724,7 +781,7 @@ function agentOptions() {
     { id: "compare", section: "modes" },
   ];
   const apis = [];
-  for (const id of ["anthropic", "groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
+  for (const id of ["anthropic", "groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai", "pollinations"]) {
     if (keyed.has(id)) apis.push({ id, section: "apis" });
   }
   if (desktopConfigured(db.settings)) apis.push({ id: "desktop", section: "apis" });
@@ -742,6 +799,11 @@ function agentStatFor(id, { keyed, health, missing }) {
       cls: "mode",
       text: id === "compare" ? "ALL" : id === "auto" ? "FAST" : "CONSULT",
     };
+  }
+  // Keyless providers are always available — FREE, never "KEYED".
+  if (PROVIDERS.some((p) => p.id === id && p.keyless)) {
+    if (isSpent(id)) return { cls: "bad", text: "MAXED" };
+    return { cls: "live", text: "FREE" };
   }
   if (missing || !keyed.has(id)) return { cls: "bad", text: "NO KEY" };
   if (isSpent(id)) return { cls: "bad", text: "MAXED" };
@@ -891,7 +953,13 @@ function renderToday() {
   const wxLine = wx?.ok
     ? `${wx.city || ""} // ${Math.round(wx.temp_f)}F // ${wx.label || ""}`
     : "";
-  const moments = topMoments(db, 5);
+  const moments = (() => {
+    try {
+      return getMemoryTier("durable").slice(0, 5);
+    } catch {
+      return [];
+    }
+  })();
   root.innerHTML = `
     <div class="today-wrap">
       <div class="today-morning">
@@ -923,9 +991,8 @@ function renderToday() {
   const go = $("#today-wake");
   if (go) {
     go.onclick = () => {
-      tab = "vibe";
       vibeMode = "motivation";
-      render();
+      openPanel("vibe");
     };
   }
   $("#brief-again").onclick = async () => {
@@ -1234,6 +1301,16 @@ function renderData() {
   const keyRows = PROVIDERS.map((p) => {
     const info = keyTag(s, p, health[p.id]);
     const hint = keyHint(s, p);
+    // Keyless providers (Pollinations) need no paste field — just the FREE tag.
+    if (p.keyless) {
+      return `<div class="key-row ${esc(info.state)}">
+      <div class="key-meta">
+        <span class="key-name">${esc(p.label.toUpperCase())}</span>
+        <span class="key-tag">${esc(info.tag)}</span>
+      </div>
+      <p class="muted key-tip">${esc(p.tip || "")}</p>
+    </div>`;
+    }
     const has = Boolean(getSecret(p.field));
     const get = p.keyUrl
       ? `<a class="key-get" href="${esc(p.keyUrl)}" target="_blank" rel="noopener noreferrer">GET KEY</a>`
@@ -1257,7 +1334,9 @@ function renderData() {
   const pinKeyed = ["anthropic", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].filter((id) =>
     getSecret(id),
   );
-  const pinIds = [...pinModes, ...pinKeyed];
+  // Keyless providers are always pinnable — no key to check.
+  const pinFree = PROVIDERS.filter((p) => p.keyless).map((p) => p.id);
+  const pinIds = [...pinModes, ...pinKeyed, ...pinFree];
   if ((s.brain_pin || "auto") && !pinIds.includes(s.brain_pin)) pinIds.push(s.brain_pin);
 
   $("#view").innerHTML = `
@@ -1275,6 +1354,7 @@ function renderData() {
     <p class="muted">Same Wi‑Fi. Tap CONNECT (scans your whole subnet). If it fails: desktop DATA → COPY URL → paste below → CONNECT. Windows may need Open-Firewall.bat once.</p>
     <div class="desk-status ${paired ? (deskLive === false ? "bad" : deskLive === true ? "on" : "key") : "off"}" id="desk-status">${esc(deskLine)}</div>
     <div class="field"><span>DESKTOP URL (optional)</span><input id="set-durl" value="${esc(s.desktop_url || "")}" placeholder="blank = auto-find · or http://192.168.x.x:7420" /></div>
+    <div class="field"><span>DESKTOP PASSWORD</span><input id="set-dpass" type="password" value="" placeholder="typed each pair — never stored" autocomplete="off" /></div>
     <div class="actions">
       <button type="button" id="desk-connect" class="primary">CONNECT</button>
       <button type="button" id="desk-clear">FORGET</button>
@@ -1285,6 +1365,12 @@ function renderData() {
     <div class="actions">
       <button type="button" id="proton-open">OPEN PROTON</button>
     </div>
+    <div class="field"><span>VPN LAN BYPASS</span><select id="set-vpnbypass">
+      <option value="ask">ASK EACH SESSION</option>
+      <option value="always">ALWAYS ALLOW</option>
+      <option value="never">NEVER (LAN may fail on VPN)</option>
+    </select></div>
+    <p class="muted">When Proton is on, PIP can step outside the VPN to reach your desktop on Wi‑Fi. "Ask" prompts once per session — never silently.</p>
     <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> BACKGROUND OPP SYNC</label>
 
     <h3>BRAIN KEYS</h3>
@@ -1312,7 +1398,9 @@ function renderData() {
                       ? "compare (keyed only)"
                       : id === "auto"
                         ? "auto (CHAT dropdown decides)"
-                        : id;
+                        : id === "pollinations"
+                          ? "pollinations (free · no key)"
+                          : id;
           return `<option value="${id}" ${on ? "selected" : ""}>${label}</option>`;
         }).join("")}
       </select>
@@ -1345,7 +1433,7 @@ function renderData() {
     db.settings.brain_pin = ($("#brain-pin") && $("#brain-pin").value) || db.settings.brain_pin;
     const pinNow = String(db.settings.brain_pin || "auto").toLowerCase();
     if (pinNow === "auto") db.settings.chat_agent = db.settings.chat_agent || "pip";
-    else if (["compare", "desktop", "auto", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai", "anthropic"].includes(pinNow)) {
+    else if (["compare", "desktop", "auto", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai", "anthropic", "pollinations"].includes(pinNow)) {
       db.settings.chat_agent = pinNow;
     }
     for (const p of PROVIDERS) {
@@ -1409,8 +1497,11 @@ function renderData() {
     await grabSettings();
     setStatus("CONNECTING…");
     setDeskMsg("Connecting…", "key");
+    // H2: password is typed per pair and never persisted — read once, clear right away.
+    const dpassEl = $("#set-dpass");
+    const dpass = String(dpassEl?.value || "");
     try {
-      const out = await connectDesktop(db.settings, (msg) => setStatus(msg));
+      const out = await connectDesktop(db.settings, (msg) => setStatus(msg), { password: dpass });
       persist();
       if ($("#set-durl")) $("#set-durl").value = out.url;
       const model = String(out.model || "ollama").toUpperCase();
@@ -1438,6 +1529,13 @@ function renderData() {
       setDeskMsg(msg.slice(0, 90), "bad");
       setStatus(msg.toUpperCase().slice(0, 80));
       paintBrainStrip();
+    } finally {
+      // Never leave the typed password in the DOM.
+      try {
+        if (dpassEl) dpassEl.value = "";
+      } catch {
+        /* ignore */
+      }
     }
   };
 
@@ -1454,6 +1552,18 @@ function renderData() {
       setStatus("OPENING PROTON…");
       const ok = await openProtonVpn();
       setStatus(ok ? "PROTON · TURN ON ALLOW LAN CONNECTIONS" : "INSTALL PROTON VPN FROM PLAY STORE");
+    };
+  }
+
+  // M1: visible bypass-mode setting — same control the prompt writes to.
+  const vpnBypassSel = $("#set-vpnbypass");
+  if (vpnBypassSel) {
+    vpnBypassSel.value = getVpnBypassMode();
+    vpnBypassSel.onchange = () => {
+      const m = setVpnBypassMode(vpnBypassSel.value);
+      vpnBypassSel.value = m;
+      persist();
+      setStatus(`VPN BYPASS · ${m.toUpperCase()}`);
     };
   }
 
@@ -1708,6 +1818,24 @@ async function syncOpps() {
 }
 
 async function runHunt(allTypes = false) {
+  // M4: in SECURE mode the hunt leaves the device — say so once per session,
+  // with a real choice, before any httpGet fires.
+  if (privacyOn(db.settings) && !huntWebNoticed) {
+    const pick = await pipOverlay({
+      kicker: "SECURE · HEADS UP",
+      title: "Hunting hits the public web",
+      body: "The opportunity hunt scrapes public boards (artcall, colossal, Brave search). That's outside this phone — proceed?",
+      buttons: [
+        { id: "go", label: "HUNT", primary: true },
+        { id: "no", label: "CANCEL" },
+      ],
+    });
+    if (pick !== "go") {
+      setStatus("HUNT CANCELLED");
+      return;
+    }
+    huntWebNoticed = true;
+  }
   setStatus("HUNTING…");
   try {
     db.kit.city = ($("#hunt-city")?.value || db.kit.city || "").trim();
@@ -2490,6 +2618,56 @@ function maybePrivacyChoice() {
   });
 }
 
+/** One-tap approval card for agent actions — the exact command/detail is shown,
+ *  one tap per session per pattern. Rendered inline in chat, resolved by tap. */
+function agentApprove(title, detail) {
+  return new Promise((resolve) => {
+    const log = $("#log");
+    const div = document.createElement("div");
+    div.className = "bubble pip";
+    div.innerHTML = `<div class="who-row"><span class="who">PIP</span></div><div class="body"><b>${esc(title)}</b><pre class="agent-cmd">${esc(detail)}</pre><div class="agent-approve-row"><button type="button" class="bio-btn" data-ok="1">APPROVE</button><button type="button" class="bio-btn" data-ok="0">DENY</button></div></div>`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    div.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => {
+        div.querySelectorAll("button").forEach((x) => {
+          x.disabled = true;
+        });
+        resolve(b.dataset.ok === "1");
+      };
+    });
+  });
+}
+
+/** /agent flow — runs the ReAct loop, narrates steps as Pip, never leaks tool JSON. */
+async function runAgentFlow(goal) {
+  db.chat.push({ role: "user", content: "/agent " + goal });
+  markChatUser();
+  addLog("user", "/agent " + goal);
+  persist();
+  setStatus("AGENT · working");
+  const { runAgent } = await import("./agent.js");
+  const out = await runAgent(goal, {
+    settings: db.settings,
+    db,
+    persist,
+    onStep: (t) => addLog("pip", t, { toolLine: "AGENT" }),
+    approve: agentApprove,
+  });
+  if (out.guidance && !db.settings.agent_guidance_v1) {
+    addLog("pip", out.guidance, { toolLine: "AGENT" });
+    db.settings.agent_guidance_v1 = true;
+  }
+  const meta =
+    out.steps && out.steps.length
+      ? `AGENT · ${out.steps.length} steps · ${String(out.backend || "").toUpperCase()}`
+      : "AGENT";
+  addLog("pip", out.answer, { toolLine: meta });
+  db.chat.push({ role: "pip", content: out.answer });
+  persist();
+  setStatus("PIP ON DECK");
+}
+
 async function sendChat() {
   const box = $("#input");
   const text = (box.value || "").trim();
@@ -2500,6 +2678,46 @@ async function sendChat() {
   const sendBtn = $("#send");
   if (sendBtn) sendBtn.disabled = true;
   box.value = "";
+  // /remember — explicit "remember this": straight to durable memory, no chat turn.
+  const remMatch = text.match(/^\/remember(?:\s+([\s\S]*))?$/i);
+  if (remMatch && !hasPhoto) {
+    chatBusy = false;
+    if (sendBtn) sendBtn.disabled = true;
+    const said = (remMatch[1] || "").trim();
+    let what = said;
+    if (!what) {
+      const lastUser = [...db.chat].reverse().find((m) => m && m.role === "user" && String(m.content || "").trim().length >= 20);
+      what = lastUser ? String(lastUser.content) : "";
+    }
+    try {
+      const entry = what ? await rememberNow(what) : null;
+      addLog("pip", entry ? "Remembered — that's in long-term now." : "Nothing to remember yet — tell me something first, or type /remember followed by it.");
+      if (entry) setStatus("MEMORY · remembered long-term");
+    } catch (e) {
+      addLog("pip", `Couldn't store that: ${String((e && e.message) || e).slice(0, 100)}`);
+    }
+    persist();
+    if (sendBtn) sendBtn.disabled = false;
+    return;
+  }
+  // /agent — ReAct tool loop (agentic core). Additive: normal chat untouched.
+  const agentMatch = text.match(/^\/agent(?:\s+([\s\S]*))?$/i);
+  if (agentMatch && !hasPhoto) {
+    chatBusy = false;
+    if (sendBtn) sendBtn.disabled = false;
+    const goal = (agentMatch[1] || "").trim();
+    if (!goal) {
+      addLog(
+        "pip",
+        "Give me a goal — /agent followed by what you want done. Example: /agent check my memory for roofing deadlines, then remind me tomorrow at 8am.",
+      );
+      return;
+    }
+    runAgentFlow(goal).catch((e) => {
+      addLog("pip", `Agent run hit a snag: ${String((e && e.message) || e).slice(0, 140)}`);
+    });
+    return;
+  }
   const photoLine =
     images.length > 1 ? `[${images.length} photos attached]` : hasPhoto ? "[photo attached]" : "";
   const userLine = hasPhoto ? (text ? `${text}\n${photoLine}` : photoLine) : text;
@@ -2523,7 +2741,7 @@ async function sendChat() {
     }
   }
   clearChatAttach();
-  captureMoment(db, text || (images.length > 1 ? "photos" : "photo"));
+  try { captureMemory(text || (images.length > 1 ? "photos" : "photo")); } catch { /* memory optional */ }
   persist();
   setStatus(pipStatus());
 
@@ -2600,7 +2818,7 @@ async function sendChat() {
         agent: speaker,
         leaked: true,
       });
-      rememberReply(db, reply);
+      try { captureMemory(reply, { role: "pip" }); } catch { /* memory optional */ }
       persist();
       addLog("pip", reply, {
         brain: out.provider,
@@ -2684,8 +2902,7 @@ async function sendChat() {
     persist();
     addLog("pip", mealHit.reply);
     if (mealHit.switchTab) {
-      tab = mealHit.switchTab;
-      render();
+      openPanel(mealHit.switchTab);
     }
     setStatus(mealHit.ok ? "MEALS UPDATED" : "MEALS");
     return;
@@ -2715,8 +2932,7 @@ async function sendChat() {
     }
     addLog("pip", oppHit.reply);
     if (oppHit.switchTab) {
-      tab = oppHit.switchTab;
-      render();
+      openPanel(oppHit.switchTab);
     }
     persist();
     setStatus(oppHit.ok ? "OPP" : "OPP");
@@ -2809,7 +3025,7 @@ async function sendChat() {
         addCompareLog(compare, { leaked, tokens });
       }
       persist();
-      rememberReply(db, reply);
+      try { captureMemory(reply, { role: "pip" }); } catch { /* memory optional */ }
       setStatus(`COMPARE · ${compare.filter((c) => c.ok).length}/${compare.length}`);
       // One-shot listen: addressed agent answers the speaker (CANCEL stops). No loop.
       await maybeCrewHandoff(text, compare);
@@ -2821,7 +3037,7 @@ async function sendChat() {
         agent: agent || "pip",
         leaked,
       });
-      rememberReply(db, reply);
+      try { captureMemory(reply, { role: "pip" }); } catch { /* memory optional */ }
       persist();
       addLog("pip", reply, {
         brain: provider || activeBrain().label,
@@ -2860,8 +3076,40 @@ async function sendChat() {
   }
 }
 
-function boot() {
+async function boot() {
   try {
+    // M2: unlock the encrypted chat/events/runlog sidecar FIRST — the DEK is
+    // ready (boot.js ran initMemoryEngine before importing app.js). Throws
+    // loudly on crypto failure; the app never runs on silently-plaintext chat.
+    // Also migrates any legacy plaintext into the vault on first boot.
+    await loadStoreVault(db);
+    // Best-effort flush of the encrypted sidecar when the page hides.
+    try {
+      window.addEventListener("pagehide", () => {
+        try {
+          flushVaultSave();
+        } catch {
+          /* ignore */
+        }
+      });
+    } catch {
+      /* ignore */
+    }
+    // M1: the VPN-bypass question gets a real UI asker — PIP never steps
+    // outside the VPN silently. Registered before anything can hit the LAN.
+    setVpnBypassAsker(async () => {
+      const pick = await pipOverlay({
+        kicker: "VPN · LAN ACCESS",
+        title: "Step outside the VPN?",
+        body: "Proton is on. To reach your desktop on Wi‑Fi, PIP has to step outside the VPN for this call — LAN traffic only, nothing else changes.",
+        buttons: [
+          { id: "once", label: "ONCE", primary: true },
+          { id: "always", label: "ALWAYS" },
+          { id: "never", label: "NEVER" },
+        ],
+      });
+      return pick || "never";
+    });
     bootTheme(db.settings);
     applyAllOverlays();
     hydrateHealth(db.settings.brain_health);
@@ -2895,17 +3143,64 @@ function boot() {
       } catch {
         /* background sync optional */
       }
+      // Phase 1: run a missed nightly distillation once at boot (the 5-min
+      // keepalive tick in background.js also calls maybeDistill).
+      import("./memory-distill.js")
+        .then(({ maybeDistill }) => maybeDistill(db, { setStatus }).catch(() => {}))
+        .catch(() => {});
       if (desktopConfigured(db.settings)) {
         fetchOppDigest(db.settings, db).then(() => { if (tab === "opp") render(); }).catch(() => {});
       }
-      $("#tabs").onclick = (e) => {
-        const b = e.target.closest("[data-tab]");
-        if (!b) return;
-        tab = b.dataset.tab;
-        pane = "list";
-        document.body.classList.remove("comm");
-        render();
+      // Chat-first: the ▦ launcher opens the module sheet; modules slide
+      // over chat as panels. One panel at a time; opening another swaps.
+      const grid = $("#module-grid");
+      if (grid) {
+        grid.onclick = (e) => {
+          const b = e.target.closest("[data-panel]");
+          if (!b) return;
+          openPanel(b.dataset.panel);
+        };
+      }
+      const panelTog = $("#panel-tog");
+      if (panelTog) panelTog.onclick = () => {
+        const sheet = $("#module-sheet");
+        if (sheet && !sheet.hidden) closeModuleSheet();
+        else openModuleSheet();
       };
+      const sheetBg = $("#module-sheet-bg");
+      if (sheetBg) sheetBg.onclick = () => closeModuleSheet();
+      const sheetX = $("#module-sheet-x");
+      if (sheetX) sheetX.onclick = () => closeModuleSheet();
+      const panelX = $("#panel-x");
+      if (panelX) panelX.onclick = () => closePanel();
+      const panelScrim = $("#panel-scrim");
+      if (panelScrim) panelScrim.onclick = () => closePanel();
+      // Swipe-right on the panel sheet dismisses it back to chat.
+      const panelSheet = $("#panel-sheet");
+      if (panelSheet) {
+        let swipeX = null;
+        let swipeDX = 0;
+        panelSheet.addEventListener("touchstart", (e) => {
+          if (e.touches.length !== 1) return;
+          swipeX = e.touches[0].clientX;
+          swipeDX = 0;
+          panelSheet.style.transition = "none";
+        }, { passive: true });
+        panelSheet.addEventListener("touchmove", (e) => {
+          if (swipeX == null) return;
+          swipeDX = e.touches[0].clientX - swipeX;
+          if (swipeDX > 0) panelSheet.style.transform = `translateX(${swipeDX}px)`;
+        }, { passive: true });
+        const endSwipe = () => {
+          panelSheet.style.transition = "";
+          panelSheet.style.transform = "";
+          if (swipeDX > 90) closePanel();
+          swipeX = null;
+          swipeDX = 0;
+        };
+        panelSheet.addEventListener("touchend", endSwipe);
+        panelSheet.addEventListener("touchcancel", endSwipe);
+      }
       $("#view")?.addEventListener("click", (e) => {
         const btn = e.target.closest(".key-clear");
         if (!btn || tab !== "data") return;
@@ -2913,11 +3208,6 @@ function boot() {
         e.stopPropagation();
         clearProviderKey(btn.getAttribute("data-field"));
       });
-      $("#comm-tog").onclick = () => document.body.classList.add("comm");
-      $("#comm-close").onclick = () => {
-        closeAgentSheet();
-        document.body.classList.remove("comm");
-      };
       const privacyTog = $("#privacy-tog");
       if (privacyTog) {
         privacyTog.onclick = () => {
@@ -3018,6 +3308,17 @@ function boot() {
       setInterval(() => {
         if (document.hidden) return;
         pingNudge(db.settings, db).then(injectNudge).catch(() => {});
+        // Agent reminders due — surface once each via the same inject path.
+        import("./tools.js")
+          .then(({ dueReminders }) => {
+            let dirty = false;
+            for (const r of dueReminders(db)) {
+              injectNudge("REMINDER · " + r.text);
+              dirty = true;
+            }
+            if (dirty) persist();
+          })
+          .catch(() => {});
       }, 20000);
       const cap = window.Capacitor;
       if (cap?.Plugins?.App?.addListener) {

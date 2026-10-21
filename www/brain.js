@@ -7,6 +7,7 @@ import {
   cloudComplete,
   cloudStatus,
   compareComplete,
+  keyedProviders,
   liveProviderIds,
   markHealth,
   parseCrossAgentIntent,
@@ -275,6 +276,33 @@ async function localComplete(messages, temperature = 0.7, maxTokens = 400) {
 }
 
 /**
+ * Local-only completion for trusted background jobs (nightly distillation).
+ * Desktop Ollama -> on-device Qwen. NEVER cloud — throws when no local model
+ * is reachable so callers queue the job instead of leaking. Exported for
+ * memory-distill.js.
+ */
+export async function localOnlyComplete(settings, messages, temperature = 0.7, maxTokens = 500) {
+  if (desktopConfigured(settings)) {
+    try {
+      const reach = await desktopReachable(settings, 2500);
+      if (reach.ok) {
+        const user = [...messages].reverse().find((m) => m.role === "user");
+        const out = await desktopChat(settings, String((user && user.content) || ""), 90000);
+        const cleaned = sanitizeReply(out.text);
+        if (cleaned) return { text: cleaned, provider: "desktop", model: out.model || "ollama" };
+      }
+    } catch {
+      /* fall through to on-device */
+    }
+  }
+  const eng = await ensurePip(); // throws when Qwen won't wake — caller queues
+  const raw = await eng.complete(messages, temperature, maxTokens);
+  const cleaned = sanitizeReply(raw);
+  if (!cleaned) throw new Error("local blank reply");
+  return { text: cleaned, provider: "local", model: eng.kind || "qwen" };
+}
+
+/**
  * Brain chain.
  * SECURE: desktop → on-device (Qwen/local) → Pip Lite. Cloud NEVER runs
  * silently — only when the user explicitly picks a cloud brain (WHO ANSWERS
@@ -302,6 +330,10 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
   const routeJob = job || (isChat ? "life" : lane === "boost" ? "boost" : "code");
   const allowQwen = !skipLocalModel(settings);
   const hasKeys = chatCloudEnabled(settings);
+  // Keyless-only (Pollinations) is NOT a real key: a fresh install with no
+  // pasted keys still gets Lite in SECURE auto. Only real keys or a paired
+  // desktop demote Lite to Guide-only.
+  const hasRealKeys = keyedProviders(settings).some((p) => !p.keyless);
   const liveCloud = liveProviderIds(settings);
   const pin = String(settings?.brain_pin || "auto").toLowerCase();
 
@@ -378,8 +410,8 @@ async function routedComplete(settings, messages, lane, temperature, maxTokens, 
       operator: settings?.operator || "",
     });
     if (!hit?.text) throw new Error("lite blank");
-    // With keys or desktop, Lite is Guide-only (pin lite/local), never general chat.
-    if (pin !== "lite" && pin !== "local" && (hasKeys || desktopConfigured(settings))) {
+    // With real keys or desktop, Lite is Guide-only (pin lite/local), never general chat.
+    if (pin !== "lite" && pin !== "local" && (hasRealKeys || desktopConfigured(settings))) {
       throw new Error("lite skipped — use cloud/desktop");
     }
     return hit;
@@ -501,6 +533,20 @@ async function complete(messages, temperature = 0.7, maxTokens = 400, settings =
 }
 
 /**
+ * Turn a cascade error like "compare: compare needs cloud keys in DATA"
+ * into a human line: "COMPARE needs cloud keys in DATA".
+ * Dedupe the step-name prefix; never jargon.
+ */
+function humanizeCascadeError(errMsg) {
+  const raw = String(errMsg || "").trim();
+  const m = raw.match(/^\s*([A-Za-z][\w-]*)\s*:\s*([\s\S]*)$/);
+  if (!m) return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
+  const step = m[1];
+  const rest = m[2].trim().replace(new RegExp(`^${step}\\b\\s*`, "i"), "");
+  return `${step.toUpperCase()}${rest ? " " + rest : ""}`.trim();
+}
+
+/**
  * @returns {Promise<{ text:string, leaked:boolean, provider:string, via:string, agent?:string }>}
  */
 export async function chat(settings, history, text, onProgress, kit, db, extras = {}) {
@@ -511,10 +557,13 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
   let momentLine = "";
   if (db) {
     try {
-      const { storyBrief, chainBrief } = await import("./memory.js");
-      momentLine = [storyBrief(db, 10, 14), chainBrief(db)].filter(Boolean).join("\n");
+      // Phase 1: memory enters prompts ONLY through the engine's assembly
+      // function — scope hygiene in one place, never scattered at call sites.
+      const { assembleMemoryContext } = await import("./memory-engine.js");
+      const { chainBrief } = await import("./memory.js");
+      momentLine = [assembleMemoryContext({ query: text, limit: 8 }), chainBrief(db)].filter(Boolean).join("\n");
     } catch {
-      /* optional */
+      /* memory is optional — chat works without it */
     }
   }
   let askText = String(text || "");
@@ -679,13 +728,22 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
 
   if (!hit?.text) {
     const live = liveProviderIds(settings);
-    const tip = errMsg
-      ? hasVision
-        ? `Vision failed (${errMsg}). Need Gemini / OpenAI / OpenRouter key · LEAKY on.`
-        : live.length && routePin === "auto"
-          ? `Cloud brains failed (${errMsg}). Fix red keys in DATA · or pick another agent next to LENS.`
-          : `Couldn't reach ${agentLabel(asSelf ? agent : "pip")}. ${errMsg}. Pick another agent or fix keys in DATA.`
-      : FALLBACK;
+    const throttled = /throttl|rate.?limit|quota|maxed|402|payment.?required/i.test(errMsg || "");
+    const human = humanizeCascadeError(errMsg);
+    let tip;
+    if (!errMsg) {
+      tip = FALLBACK;
+    } else if (hasVision) {
+      tip = `Vision failed (${human}). Need Gemini / OpenAI / OpenRouter key · LEAKY on.`;
+    } else if (live.length && routePin === "auto") {
+      tip = `Cloud brains failed (${human}). Fix red keys in DATA · or pick another agent next to LENS.`;
+    } else if (throttled) {
+      tip = /wait a bit/i.test(human) ? human : `${human} Wait a bit or pick another agent.`;
+    } else if (/in DATA/i.test(human)) {
+      tip = `${human}. Pick another agent.`;
+    } else {
+      tip = `${human}. Pick another agent, or fix keys in DATA.`;
+    }
     setTurn({ leaked: false, provider: "", via: "", reason: tip });
     return { text: tip, leaked: false, provider: "pip", via: "", error: true, agent: asSelf ? agent : "pip" };
   }
@@ -804,4 +862,4 @@ function parseJson(text) {
   }
 }
 
-export { cloudStatus, privacyOn };
+export { cloudStatus, privacyOn, humanizeCascadeError };

@@ -14,6 +14,7 @@ import {
   isWebVaultSetup,
   setupWebVault,
   unlockWebVault,
+  vaultUsable,
 } from "./secrets.js";
 
 let unlocked = false;
@@ -292,8 +293,7 @@ function ensurePassDom(setup) {
   return el;
 }
 
-function vaultPassphraseFlow() {
-  const setup = !isWebVaultSetup();
+export function vaultPassphraseFlow() {  const setup = !isWebVaultSetup();
   const el = ensurePassDom(setup);
   const err = el.querySelector("#bio-pass-err");
   const go = el.querySelector("#bio-pass-go");
@@ -388,20 +388,31 @@ export async function requireAppUnlock(settings, { force = false } = {}) {
 
 /**
  * Boot gate — called from boot.js BEFORE initSecrets() loads keys into memory.
- * Requires auth only when there are secrets worth protecting and the user
- * hasn't disabled the lock. Respects the biometric_lock toggle (default on).
+ *
+ * Two jobs: (1) the vault backend must be usable — the memory DEK lives there
+ * even on fresh installs with no API keys yet, so if neither native secure
+ * storage nor a passphrase-derived key is available, the passphrase vault is
+ * set up/unlocked here (it works on every platform, no native plugins needed);
+ * (2) when there are secrets worth protecting and the user hasn't disabled the
+ * lock, require authentication (system biometric sheet on native, vault
+ * passphrase otherwise). Respects the biometric_lock toggle (default on).
  */
 export async function requireBootAuth() {
-  if (!secretsNeedAuth()) return true;
+  if (unlocked) return true;
   let settings = {};
   try {
     settings = loadStore().settings || {};
   } catch {
     settings = {};
   }
-  if (settings.biometric_lock === false) return true;
-  if (unlocked) return true;
-  await biometricUnlock();
+  const lockDisabled = settings.biometric_lock === false;
+  if (!vaultUsable()) {
+    // No usable vault backend — establish the passphrase vault now, or the
+    // memory engine cannot store its key and boot fails downstream.
+    await vaultPassphraseFlow();
+  } else if (secretsNeedAuth() && !lockDisabled) {
+    await biometricUnlock();
+  }
   unlocked = true;
   return true;
 }

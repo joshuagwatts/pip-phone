@@ -13,7 +13,6 @@
   --black: #050805;
   --safe-top: max(env(safe-area-inset-top, 0px), 32px);
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), 10vh);
-  --tab-h: 3rem;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
@@ -75,7 +74,7 @@ button {
 }
 button.primary { background: var(--phos); color: var(--black); border-color: var(--phos); }
 button.on { border-color: var(--phos); color: var(--phos); }
-#view { flex: 1; overflow: auto; padding: 0.9rem 0.9rem calc(var(--tab-h) + var(--safe-bottom) + 3.6rem); min-height: 0; }
+#view { flex: 1; overflow: auto; padding: 0.9rem 0.9rem calc(var(--safe-bottom) + 1.5rem); min-height: 0; }
 body.vibe-tab #view { padding: 0; overflow: hidden; }
 body.vibe-tab .dock { display: none; }
 body.vibe-tab #status { display: none; }
@@ -175,7 +174,7 @@ textarea.short { min-height: 0; resize: none; height: 2.6rem; }
 .dock {
   position: fixed;
   left: 0; right: 0;
-  bottom: calc(var(--tab-h) + var(--safe-bottom));
+  bottom: var(--safe-bottom);
   display: flex;
   gap: 0.4rem;
   padding: 0.5rem 0.7rem;
@@ -183,23 +182,59 @@ textarea.short { min-height: 0; resize: none; height: 2.6rem; }
   z-index: 4;
 }
 .dock button { flex: 1; }
-nav.tabs {
-  position: fixed;
-  left: 0; right: 0; bottom: 0;
-  display: flex;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: none;
-  border-top: 1px solid var(--line);
-  background: var(--black);
-  padding-bottom: var(--safe-bottom);
-  z-index: 5;
+/* Slide-over module panel — chat stays the base layer underneath. */
+#panel {
+  position: fixed; inset: 0; z-index: 20;
+  visibility: hidden;
+  transition: visibility 0s linear 0.3s; /* let the sheet slide out first */
 }
-nav.tabs::-webkit-scrollbar { display: none; }
-nav.tabs button { flex: 0 0 auto; min-width: 3.4rem; border: 0; border-right: 1px solid var(--line); padding: 0.85rem 0.55rem; min-height: var(--tab-h); font-size: 10px; letter-spacing: 0.12em; }
-nav.tabs button:last-child { border-right: 0; }
-nav.tabs button[data-tab="code"],
-nav.tabs button[data-tab="data"] { min-width: 3.8rem; letter-spacing: 0.16em; }
+body.panel-open #panel { visibility: visible; transition-delay: 0s; }
+.panel-scrim {
+  position: absolute; inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0; transition: opacity 0.25s ease;
+}
+body.panel-open .panel-scrim { opacity: 1; }
+.panel-sheet {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: min(100%, 34rem);
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  display: flex; flex-direction: column;
+  transform: translateX(103%);
+  transition: transform 0.28s ease;
+}
+body.panel-open .panel-sheet { transform: none; }
+.panel-head {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: calc(0.45rem + var(--safe-top)) 0.8rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.panel-title { color: var(--phos); letter-spacing: 0.28em; font-size: 1rem; }
+#panel-x {
+  border: 1px solid var(--line); background: transparent; color: var(--text);
+  font-size: 1rem; line-height: 1; padding: 0.35rem 0.6rem;
+}
+/* Module launcher sheet. */
+#module-sheet { position: fixed; inset: 0; z-index: 30; }
+#module-sheet[hidden] { display: none; }
+.sheet-bg { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); border: 0; width: 100%; }
+.sheet-panel {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: var(--black);
+  border-top: 1px solid var(--line);
+  padding: 0.6rem 0.8rem calc(var(--safe-bottom) + 0.8rem);
+}
+.sheet-head { display: flex; align-items: center; gap: 0.6rem; padding: 0.2rem 0 0.6rem; }
+.sheet-title { color: var(--muted); letter-spacing: 0.28em; font-size: 0.85rem; }
+#module-sheet-x { border: 1px solid var(--line); background: transparent; color: var(--text); padding: 0.3rem 0.55rem; }
+.sheet-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+.sheet-grid button {
+  border: 1px solid var(--line); background: transparent; color: var(--text);
+  padding: 0.95rem 0.3rem; font-size: 11px; letter-spacing: 0.12em;
+}
+.sheet-grid button:active { background: var(--phos); color: var(--black); }
 .meal-ings { margin: 0.15rem 0 0.5rem; font-size: 11px; }
 .row { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
 .row .tiny { font-size: 10px; padding: 0.1rem 0.35rem; }
@@ -209,7 +244,8 @@ footer.status {
 #status {
   position: fixed;
   left: 0; right: 0;
-  bottom: calc(var(--tab-h) + var(--safe-bottom) + 2.7rem);
+  bottom: calc(var(--safe-bottom) + 2.7rem);
+  z-index: 2;
   pointer-events: none;
   text-align: center;
   font-size: 10px;
@@ -217,13 +253,15 @@ footer.status {
   color: var(--muted);
 }
 #comm {
-  position: fixed;
-  inset: 0;
-  z-index: 8;
-  background: rgba(5, 8, 5, 0.96);
-  display: none;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  z-index: 1;
+  background: var(--bg);
+  display: flex;
   flex-direction: column;
 }
+/* Chat is the home layer now — body.comm is a harmless no-op kept for old call sites. */
 body.comm #comm { display: flex; }
 .brain-strip {
   display: flex;
@@ -881,7 +919,7 @@ body.comm #comm { display: flex; }
   pointer-events: none;
 }
 .vibe-foot {
-  padding: 0.35rem 0.5rem calc(0.45rem + var(--tab-h) + var(--safe-bottom));
+  padding: 0.35rem 0.5rem calc(0.45rem + var(--safe-bottom));
   border-top: 1px solid var(--line);
   background: var(--inset);
   font-size: 10px;
@@ -980,7 +1018,7 @@ body.wx-tab .leaflet-control-attribution {
 .wx-wrap {
   display: block;
   min-height: 100%;
-  padding-bottom: calc(var(--tab-h) + var(--safe-bottom) + 0.25rem);
+  padding-bottom: calc(var(--safe-bottom) + 0.25rem);
 }
 .wx-layers { display: flex; gap: 0.25rem; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; background: var(--bg, #050805); }
 .wx-layers button { background: var(--panel); border: 1px solid var(--line); color: var(--muted); font: inherit; font-size: 10px; padding: 0.25rem 0.45rem; }
@@ -1152,7 +1190,7 @@ body.wx-tab .leaflet-control-attribution {
   left: 0;
   right: 0;
   top: calc(var(--safe-top) + 2.35rem);
-  bottom: calc(var(--tab-h) + var(--safe-bottom));
+  bottom: var(--safe-bottom);
   height: auto;
   min-height: 0;
   max-height: none;
@@ -1238,7 +1276,7 @@ body.wx-map-expanded #view { overflow: hidden; }
 .wx-filters select { background: var(--panel); color: var(--text); border: 1px solid var(--line); font: inherit; font-size: 10px; padding: 0.15rem 0.25rem; }
 
 /* Biometric unlock — hold-to-scan, no Android sheet */
-body.bio-locked > *:not(#bio-scan) { visibility: hidden; }
+body.bio-locked > *:not(#bio-scan):not(#bio-pass) { visibility: hidden; }
 .bio-scan {
   position: fixed; inset: 0; z-index: 100;
   display: grid; place-items: center;
@@ -1314,6 +1352,13 @@ body.bio-locked > *:not(#bio-scan) { visibility: hidden; }
   margin-top: 1.1rem; border: 1px solid var(--phos); background: transparent;
   color: var(--phos); letter-spacing: 0.2em; padding: 0.55rem 1rem; font: inherit; font-size: 11px;
 }
+/* Agent approval card (inline in chat) */
+.agent-cmd {
+  background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; margin: 8px 0; white-space: pre-wrap; word-break: break-word; font-size: 12px;
+}
+.agent-approve-row { display: flex; gap: 8px; }
+.agent-approve-row .bio-btn { margin-top: 0.4rem; }
 .bio-scan.ok .bio-ring { border-color: var(--phos); }
 .bio-scan.ok .bio-sub { color: var(--phos); }
 .bio-scan.bad .bio-ring { border-color: var(--leak); }

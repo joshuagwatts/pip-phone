@@ -20,25 +20,41 @@
     <span class="mark">PIP</span>
     <button type="button" id="privacy-tog" class="privacy-chip on" title="SECURE: phone + desktop first · cloud only when you pick a brain. LEAKY: cloud keys speak as Pip.">SECURE</button>
     <span class="spacer"></span>
-    <button type="button" id="comm-tog">CHAT</button>
+    <button type="button" id="panel-tog" title="Modules" aria-label="Open modules">▦</button>
   </header>
-  <main id="view"></main>
+  <section id="panel" aria-hidden="true">
+    <div class="panel-scrim" id="panel-scrim"></div>
+    <div class="panel-sheet" id="panel-sheet">
+      <header class="panel-head">
+        <span id="panel-title" class="panel-title">OPP</span>
+        <span class="spacer"></span>
+        <button type="button" id="panel-x" aria-label="Close panel">✕</button>
+      </header>
+      <div id="view"></div>
+    </div>
+  </section>
   <div id="status"></div>
-  <nav class="tabs" id="tabs">
-    <button data-tab="opp" class="on">OPP</button>
-    <button data-tab="today">TODAY</button>
-    <button data-tab="meals">MEALS</button>
-    <button data-tab="wx">WX</button>
-    <button data-tab="vibe">VIBE</button>
-    <button data-tab="kit">KIT</button>
-    <button data-tab="data">DATA</button>
-  </nav>
+  <div id="module-sheet" hidden>
+    <button type="button" class="sheet-bg" id="module-sheet-bg" aria-label="Close modules"></button>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-label="Modules">
+      <header class="sheet-head">
+        <span class="sheet-title">MODULES</span>
+        <span class="spacer"></span>
+        <button type="button" id="module-sheet-x" aria-label="Close modules">✕</button>
+      </header>
+      <div class="sheet-grid" id="module-grid">
+        <button type="button" data-panel="opp">OPP</button>
+        <button type="button" data-panel="today">TODAY</button>
+        <button type="button" data-panel="meals">MEALS</button>
+        <button type="button" data-panel="wx">WX</button>
+        <button type="button" data-panel="vibe">VIBE</button>
+        <button type="button" data-panel="kit">KIT</button>
+        <button type="button" data-panel="memory">MEMORY</button>
+        <button type="button" data-panel="data">DATA</button>
+      </div>
+    </div>
+  </div>
   <aside id="comm">
-    <header class="stat">
-      <span class="mark">CHAT</span>
-      <span class="spacer"></span>
-      <button type="button" id="comm-close">CLOSE</button>
-    </header>
     <div id="log"></div>
     <div class="crew-bar" id="crew-bar" hidden>
       <span class="crew-msg" id="crew-msg">CREW</span>

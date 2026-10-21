@@ -71,11 +71,27 @@ jobs:
       - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
-      - name: Build debug APK
+      - name: Check signing secrets
+        run: |
+          if [ -z "${{ secrets.PIP_KS_B64 }}" ]; then
+            echo "::error::PIP_KS_B64 secret is missing — add the 4 PIP_KS_* secrets (repo Settings → Secrets and variables → Actions) before shipping."
+            exit 1
+          fi
+      - name: Decode release keystore
+        env:
+          PIP_KS_B64: ${{ secrets.PIP_KS_B64 }}
+        run: |
+          echo "$PIP_KS_B64" | base64 -d > /tmp/pip-release.p12
+          echo "PIP_KS_PATH=/tmp/pip-release.p12" >> $GITHUB_ENV
+      - name: Build release APK
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleDebug
+        env:
+          PIP_KS_STORE_PW: ${{ secrets.PIP_KS_STORE_PW }}
+          PIP_KS_KEY_ALIAS: ${{ secrets.PIP_KS_KEY_ALIAS }}
+          PIP_KS_KEY_PW: ${{ secrets.PIP_KS_KEY_PW }}
+        run: chmod +x gradlew && ./gradlew assembleRelease
       - name: Name the file Pip.apk
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk Pip.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk Pip.apk
       - uses: actions/upload-artifact@v4
         with:
           name: Pip-apk
@@ -153,13 +169,12 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.22** — Nearby storms, weather overlays, live alerts.
+            **Phone Pip v0.1.98** — error-message polish.
 
-            - Map layers: Night / Street / Sat plus Radar, Clouds, Vis overlays.
-            - House tap uses ~15 km of the pin (not every storm in the metro). Filter by date, hail size, wind.
-            - Weather refresh every 8 minutes. CHAT warns if NWS/Open-Meteo says it is getting seriously crummy.
+            - No more doubled advice: throttle messages no longer print "Wait a bit or pick another agent" twice.
+            - COMPARE now says "all compare brains throttled — wait a couple minutes" when the brains are just resting, instead of wrongly telling you to paste keys in DATA.
 
-            Install Pip.apk over your current build. Restart desktop Pip for the same WX behavior.
+            No reinstall needed — installs right over v0.1.97.
           files: |
             Pip.apk
             Pip-Windows.exe
