@@ -22,6 +22,11 @@ const SECRET_FIELDS = [
   "deepseek",
   "openai",
   "anthropic",
+  "nvidia",
+  "cloudflare",
+  "cloudflare_account",
+  "zai",
+  "ollama",
   "desktop_token",
   "desktop_password",
 ];

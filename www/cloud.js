@@ -25,6 +25,15 @@ export const PROVIDERS = [
     base: "https://openrouter.ai/api/v1",
     life: "meta-llama/llama-3.3-70b-instruct:free",
     boost: "qwen/qwen3-coder:free",
+    // :free variants ride AFTER the lane primary in modelsFor() — they widen
+    // the free fallback pool without forcing free-only when the key has credits.
+    models: [
+      "meta-llama/llama-3.3-70b-instruct:free",
+      "qwen/qwen3-coder:free",
+      "deepseek/deepseek-r1:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "google/gemma-4-31b-it:free",
+    ],
     headers: { "HTTP-Referer": "https://pip.phone", "X-Title": "Phone Pip" },
     keyUrl: "https://openrouter.ai/keys",
     tip: "One key · :free models · vision via Gemini routes.",
@@ -121,6 +130,60 @@ export const PROVIDERS = [
     fishy: true,
     keyUrl: "https://console.anthropic.com/settings/keys",
     tip: "Anthropic · Claude Haiku by default · OpenAI-compat /v1.",
+  },
+  {
+    id: "nvidia",
+    label: "NVIDIA NIM",
+    field: "nvidia",
+    base: "https://integrate.api.nvidia.com/v1",
+    life: "meta/llama-3.3-70b-instruct",
+    boost: "nvidia/nemotron-3-super-120b-a12b",
+    models: [
+      "meta/llama-3.3-70b-instruct",
+      "nvidia/nemotron-3-super-120b-a12b",
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b",
+    ],
+    keyUrl: "https://build.nvidia.com",
+    tip: "Free key · 100+ open models · ~40 req/min.",
+  },
+  {
+    id: "cloudflare",
+    label: "Cloudflare",
+    field: "cloudflare",
+    // {account} is substituted from the vault ("cloudflare_account") by baseFor().
+    base: "https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1",
+    life: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    boost: "@cf/openai/gpt-oss-120b",
+    models: [
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      "@cf/openai/gpt-oss-120b",
+      "@cf/meta/llama-3.1-8b-instruct",
+    ],
+    keyUrl: "https://dash.cloudflare.com/?to=/:account/ai",
+    tip: "Free 10,000 neurons/day · needs API token + account ID (both in DATA).",
+  },
+  {
+    id: "zai",
+    label: "Z.ai (GLM)",
+    field: "zai",
+    base: "https://api.z.ai/api/paas/v4",
+    life: "glm-4.7-flash",
+    boost: "glm-4.7-flash",
+    models: ["glm-4.7-flash", "glm-4.5-flash"],
+    keyUrl: "https://z.ai/manage-apikey/apikey-list",
+    tip: "Free models: GLM-4.7-Flash / 4.5-Flash are $0.",
+  },
+  {
+    id: "ollama",
+    label: "Ollama Cloud",
+    field: "ollama",
+    base: "https://ollama.com/v1",
+    life: "gpt-oss:20b-cloud",
+    boost: "gpt-oss:120b-cloud",
+    models: ["gpt-oss:20b-cloud", "gpt-oss:120b-cloud", "gpt-oss:20b", "gpt-oss:120b"],
+    keyUrl: "https://ollama.com/settings/keys",
+    tip: "Free plan · 1 request at a time · cloud models.",
   },
   {
     id: "pollinations",
@@ -319,6 +382,8 @@ export function providerReady(settings, id) {
   const prov = PROVIDERS.find((p) => p.id === String(id || "").toLowerCase());
   if (!prov) return false;
   if (isBenched(prov.id)) return false;
+  // Cloudflare-style bases need the account ID in the vault too, not just a token.
+  if (accountMissing(prov)) return false;
   return prov.keyless || Boolean(providerKey(settings, prov));
 }
 
@@ -420,6 +485,26 @@ function providerKey(settings, prov) {
   // Keyless providers need no vault key at all.
   if (prov.keyless) return "";
   return normalizeApiKey(getSecret(prov.field));
+}
+
+/**
+ * Resolve a provider's base URL. A base containing "{account}" (Cloudflare)
+ * needs the account ID from the vault — secret "<field>_account"
+ * ("cloudflare_account"), pasted in DATA next to the token.
+ * Throws a plain-English error when the account ID is missing.
+ */
+export function baseFor(prov) {
+  const base = String(prov?.base || "").replace(/\/$/, "");
+  if (!base.includes("{account}")) return base;
+  const account = String(getSecret(`${prov.field}_account`) || "").trim();
+  if (!account) throw new Error("account id missing — paste in DATA");
+  return base.replace("{account}", account);
+}
+
+/** True when the provider's base needs an account ID that isn't in the vault yet. */
+export function accountMissing(prov) {
+  if (!String(prov?.base || "").includes("{account}")) return false;
+  return !String(getSecret(`${prov.field}_account`) || "").trim();
 }
 
 /** Strip paste cruft — Bearer prefix, quotes, whitespace. */
@@ -690,7 +775,7 @@ export async function probeModels(settings, prov) {
   try {
     const headers = { ...(prov.headers || {}) };
     if (!prov.keyless && key) headers.Authorization = `Bearer ${key}`;
-    const { body, status } = await httpGet(`${prov.base.replace(/\/$/, "")}/models`, 12000, headers);
+    const { body, status } = await httpGet(`${baseFor(prov)}/models`, 12000, headers);
     if (!status) throw new Error("network failed (status 0)");
     if (status === 401 || status === 403) throw new Error(`http ${status} unauthorized`);
     if (status >= 400) throw new Error(`http ${status}`);
@@ -900,7 +985,7 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
   if (!prov.keyless && key) headers.Authorization = `Bearer ${key}`;
   try {
     data = await httpPostJson(
-      `${prov.base.replace(/\/$/, "")}/chat/completions`,
+      `${baseFor(prov)}/chat/completions`,
       headers,
       payload,
       45000,
@@ -944,7 +1029,7 @@ async function openaiWithFallback(prov, key, lane, messages, temperature, maxTok
       const msg = String(e.message || e);
       errors.push(msg.slice(0, 120));
       // Bad key won't magically work on another model ID — same for a throttled endpoint.
-      if (isAuthFail(msg) || isQuotaFail(msg)) break;
+      if (isAuthFail(msg) || isQuotaFail(msg) || /account id missing/i.test(msg)) break;
     }
   }
   if (!errors.some(isAuthFail) && !errors.some(isQuotaFail)) {
@@ -956,7 +1041,7 @@ async function openaiWithFallback(prov, key, lane, messages, temperature, maxTok
       } catch (e) {
         const msg = String(e.message || e);
         errors.push(`slim/${model}: ${msg.slice(0, 100)}`);
-        if (isAuthFail(msg) || isQuotaFail(msg)) break;
+        if (isAuthFail(msg) || isQuotaFail(msg) || /account id missing/i.test(msg)) break;
       }
     }
   }

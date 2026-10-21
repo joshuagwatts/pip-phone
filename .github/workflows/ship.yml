@@ -169,13 +169,14 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.99** — provider mute system.
+            **Phone Pip v0.1.100** — five more free brains.
 
-            - Brains that spend their quota get muted automatically, and a brain that fails 3 turns in a row gets muted for 30 minutes — Pip stops wasting turns on worthless providers.
-            - Muted brains are listed in DATA with the reason, with an UNMUTE ALL button. Routing (chat, compare, auto, frugal) skips muted brains entirely.
-            - Reminder: you never re-type API keys after a reinstall — pair your desktop in DATA and the keys sync into the phone automatically.
+            - NEW in DATA: NVIDIA NIM (one free key, 100+ models), Cloudflare Workers AI (10,000 free neurons/day — needs token + account ID, both have fields in DATA), Z.ai (GLM Flash models are $0), Ollama Cloud (free plan).
+            - OpenRouter now falls back through its :free models, so a key with no credits still answers.
+            - All five route through chat/compare/auto/frugal and the mute system like the rest. Keys sync from desktop automatically once entered there.
+            - Honest note: these are wired and tested structurally, but not live-tested — first real check is your first key.
 
-            No reinstall needed — installs right over v0.1.98.
+            No reinstall needed — installs right over v0.1.99.
           files: |
             Pip.apk
             Pip-Windows.exe

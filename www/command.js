@@ -3,19 +3,19 @@
 export const JOBS = {
   life: {
     label: "CHAT",
-    brains: ["anthropic", "groq", "gemini", "openrouter", "openai", "cerebras", "deepseek", "mistral", "xai"],
+    brains: ["anthropic", "groq", "nvidia", "cloudflare", "gemini", "openrouter", "zai", "openai", "cerebras", "deepseek", "mistral", "xai", "ollama"],
   },
   boost: {
     label: "DRAFT",
-    brains: ["anthropic", "openai", "groq", "openrouter", "cerebras", "deepseek", "mistral", "gemini"],
+    brains: ["anthropic", "openai", "groq", "nvidia", "cloudflare", "openrouter", "zai", "cerebras", "deepseek", "mistral", "gemini", "ollama"],
   },
   code: {
     label: "CODE",
-    brains: ["deepseek", "anthropic", "openai", "openrouter", "groq", "cerebras", "mistral"],
+    brains: ["deepseek", "anthropic", "openai", "nvidia", "openrouter", "groq", "cloudflare", "zai", "cerebras", "mistral", "ollama"],
   },
   wx: {
     label: "WX",
-    brains: ["gemini", "anthropic", "cerebras", "openrouter", "groq", "deepseek", "mistral"],
+    brains: ["gemini", "anthropic", "nvidia", "cloudflare", "cerebras", "openrouter", "zai", "groq", "deepseek", "mistral", "ollama"],
   },
   vision: {
     label: "LENS",
@@ -27,7 +27,7 @@ export const JOBS = {
   },
   meal: {
     label: "MEALS",
-    brains: ["gemini", "anthropic", "groq", "openrouter", "cerebras", "deepseek", "mistral"],
+    brains: ["gemini", "anthropic", "groq", "nvidia", "cloudflare", "openrouter", "zai", "cerebras", "deepseek", "mistral", "ollama"],
   },
 };
 
@@ -114,7 +114,7 @@ export function orderFor(job, keyedIds, health = {}, pin = "auto", ask = "") {
  */
 export function orderForEfficient(keyedIds, health = {}, ask = "") {
   const t = String(ask || "");
-  const speed = ["groq", "cerebras", "anthropic", "openrouter", "mistral", "gemini", "deepseek", "openai", "xai"];
+  const speed = ["nvidia", "cloudflare", "groq", "cerebras", "anthropic", "openrouter", "zai", "mistral", "gemini", "deepseek", "openai", "xai", "ollama"];
   let bump = speed;
   if (VISION_HINT.test(t)) bump = ["gemini", "openai", "anthropic", "openrouter", ...speed];
   else if (CODE_HINT.test(t)) bump = ["deepseek", "groq", "cerebras", "anthropic", "openrouter", ...speed];
@@ -145,7 +145,7 @@ export function orderForConsultant(keyedIds, health = {}, ask = "", job = "life"
 export function describeChain(keyedIds, health = {}, desktop = false, pin = "auto", desktopLive = null, leaky = false) {
   const rows = [];
   const cloudRows = [];
-  for (const id of ["anthropic", "groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai"]) {
+  for (const id of ["anthropic", "groq", "nvidia", "cloudflare", "openrouter", "gemini", "zai", "cerebras", "deepseek", "openai", "mistral", "xai", "ollama"]) {
     const keyed = keyedIds.includes(id);
     const ok = health[id]?.ok;
     let state = "off";

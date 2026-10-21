@@ -1,6 +1,6 @@
 /** Vision lens — rock / shingle / general ID via Gemini or OpenRouter (free keys). */
 
-import { PROVIDERS, privacyOn, markHealth } from "./cloud.js";
+import { PROVIDERS, privacyOn, markHealth, baseFor } from "./cloud.js";
 import { httpPostJson } from "./net.js";
 import { getSecret } from "./secrets.js";
 
@@ -154,7 +154,7 @@ async function visionOnce(prov, key, model, prompt, dataUrl) {
     ],
   };
   const data = await httpPostJson(
-    `${prov.base.replace(/\/$/, "")}/chat/completions`,
+    `${baseFor(prov)}/chat/completions`,
     {
       Authorization: `Bearer ${key}`,
       ...(prov.headers || {}),

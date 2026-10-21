@@ -9,7 +9,7 @@ import { httpLanGet } from "./net.js";
 import { normalizeApiKey } from "./cloud.js";
 import { setSecret, getSecret, hasSecrets } from "./secrets.js";
 
-export const KEY_FIELDS = ["groq", "openrouter", "cerebras", "mistral", "gemini", "xai", "deepseek", "openai", "anthropic"];
+export const KEY_FIELDS = ["groq", "openrouter", "cerebras", "mistral", "gemini", "xai", "deepseek", "openai", "anthropic", "nvidia", "cloudflare", "cloudflare_account", "zai", "ollama"];
 
 function lan(settings) {
   return String(settings.desktop_url || "").replace(/\/+$/, "");

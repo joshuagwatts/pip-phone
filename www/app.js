@@ -781,7 +781,7 @@ function agentOptions() {
     { id: "compare", section: "modes" },
   ];
   const apis = [];
-  for (const id of ["anthropic", "groq", "openrouter", "gemini", "cerebras", "deepseek", "openai", "mistral", "xai", "pollinations"]) {
+  for (const id of ["anthropic", "groq", "nvidia", "cloudflare", "openrouter", "gemini", "zai", "cerebras", "deepseek", "openai", "mistral", "xai", "ollama", "pollinations"]) {
     if (keyed.has(id)) apis.push({ id, section: "apis" });
   }
   if (desktopConfigured(db.settings)) apis.push({ id: "desktop", section: "apis" });
@@ -1331,7 +1331,7 @@ function renderData() {
   const httpLine = `HTTP: ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE — cloud may fail"} · ${diag.platform}`;
 
   const pinModes = ["auto", "compare", "desktop", "lite", "local", "qwen"];
-  const pinKeyed = ["anthropic", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai"].filter((id) =>
+  const pinKeyed = ["anthropic", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai", "nvidia", "cloudflare", "zai", "ollama"].filter((id) =>
     getSecret(id),
   );
   // Keyless providers are always pinnable — no key to check.
@@ -1404,7 +1404,15 @@ function renderData() {
                         ? "auto (CHAT dropdown decides)"
                         : id === "pollinations"
                           ? "pollinations (free · no key)"
-                          : id;
+                          : id === "nvidia"
+                            ? "nvidia NIM (free key)"
+                            : id === "cloudflare"
+                              ? "cloudflare (free tier)"
+                              : id === "zai"
+                                ? "z.ai GLM (free models)"
+                                : id === "ollama"
+                                  ? "ollama cloud (free plan)"
+                                  : id;
           return `<option value="${id}" ${on ? "selected" : ""}>${label}</option>`;
         }).join("")}
       </select>
@@ -1413,6 +1421,14 @@ function renderData() {
       ? `<p class="muted">SECURE: chat stays on this phone + your desktop unless you pick a cloud brain · OPP/CODE/vision/web/geo stay local.</p>`
       : `<p class="muted">LEAKY: cloud hierarchy speaks as Pip first · desktop only if PIN=desktop or no keys.</p>`}
     <div class="key-list">${keyRows}</div>
+    <div class="key-row">
+      <div class="key-meta">
+        <span class="key-name">CLOUDFLARE ACCOUNT ID</span>
+        <span class="key-tag">${getSecret("cloudflare_account") ? "SET" : "NOT SET"}</span>
+      </div>
+      <p class="muted key-tip">Cloudflare only — the middle of your dashboard URL (dash.cloudflare.com/ACCOUNT-ID/ai). Saves as you type.${getSecret("cloudflare_account") ? ` · <button type="button" class="key-clear" data-field="cloudflare_account">CLEAR</button>` : ""}</p>
+      <input id="set-cloudflare_account" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" value="" placeholder="${getSecret("cloudflare_account") ? "paste to replace · saved" : "paste account ID — saves as you type"}" data-keep="${getSecret("cloudflare_account") ? "1" : "0"}" data-field="cloudflare_account" />
+    </div>
 
     <h3>LOCK</h3>
     <p class="muted" id="bio-help">Press & hold the phosphor print until the ring fills. Pip-themed lock — no Android popup.</p>
@@ -1437,7 +1453,7 @@ function renderData() {
     db.settings.brain_pin = ($("#brain-pin") && $("#brain-pin").value) || db.settings.brain_pin;
     const pinNow = String(db.settings.brain_pin || "auto").toLowerCase();
     if (pinNow === "auto") db.settings.chat_agent = db.settings.chat_agent || "pip";
-    else if (["compare", "desktop", "auto", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai", "anthropic", "pollinations"].includes(pinNow)) {
+    else if (["compare", "desktop", "auto", "groq", "openrouter", "cerebras", "deepseek", "openai", "mistral", "gemini", "xai", "anthropic", "pollinations", "nvidia", "cloudflare", "zai", "ollama"].includes(pinNow)) {
       db.settings.chat_agent = pinNow;
     }
     for (const p of PROVIDERS) {
@@ -1450,6 +1466,12 @@ function renderData() {
         delete db.settings[`${p.field}_cleared`];
         clearSpent(p.id);
       }
+    }
+    // Cloudflare account ID — a vault secret, but not a provider field.
+    const cfAcctSave = $("#set-cloudflare_account");
+    if (cfAcctSave && cfAcctSave.value.trim()) {
+      await setSecret("cloudflare_account", cfAcctSave.value.trim());
+      delete db.settings.cloudflare_account_cleared;
     }
     db.settings.keysConfigured = hasSecrets();
     if (PROVIDERS.some((p) => getSecret(p.field)) && privacyOn(db.settings)) {
@@ -1484,6 +1506,23 @@ function renderData() {
       renderPrivacy();
       paintBrainStrip();
       queueKeyValidate(p.field);
+    });
+  }
+
+  // Cloudflare account ID input — not a provider field, so the loop above
+  // skips it; bind it explicitly, mirroring the key inputs (save as you type).
+  const cfAcctInput = $("#set-cloudflare_account");
+  if (cfAcctInput) {
+    cfAcctInput.addEventListener("input", async () => {
+      const v = cfAcctInput.value.trim();
+      if (!v) return;
+      delete db.settings.cloudflare_account_cleared;
+      await setSecret("cloudflare_account", v);
+      db.settings.keysConfigured = hasSecrets();
+      clearHealth("cloudflare");
+      clearSpent("cloudflare");
+      persist();
+      queueKeyValidate("cloudflare");
     });
   }
 

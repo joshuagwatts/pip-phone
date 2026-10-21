@@ -36,6 +36,10 @@ export const PRICES = {
   mistral: { in: 0.1, out: 0.3, note: "mistral-small approx" },
   openrouter: { in: 0, out: 0, note: ":free routes wired" },
   xai: { in: 0.3, out: 0.5, note: "grok-3-mini approx" },
+  nvidia: { in: 0, out: 0, note: "NIM free tier" },
+  cloudflare: { in: 0, out: 0, note: "Workers AI free neurons" },
+  zai: { in: 0, out: 0, note: "GLM Flash models $0" },
+  ollama: { in: 0, out: 0, note: "Ollama Cloud free plan" },
 };
 
 export function estimateTokens(text) {
@@ -204,11 +208,11 @@ export function classifyTask(messages) {
 /** Preferred provider order per task class (strongest first). */
 const TASK_PREFS = {
   vision: ["gemini", "openai", "openrouter", "anthropic"],
-  code: ["deepseek", "openai", "openrouter", "groq", "pollinations"],
-  reasoning: ["anthropic", "deepseek", "openai", "groq", "pollinations"],
-  creative: ["anthropic", "openai", "gemini", "pollinations"],
-  quick: ["pollinations", "groq", "gemini", "openai"],
-  general: ["pollinations", "groq", "openai", "gemini", "anthropic"],
+  code: ["deepseek", "nvidia", "openai", "cloudflare", "openrouter", "zai", "groq", "pollinations", "ollama"],
+  reasoning: ["anthropic", "deepseek", "nvidia", "openai", "cloudflare", "zai", "groq", "pollinations", "ollama"],
+  creative: ["anthropic", "openai", "gemini", "nvidia", "cloudflare", "zai", "pollinations", "ollama"],
+  quick: ["pollinations", "groq", "cloudflare", "nvidia", "gemini", "zai", "openai", "ollama"],
+  general: ["pollinations", "groq", "nvidia", "cloudflare", "openai", "zai", "gemini", "anthropic", "ollama"],
 };
 
 /** Frugal money-mode: settings.superchat_frugal ∈ free-only | frugal | best-regardless (default frugal). */
