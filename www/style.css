@@ -1371,3 +1371,18 @@ body.bio-locked > *:not(#bio-scan):not(#bio-pass) { visibility: hidden; }
   85% { opacity: 1; }
   100% { top: 78%; opacity: 0; }
 }
+
+/* Briefing Engine cards (Phase 2) */
+.score-row { display: flex; gap: 0.4rem; margin: 0.5rem 0; }
+.score-btn {
+  flex: 1; padding: 0.55rem 0; background: transparent; color: var(--ink, #cfe);
+  border: 1px solid var(--line); border-radius: 6px; font: inherit; cursor: pointer;
+}
+.score-btn.on { border-color: var(--phos); color: var(--phos); }
+#evening-card input, #out-card input {
+  display: block; width: 100%; box-sizing: border-box; margin: 0.35rem 0;
+  background: rgba(0, 0, 0, 0.35); color: inherit; border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.5rem; font: inherit;
+}
+.sugg-row { border-top: 1px dashed var(--line); padding: 0.4rem 0; }
+.sugg-row:first-child { border-top: none; }

@@ -1,6 +1,6 @@
 import { load, save, KIT_LABELS } from "./store.js";
 import { loadStoreVault, scheduleVaultSave, flushVaultSave } from "./store-vault.js";
-import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn } from "./brain.js";
+import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingTheme, takeLastTurn, localOnlyComplete } from "./brain.js";
 import { runAuto, runDiscuss, runFrugal } from "./superchat.js";
 import { AGENT_META, agentLabel } from "./crew.js";
 import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent, isSpent, clearSpent, mutedList, clearMutes } from "./cloud.js";
@@ -18,9 +18,9 @@ import { SHADER_ORDER } from "./shaders.js";
 import { pickShader, shaderOf, snapshot as motivSnap, tap as motivTap } from "./motivation.js";
 import { compile, startLoop, stopLoop, startMic, stopMic, isListening, lose } from "./vibe.js";
 import { bootTheme, tryThemeCommand, applyThemePayload, resetTheme, looksLikeThemeRequest } from "./theme.js";
-import { capture as captureMemory, getTier as getMemoryTier, rememberNow } from "./memory-engine.js";
+import { capture as captureMemory, getTier as getMemoryTier, rememberNow, getSuggestions, approveSuggestion, dismissSuggestion, addDailyNote } from "./memory-engine.js";
 import { renderMemoryTab } from "./memory-ui.js";
-import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, ymd, ym } from "./calendar.js";
+import { renderCalendar, syncEventsFromDesktop, pushEventToDesktop, eventsForDay, ymd, ym } from "./calendar.js";
 import { applyAllOverlays } from "./codefs.js";
 import { streamCodeApply, consumeCodeStream } from "./code.js";
 import { loadMapConfig, mountMap, destroyMap, setMapLayer, renderWxPanels, layerButtons, researchPin, quickPin, drawHailMarkers, resolveMapCenter, renderWeatherBoot, renderRoofDossier, pinDossier, refetchDossier, startWeatherWatch, filterDossier, filterHailRaw, selectStormDate, bindWxLiveControls, bindWxMapExpand, fetchWeatherBundle, paintLiveWeather, renderHourlyTimeline, geocodeAddress, flyToPin, wxLiveControlsHtml, weatherSummaryHtml, collapseHailByDate, setWxPin } from "./wx.js";
@@ -64,6 +64,19 @@ import {
   getBriefing,
 } from "./morning.js";
 import { pingNudge, markChatUser } from "./nudge.js";
+import {
+  loadBriefState,
+  dueToday,
+  markBriefDelivered,
+  markEveningOffered,
+  recordEveningReview,
+  focusForToday,
+  pickRecommendedMove,
+  assembleMorningBrief,
+  diffWhileOut,
+  snapshotWhileOut,
+  setNudgeContext,
+} from "./briefing.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -950,6 +963,272 @@ function softRefresh() {
   paintBrainStrip();
 }
 
+// ------------------------------------------------------ Briefing Engine --
+// Phase 2 glue: gather plain-data inputs from the real modules and hand
+// them to www/briefing.js (which imports nothing, so a brief can never
+// reach a cloud path). Delivery = chat, on open — see runBriefing calls in
+// startUi + the appStateChange hook.
+
+function briefMealSlotMissing() {
+  try {
+    const plan = mealSnapshot(db).plan || [];
+    const filled = (slot) =>
+      plan.some((r) => (r.slot || "") === slot && String(r.meal_name || r.name || r.title || "").trim());
+    const h = new Date().getHours();
+    if (7 <= h && h < 11 && !filled("breakfast")) return "breakfast";
+    if (11 <= h && h < 15 && !filled("lunch")) return "lunch";
+    if (17 <= h && h < 21 && !filled("dinner")) return "dinner";
+  } catch {
+    /* meals optional */
+  }
+  return "";
+}
+
+function gatherBriefInputs(bst) {
+  let overnight = null;
+  try {
+    const note = getMemoryTier("daily").find((e) => !e.suggested);
+    if (note) overnight = { title: note.title || "", content: note.content || "" };
+  } catch {
+    /* memory engine not ready — section omitted */
+  }
+  let focus = focusForToday(bst);
+  if (!focus) {
+    try {
+      const goal = getMemoryTier("durable").find((e) => (e.tags || []).includes("goal"));
+      if (goal) focus = String(goal.title || goal.content || "").trim();
+    } catch {
+      /* optional */
+    }
+  }
+  let events = [];
+  try {
+    events = eventsForDay(db, ymd()).map((e) => ({ title: e.title, event_time: e.event_time || "" }));
+  } catch {
+    /* calendar optional */
+  }
+  let energy = "";
+  try {
+    const snap = mealSnapshot(db);
+    const plan = snap.plan || [];
+    if (plan.length) {
+      const filled = plan.filter((r) => String(r.meal_name || r.name || r.title || "").trim()).length;
+      const rem = (snap.remaining && snap.remaining.remaining) || {};
+      const kcal = Number(rem.kcal);
+      energy = `${filled}/${plan.length} meals planned${Number.isFinite(kcal) && kcal > 0 ? ` · ~${Math.round(kcal)} kcal still open` : ""}`;
+    }
+  } catch {
+    /* meals optional */
+  }
+  const opps = (db.opps || []).filter((o) => o.status !== "done");
+  const tight = opps.find((o) => o.tight || /today|tomorrow|due|closes/i.test(String(o.due_label || "")));
+  let suggestions = 0;
+  try {
+    suggestions = getSuggestions().length;
+  } catch {
+    /* optional */
+  }
+  let wakeIncomplete = false;
+  try {
+    wakeIncomplete = !morningStatus().complete;
+  } catch {
+    /* optional */
+  }
+  const move = pickRecommendedMove({
+    suggestions,
+    oppTight: tight ? { title: String(tight.title || "a call"), due: tight.due_label || "its deadline is close" } : null,
+    oppOpen: opps.length,
+    mealsMissingSlot: briefMealSlotMissing(),
+    wakeIncomplete,
+  });
+  const yesterdayStr = ymd(new Date(Date.now() - 24 * 60 * 60 * 1000));
+  const yesterday = bst.lastReview && bst.lastReview.date === yesterdayStr ? bst.lastReview : null;
+  return {
+    overnight,
+    distillPending: Boolean(db.settings.memory_distill_pending),
+    yesterdayScore: yesterday && yesterday.score ? yesterday.score : null,
+    events,
+    focus,
+    energy,
+    move,
+  };
+}
+
+function gatherOutSignals() {
+  let suggestionIds = [];
+  try {
+    suggestionIds = getSuggestions().map((s) => s.id);
+  } catch {
+    /* optional */
+  }
+  return {
+    distillLast: String(db.settings.memory_distill_last || ""),
+    suggestionIds,
+    muted: mutedList(),
+    keysSyncedAt: String(db.settings.keys_synced_at || ""),
+  };
+}
+
+function postBriefMessage(text) {
+  db.chat.push({ role: "pip", content: text, brain: "brief" });
+  persist();
+  addLog("pip", text, { brain: "brief" });
+  softRefresh();
+}
+
+function showOutCard() {
+  const log = $("#log");
+  if (!log || document.getElementById("out-card")) return;
+  let suggestions = [];
+  try {
+    suggestions = getSuggestions();
+  } catch {
+    return;
+  }
+  if (!suggestions.length) return;
+  const div = document.createElement("div");
+  div.className = "bubble pip";
+  div.id = "out-card";
+  const paint = () => {
+    if (!suggestions.length) {
+      div.innerHTML = `<div class="who-row"><span class="who">MEMORY SUGGESTIONS</span></div><div class="body"><p>All ruled. They live in MEMORY now — or they don't.</p></div>`;
+      return;
+    }
+    div.innerHTML = `<div class="who-row"><span class="who">MEMORY SUGGESTIONS</span></div><div class="body">${suggestions
+      .map(
+        (s) => `<div class="sugg-row"><p>${esc(String(s.content || s.title || "").slice(0, 160))}</p><div class="actions"><button type="button" data-approve="${esc(s.id)}">REMEMBER IT</button><button type="button" data-dismiss="${esc(s.id)}">NAH</button></div></div>`,
+      )
+      .join("")}<div class="actions"><button type="button" id="out-done">DONE</button></div></div>`;
+    div.querySelectorAll("[data-approve]").forEach((b) => {
+      b.onclick = async () => {
+        await approveSuggestion(b.dataset.approve).catch(() => {});
+        suggestions = suggestions.filter((s) => s.id !== b.dataset.approve);
+        paint();
+      };
+    });
+    div.querySelectorAll("[data-dismiss]").forEach((b) => {
+      b.onclick = async () => {
+        await dismissSuggestion(b.dataset.dismiss).catch(() => {});
+        suggestions = suggestions.filter((s) => s.id !== b.dataset.dismiss);
+        paint();
+      };
+    });
+    const done = div.querySelector("#out-done");
+    if (done) done.onclick = () => div.remove();
+  };
+  log.appendChild(div);
+  paint();
+  log.scrollTop = log.scrollHeight;
+}
+
+function showEveningCard() {
+  const log = $("#log");
+  if (!log || document.getElementById("evening-card")) return;
+  const div = document.createElement("div");
+  div.className = "bubble pip";
+  div.id = "evening-card";
+  let score = 0;
+  div.innerHTML = `<div class="who-row"><span class="who">EVENING REVIEW</span></div><div class="body"><p>Score the day, capture what mattered, seed tomorrow. Ten seconds.</p><div class="score-row">${[1, 2, 3, 4, 5]
+    .map((n) => `<button type="button" class="score-btn" data-score="${n}">${n}</button>`)
+    .join("")}</div><input id="evening-note" type="text" placeholder="what mattered today — one line" autocomplete="off" /><input id="evening-focus" type="text" placeholder="tomorrow's focus — one line" autocomplete="off" /><div class="actions"><button type="button" id="evening-save">SAVE REVIEW</button><button type="button" id="evening-skip">SKIP</button></div></div>`;
+  div.querySelectorAll(".score-btn").forEach((b) => {
+    b.onclick = () => {
+      score = Number(b.dataset.score) || 0;
+      div.querySelectorAll(".score-btn").forEach((x) => x.classList.toggle("on", Number(x.dataset.score) === score));
+    };
+  });
+  div.querySelector("#evening-skip").onclick = () => div.remove();
+  div.querySelector("#evening-save").onclick = async () => {
+    const note = div.querySelector("#evening-note").value.trim();
+    const focus = div.querySelector("#evening-focus").value.trim();
+    const review = recordEveningReview(loadBriefState(), { score, note, focus });
+    try {
+      const parts = [];
+      if (review.score) parts.push(`Score ${review.score}/5`);
+      if (note) parts.push(note);
+      if (focus) parts.push(`Tomorrow: ${focus}`);
+      if (parts.length) await addDailyNote(`Evening review — ${review.date}`, parts.join(" · "), new Date().toISOString());
+    } catch {
+      /* memory write is best-effort; the review itself is saved */
+    }
+    const line = `EVENING REVIEW · ${review.score ? `${review.score}/5` : "logged"}${note ? ` — ${note}` : ""}${focus ? ` · Tomorrow: ${focus}` : ""}`;
+    div.remove();
+    postBriefMessage(line);
+  };
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+let briefingRunning = false;
+
+/** The on-open briefing check. Returns true when a Morning Brief posted. */
+async function runBriefing({ forceMorning = false } = {}) {
+  if (briefingRunning) return false;
+  if (db.settings.briefings_on === false && !forceMorning) return false;
+  briefingRunning = true;
+  let posted = false;
+  try {
+    const settings = db.settings;
+    const bst = loadBriefState();
+    const due = dueToday(bst, settings);
+
+    // While you were out — diff first, then advance the baseline either way.
+    const signals = gatherOutSignals();
+    const items = diffWhileOut(bst, signals);
+    snapshotWhileOut(bst, signals);
+    setNudgeContext({
+      suggestions: signals.suggestionIds.length,
+      eveningDue: due.eveningDue || (due.reviewDone ? false : new Date().getHours() >= 19),
+    });
+    if (items.length && !due.quiet) {
+      postBriefMessage("WHILE YOU WERE OUT\n" + items.map((i) => `· ${i.text}`).join("\n"));
+      if (items.some((i) => i.kind === "suggestions")) showOutCard();
+    }
+
+    if (due.morningDue || forceMorning) {
+      const brief = assembleMorningBrief(gatherBriefInputs(loadBriefState()));
+      let text = brief.text;
+      let polished = "";
+      // Optional wording polish via the LOCAL brain only — localOnlyComplete
+      // cannot reach cloud by construction, and any failure (no local model,
+      // slow desktop) leaves the template brief standing. Never blocks long.
+      try {
+        const out = await Promise.race([
+          localOnlyComplete(
+            settings,
+            [
+              { role: "system", content: "You are Pip. Rewrite this morning brief in your own voice: short, plain, calm. Keep every fact and the ONE MOVE line's meaning. Add nothing new. No hype." },
+              { role: "user", content: brief.text },
+            ],
+            0.5,
+            400,
+          ),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("brief polish timeout")), 20000)),
+        ]);
+        if (out && out.text && out.text.trim().length > 20) {
+          text = out.text.trim();
+          polished = out.provider || "local";
+        }
+      } catch {
+        /* template brief stands */
+      }
+      postBriefMessage(text);
+      markBriefDelivered(loadBriefState(), text, polished);
+      posted = true;
+    }
+
+    if (due.eveningDue) {
+      markEveningOffered(loadBriefState());
+      showEveningCard();
+    }
+  } catch {
+    /* briefs never break boot or chat */
+  } finally {
+    briefingRunning = false;
+  }
+  return posted;
+}
+
 function paintCalendar() {
   const root = $("#cal-root");
   if (!root) return;
@@ -976,6 +1255,12 @@ function renderToday() {
       return [];
     }
   })();
+  const bst = loadBriefState();
+  const pipBrief = bst.lastBriefDate === ymd() && bst.lastBriefText ? bst.lastBriefText : "";
+  const reviewLine =
+    bst.lastEveningDate === ymd()
+      ? `EVENING REVIEW · ${bst.lastReview?.score ? `${bst.lastReview.score}/5 · ` : ""}DONE`
+      : "EVENING REVIEW · TONIGHT AFTER 19:00";
   root.innerHTML = `
     <div class="today-wrap">
       <div class="today-morning">
@@ -994,6 +1279,15 @@ function renderToday() {
           <button type="button" id="brief-again">AGAIN</button>
           <button type="button" id="morning-sync">SYNC</button>
           <span class="muted">${esc(morn.source === "desktop" ? "DESKTOP" : "PHONE")}</span>
+        </div>
+        <div class="brief-card" id="pip-brief-card">
+          ${pipBrief
+            ? `<div class="doc-body">${esc(pipBrief)}</div>`
+            : `<p class="muted">Pip's local brief posts in chat on first open after 06:00 — assembled on-device, no cloud.</p>`}
+        </div>
+        <div class="today-strip">
+          <button type="button" id="pip-brief-now">PIP BRIEF</button>
+          <span class="muted">${esc(reviewLine)}</span>
         </div>
       </div>
       <div id="cal-root"></div>
@@ -1031,6 +1325,15 @@ function renderToday() {
       setStatus(String(e.message || e).toUpperCase());
     }
   };
+  const pipBriefBtn = $("#pip-brief-now");
+  if (pipBriefBtn) {
+    pipBriefBtn.onclick = async () => {
+      setStatus("BRIEFING…");
+      const posted = await runBriefing({ forceMorning: true });
+      if (tab === "today") renderToday();
+      setStatus(posted ? "BRIEF POSTED · SEE CHAT" : "BRIEFINGS OFF · DATA");
+    };
+  }
   if (!brief?.text) {
     fetchBriefing(db.settings, { force: false })
       .then(() => {
@@ -1388,6 +1691,10 @@ function renderData() {
     </select></div>
     <p class="muted">When Proton is on, PIP can step outside the VPN to reach your desktop on Wi‑Fi. "Ask" prompts once per session — never silently.</p>
     <label class="check"><input type="checkbox" id="set-keepalive" ${s.keepalive ? "checked" : ""} /> BACKGROUND OPP SYNC</label>
+    <label class="check"><input type="checkbox" id="set-briefings" ${s.briefings_on !== false ? "checked" : ""} /> BRIEFINGS (MORNING BRIEF + EVENING REVIEW)</label>
+    <label class="check"><input type="checkbox" id="set-briefnudges" ${s.nudges_on !== false ? "checked" : ""} /> REASONED NUDGES (MAX 5/DAY · EACH SAYS WHY)</label>
+    <div class="field"><span>QUIET HOURS</span><input id="set-quiet-start" value="${esc(s.quiet_start || "22:00")}" placeholder="22:00" /> → <input id="set-quiet-end" value="${esc(s.quiet_end || "07:00")}" placeholder="07:00" /></div>
+    <p class="muted">Briefs are assembled on-device from memory, calendar and meals — never from cloud.</p>
 
     <h3>BRAIN KEYS</h3>
     <div id="data-chain" class="brain-strip" aria-label="connected APIs"></div>
@@ -1497,6 +1804,14 @@ function renderData() {
     if ($("#set-durl")) $("#set-durl").value = db.settings.desktop_url;
     db.settings.biometric_lock = Boolean($("#set-bio").checked);
     db.settings.keepalive = Boolean($("#set-keepalive")?.checked);
+    const briefEl = $("#set-briefings");
+    if (briefEl) db.settings.briefings_on = Boolean(briefEl.checked);
+    const nudgeEl = $("#set-briefnudges");
+    if (nudgeEl) db.settings.nudges_on = Boolean(nudgeEl.checked);
+    const qsEl = $("#set-quiet-start");
+    if (qsEl && /^\d{1,2}:\d{2}$/.test(qsEl.value.trim())) db.settings.quiet_start = qsEl.value.trim();
+    const qeEl = $("#set-quiet-end");
+    if (qeEl && /^\d{1,2}:\d{2}$/.test(qeEl.value.trim())) db.settings.quiet_end = qeEl.value.trim();
     persist();
   };
 
@@ -3564,6 +3879,9 @@ async function boot() {
           .catch(() => {});
       };
       runMorning();
+      // Briefing Engine — first open of the day posts the Morning Brief /
+      // while-you-were-out card / Evening Review offer into chat.
+      runBriefing();
       setInterval(() => {
         if (document.hidden) return;
         pingNudge(db.settings, db).then(injectNudge).catch(() => {});
@@ -3584,6 +3902,7 @@ async function boot() {
         cap.Plugins.App.addListener("appStateChange", ({ isActive }) => {
           if (!isActive) return;
           runMorning();
+          runBriefing();
           pingNudge(db.settings, db).then(injectNudge).catch(() => {});
         });
       }

@@ -4,6 +4,7 @@ import { fullOppSync, fetchOppDigest } from "./oppdesk.js";
 import { fullMorningSync } from "./morning.js";
 import { setKeepAlive } from "./proton.js";
 import { maybeDistill } from "./memory-distill.js";
+import { noteTick } from "./briefing.js";
 
 let timer = null;
 let watching = false;
@@ -17,6 +18,15 @@ export function startBackground(db, { persist, render, setStatus, softRefresh })
       // Nightly memory distillation — local models only, queued when none
       // reachable. Runs at most once a day; never throws (see memory-distill).
       await maybeDistill(db, { setStatus }).catch(() => {});
+      // Briefing Engine heartbeat — this tick is the scheduler per the
+      // blueprint (plus quiet-hour gating, which lives in briefing.js).
+      // Delivery itself happens on open via app.js runBriefing: a card is
+      // only worth posting the moment it can actually be seen.
+      try {
+        noteTick();
+      } catch {
+        /* briefing state is best-effort */
+      }
       if (desktopConfigured(db.settings)) {
         const out = await fullOppSync(db.settings, db);
         if (out.pushed || out.pulled) {

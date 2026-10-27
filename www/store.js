@@ -84,6 +84,10 @@ function blank() {
       vpn_note: "",
       proton_url: "",
       keepalive: false,
+      briefings_on: true, // Phase 2 Briefing Engine (www/briefing.js)
+      nudges_on: true,
+      quiet_start: "22:00",
+      quiet_end: "07:00",
       vpn_bypass: "ask", // M1: "ask" | "always" | "never" — Wi‑Fi bind when a VPN is active is never silent
       keys_synced_at: "",
       keys_synced_count: 0,
