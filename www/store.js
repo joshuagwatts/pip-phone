@@ -27,6 +27,7 @@ const SECRET_FIELDS = [
   "cloudflare_account",
   "zai",
   "ollama",
+  "github",
   "desktop_token",
   "desktop_password",
 ];

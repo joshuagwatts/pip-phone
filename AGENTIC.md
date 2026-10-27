@@ -90,3 +90,34 @@ No binary allowlist — the honest rail is approval + logging instead:
 - The paired-desktop companion protocol is text-only; native tools there would need the
   companion server (not in this repo) to grow a tools endpoint.
 - Reminders surface while the app/tick is alive — no OS-level push while the app is dead.
+
+## Phase 5 — PIP Codes (v0.1.106)
+
+Joshua's ask (2026-10-27): "if pip could code. And build my github repository
+thatd be ideal!"
+
+- `www/github.js` — fetch-based GitHub REST client. PAT lives in the vault
+  (SECRET_FIELDS field `github`, DATA panel GITHUB TOKEN row, keysync field);
+  used only as an Authorization header — never in a result, error, or ledger
+  entry (the Phase 3 leak-scan covers it: `github` is in SECRET_FIELDS, and
+  ghp_/github_pat_ shapes were already in the scan patterns). One consent-
+  ledger entry per logical operation (job "code", provider "github"; a
+  commit is ONE entry — its internal preview reads pass {log:false}).
+  Commits use the Git Data API (ref → commit → blobs → tree → commit → PATCH)
+  and are fast-forward only: no force is ever sent; a moved branch rejects
+  the PATCH and surfaces "branch moved — re-read and retry".
+- Tools (tools.js): `github_repos`, `github_tree`, `github_read`,
+  `github_commit` — all lane "network". `github_commit` is approval-gated
+  M3-style: read phase first (branch + current contents), preview card shows
+  repo, branch, message, and REAL per-file +/- line counts (LCS) with NEW /
+  DELETE markers; a denied tap means zero write calls. No approver available
+  = no write.
+- `/code` chat command (app.js `runCodeFlow`) = the agent loop with
+  `ctx.codeMode`: agent.js appends CODE_SYSTEM_ADDENDUM to the system prompt
+  (read-before-edit, ask when repo/change unnamed, verify via the desktop
+  shell tool before committing, never claim an unrun build passed). Plain
+  /agent is byte-identical without the flag.
+- Verified against an in-memory GitHub API mock (smoke-github 45/45): call
+  order, approval-denial = zero writes, branch-moved = one PATCH, no retry,
+  token hygiene sweep over results/previews/ledger. No real token exists on
+  the build VM — live verification is Joshua's first /code run with his PAT.

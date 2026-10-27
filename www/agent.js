@@ -42,8 +42,8 @@ export function parseJsonToolBlocks(text) {
   return calls;
 }
 
-function agentSystemPrompt() {
-  return [
+function agentSystemPrompt(extra = "") {
+  const base = [
     "You are Pip — Joshua's agent. You get things DONE with tools, then report back in Pip's voice.",
     CREW_LOCK,
     "You have these tools. Use them when they help the goal; otherwise just answer.",
@@ -58,7 +58,21 @@ function agentSystemPrompt() {
     "The final answer is plain Pip voice: summarize what you did and found. NEVER paste tool JSON, schemas, or raw tool output into it.",
     "If a tool errors or is declined, say so plainly and work around it or stop.",
   ].join("\n");
+  return extra ? `${base}\n\n${extra}` : base;
 }
+
+/** /code mode addendum (Phase 5 — PIP Codes). Appended to the agent system
+ *  prompt when ctx.codeMode is set; /agent runs are byte-identical without it. */
+export const CODE_SYSTEM_ADDENDUM = [
+  "CODE MODE — you are Pip the coder. You read, change, verify, and commit code in Joshua's GitHub repos.",
+  "GitHub tools: github_repos (find his repos), github_tree (map a repo), github_read (read a file), github_commit (commit — it ALWAYS shows Joshua an approval preview with repo, branch, message and per-file line counts, and writes nothing unless he taps APPROVE).",
+  "RULES:",
+  "- Read before you edit: tree the repo, then read every file you will change, in full, this session. Never commit a change to a file you haven't read.",
+  "- If the goal doesn't name the repo (owner/repo) AND what change to make, ask for exactly that in your final answer and make no edits (github_repos is allowed to help him pick).",
+  "- One commit per coherent change, with a clear message (what + why). Commits are fast-forward only — if github_commit says the branch moved, re-read the file and retry; never force anything.",
+  "- DESKTOP BUILD/TEST: if the shell tool is available (desktop app) and the repo is checked out on the desktop — ask where, or clone it there with the shell tool (its own approval applies) — run the repo's build/tests through shell BEFORE committing, and report the real result. NEVER claim a build or test passed that you did not actually run and see pass.",
+  "- Report honestly: what changed, the commit sha, and anything that failed, was skipped, or is still unverified.",
+].join("\n");
 
 /* ------------------------------------------------------------- backends */
 
@@ -68,16 +82,23 @@ function agentSystemPrompt() {
  * also get the tool specs and return structured tool_calls.
  */
 
-function ollamaBackend(model) {
+function ollamaBackend(model, extra = "") {
   return {
     kind: "ollama",
     label: `desktop Ollama · ${model}`,
     native: true,
-    chat: async (messages) => ollamaChat({ model, messages, tools: nativeToolSpecs(), temperature: 0.3 }),
+    chat: async (messages) =>
+      ollamaChat({
+        model,
+        // /agent sends no system message (unchanged); code mode prepends one.
+        messages: extra ? [{ role: "system", content: agentSystemPrompt(extra) }, ...messages] : messages,
+        tools: nativeToolSpecs(),
+        temperature: 0.3,
+      }),
   };
 }
 
-function qwenBackend(eng) {
+function qwenBackend(eng, extra = "") {
   return {
     kind: "qwen",
     label: "on-device Qwen",
@@ -86,7 +107,7 @@ function qwenBackend(eng) {
       // Raw complete — NOT brain.js localComplete: sanitizeReply would strip
       // the tool blocks we need to parse.
       const raw = await eng.complete(
-        [{ role: "system", content: agentSystemPrompt() }, ...messages],
+        [{ role: "system", content: agentSystemPrompt(extra) }, ...messages],
         0.3, 1200,
       );
       return { text: String(raw || ""), tool_calls: parseJsonToolBlocks(raw) };
@@ -94,10 +115,10 @@ function qwenBackend(eng) {
   };
 }
 
-function companionBackend(settings) {
+function companionBackend(settings, extra = "") {
   const serialize = (messages) =>
     [
-      agentSystemPrompt(),
+      agentSystemPrompt(extra),
       "---",
       ...messages.map((m) => `${m.role}: ${String(m.content || "").slice(0, 3000)}`),
       "---",
@@ -114,7 +135,7 @@ function companionBackend(settings) {
   };
 }
 
-function cloudBackend(settings) {
+function cloudBackend(settings, extra = "") {
   return {
     kind: "cloud",
     label: "cloud (consented)",
@@ -122,7 +143,7 @@ function cloudBackend(settings) {
     chat: async (messages) => {
       const out = await cloudCompleteTools(
         settings,
-        [{ role: "system", content: agentSystemPrompt() }, ...messages],
+        [{ role: "system", content: agentSystemPrompt(extra) }, ...messages],
         nativeToolSpecs(),
         "boost", 0.2, 4000,
       );
@@ -144,12 +165,13 @@ function cloudBackend(settings) {
 
 /** Backend order: fastest local thing that can actually run tools. */
 export async function pickBackend(ctx = {}, note = () => {}) {
+  const extra = ctx.codeMode ? CODE_SYSTEM_ADDENDUM : "";
   // 1. Desktop Ollama, native tools — the modern agentic speed path.
   if (isDesktopShell()) {
     try {
       const pick = await pickOllamaModel();
       if (pick && pick.name && pick.toolCapable) {
-        return { backend: ollamaBackend(pick.name), pick };
+        return { backend: ollamaBackend(pick.name, extra), pick };
       }
       if (pick) ctx.ollamaPick = pick; // for the first-run guidance message
     } catch {
@@ -159,14 +181,14 @@ export async function pickBackend(ctx = {}, note = () => {}) {
   // 2. On-device Qwen, JSON tool protocol.
   try {
     const eng = await withTimeout(ensurePip(), 120000, "qwen warmup");
-    if (eng) return { backend: qwenBackend(eng), pick: null };
+    if (eng) return { backend: qwenBackend(eng, extra), pick: null };
   } catch {
     /* fall through — model not downloaded / warming failed */
   }
   // 3. Paired desktop companion, JSON protocol over its text API.
   try {
     if (ctx.settings && desktopConfigured(ctx.settings)) {
-      return { backend: companionBackend(ctx.settings), pick: null };
+      return { backend: companionBackend(ctx.settings, extra), pick: null };
     }
   } catch {
     /* fall through */
@@ -174,13 +196,13 @@ export async function pickBackend(ctx = {}, note = () => {}) {
   // 4. Cloud with native tools — explicit per-run consent in SECURE mode.
   try {
     if (ctx.settings && keyedProviders(ctx.settings).length) {
-      if (!privacyOn(ctx.settings)) return { backend: cloudBackend(ctx.settings), pick: null };
+      if (!privacyOn(ctx.settings)) return { backend: cloudBackend(ctx.settings, extra), pick: null };
       if (ctx.approve) {
         const ok = await ctx.approve(
           "Use a cloud model for this run?",
           "No local backend is available. This sends the goal and tool results to a keyed cloud provider.",
         ).catch(() => false);
-        if (ok) return { backend: cloudBackend(ctx.settings), pick: null };
+        if (ok) return { backend: cloudBackend(ctx.settings, extra), pick: null };
       }
     }
   } catch {
@@ -209,6 +231,10 @@ const STEP_LINES = {
   shell: "Running that on your desktop…",
   remind: "Setting that reminder…",
   calc: "Running the numbers…",
+  github_repos: "Listing your repos…",
+  github_tree: "Mapping the repo…",
+  github_read: "Reading that file on GitHub…",
+  github_commit: "Committing to GitHub…",
 };
 
 function narrate(name) {

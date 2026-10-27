@@ -13,6 +13,9 @@
 import { privacyOn } from "./cloud.js";
 import { shellAvailable, shellExec, shellWhyNot } from "./shell.js";
 import { vaultAppendRunLog, vaultRunLog } from "./store-vault.js";
+import {
+  ghHasToken, ghListRepos, ghGetRepo, ghReadFile, ghListTree, ghCommitFiles, ghLineDiff, isNoTokenError,
+} from "./github.js";
 
 /* ---------------------------------------------------------- arg validation */
 
@@ -264,6 +267,16 @@ export function getRunLog(limit = 50) {
 
 const S = (type, description, extra = {}) => ({ type, description, ...extra });
 
+/* --------------------------------------------------------- GitHub tools */
+
+const GH_NO_TOKEN = "no GitHub token — paste one in DATA and the GitHub tools will work.";
+const GH_BAD_REPO = "Repo must be owner/repo — e.g. joshuagwatts/pip-phone.";
+
+function splitRepo(repo) {
+  const m = String(repo || "").trim().match(/^([^/\s]+)\/([^/\s]+)$/);
+  return m ? { owner: m[1], name: m[2].replace(/\.git$/, "") } : null;
+}
+
 export const TOOLS = [
   {
     name: "memory_search",
@@ -381,6 +394,181 @@ export const TOOLS = [
       const out = await shellExec(command, { timeoutMs: 60000 });
       const head = (s) => String(s || "").slice(0, 2000);
       return `exit=${out.code}${out.timedOut ? " (TIMED OUT at 60s)" : ""}\n--- stdout ---\n${head(out.stdout) || "(empty)"}\n--- stderr ---\n${head(out.stderr) || "(empty)"}`;
+    },
+  },
+  {
+    name: "github_repos",
+    description: "List Joshua's own GitHub repos (full name, default branch, last push). Start a code task here when you don't know the exact owner/repo.",
+    lane: "network",
+    schema: { type: "object", properties: {} },
+    run: async () => {
+      if (!ghHasToken()) return GH_NO_TOKEN;
+      const repos = await ghListRepos();
+      if (!repos.length) return "No repos found on that GitHub account.";
+      return repos
+        .slice(0, 60)
+        .map((r) => `· ${r.full_name} (${r.default_branch}${r.private ? ", private" : ""}) — pushed ${String(r.pushed_at).slice(0, 10)}${r.description ? ` · ${r.description.slice(0, 80)}` : ""}`)
+        .join("\n");
+    },
+  },
+  {
+    name: "github_tree",
+    description: "List every file path in a GitHub repo (recursive). Map the repo before editing so you know the layout.",
+    lane: "network",
+    schema: {
+      type: "object",
+      properties: {
+        repo: S("string", "owner/repo, e.g. joshuagwatts/pip-phone", { maxLength: 140 }),
+        ref: S("string", "branch or commit sha (blank = default branch)", { maxLength: 120 }),
+      },
+      required: ["repo"],
+    },
+    run: async ({ repo, ref }) => {
+      if (!ghHasToken()) return GH_NO_TOKEN;
+      const sp = splitRepo(repo);
+      if (!sp) return GH_BAD_REPO;
+      const out = await ghListTree(sp.owner, sp.name, ref || undefined);
+      if (!out.entries.length) return `${sp.owner}/${sp.name} is an empty repo.`;
+      const lines = out.entries.map((e) => (e.type === "tree" ? `· ${e.path}/` : `· ${e.path}`));
+      return lines.join("\n") + (out.truncated ? `\n… (listing capped — ${out.total} paths total)` : "");
+    },
+  },
+  {
+    name: "github_read",
+    description: "Read one file from a GitHub repo. Always read a file in full before changing it.",
+    lane: "network",
+    schema: {
+      type: "object",
+      properties: {
+        repo: S("string", "owner/repo", { maxLength: 140 }),
+        path: S("string", "file path in the repo", { maxLength: 300 }),
+        ref: S("string", "branch or commit sha (blank = default branch)", { maxLength: 120 }),
+      },
+      required: ["repo", "path"],
+    },
+    run: async ({ repo, path, ref }) => {
+      if (!ghHasToken()) return GH_NO_TOKEN;
+      const sp = splitRepo(repo);
+      if (!sp) return GH_BAD_REPO;
+      const got = await ghReadFile(sp.owner, sp.name, path, ref || undefined);
+      if (got.dir) {
+        return `${path} is a directory:\n${got.dir.map((e) => `· ${e.path}${e.type === "tree" ? "/" : ""}`).join("\n")}`;
+      }
+      if (got.text == null) {
+        return `${got.path} — GitHub won't inline this file (${got.size} bytes; too large for the contents API). sha ${got.sha.slice(0, 7)}`;
+      }
+      if (got.text.includes("\u0000")) {
+        return `${got.path} looks binary (${got.size} bytes) — not shown. sha ${got.sha.slice(0, 7)}`;
+      }
+      const cap = got.text.slice(0, 5000);
+      return `--- ${sp.owner}/${sp.name}:${got.path}${ref ? ` @ ${ref}` : ""} (sha ${got.sha.slice(0, 7)}) ---\n${cap}${got.text.length > 5000 ? `\n… (${got.text.length - 5000} more chars — truncated)` : ""}`;
+    },
+  },
+  {
+    name: "github_commit",
+    description:
+      "Commit file changes (and optional deletions) to a GitHub repo branch via the Git Data API. ALWAYS shows Joshua an approval preview first — repo, branch, message, per-file +/- line counts — and writes NOTHING unless he approves. Fast-forward only, never force.",
+    lane: "network",
+    schema: {
+      type: "object",
+      properties: {
+        repo: S("string", "owner/repo", { maxLength: 140 }),
+        branch: S("string", "branch to commit to (blank = the repo's default branch)", { maxLength: 120 }),
+        message: S("string", "commit message", { maxLength: 500 }),
+        files: {
+          type: "array",
+          description: "files to create or update: [{path, content}] — full new content per file",
+          items: {
+            type: "object",
+            properties: { path: { type: "string" }, content: { type: "string" } },
+            required: ["path", "content"],
+          },
+        },
+        deletes: { type: "array", description: "repo paths to delete", items: { type: "string" } },
+      },
+      required: ["repo", "message"],
+    },
+    run: async (args, ctx) => {
+      if (!ghHasToken()) return GH_NO_TOKEN;
+      const sp = splitRepo(args.repo);
+      if (!sp) return GH_BAD_REPO;
+      const files = (Array.isArray(args.files) ? args.files : [])
+        .filter((f) => f && typeof f.path === "string" && f.path.trim() && typeof f.content === "string")
+        .map((f) => ({ path: f.path.trim(), content: f.content }));
+      const deletes = (Array.isArray(args.deletes) ? args.deletes : [])
+        .filter((p) => typeof p === "string" && p.trim())
+        .map((p) => p.trim());
+      if (!files.length && !deletes.length) {
+        return "Nothing to commit — pass files: [{path, content}] and/or deletes: [paths].";
+      }
+      if (files.length + deletes.length > 30) {
+        return "Too many files in one commit (max 30) — split it into smaller commits.";
+      }
+      const message = String(args.message || "").trim();
+      if (!message) return "A commit message is required.";
+
+      // Read phase (log-free: the commit itself is the one ledger entry) —
+      // resolve the branch and compute REAL +/- line counts for the preview,
+      // the M3 lesson: the approval card shows exactly what will happen.
+      const repoInfo = await ghGetRepo(sp.owner, sp.name, { log: false });
+      const branch = String(args.branch || "").trim() || repoInfo.default_branch;
+      const rows = [];
+      for (const f of files) {
+        let cur = null;
+        let isNew = false;
+        let approx = false;
+        try {
+          const got = await ghReadFile(sp.owner, sp.name, f.path, branch, { log: false });
+          if (got.dir) return `${f.path} is a directory on ${branch} — can't overwrite a directory with a file. Nothing committed.`;
+          cur = got.text;
+          if (cur === null) approx = true; // too large to inline — counts are new-content lines
+        } catch (e) {
+          if (isNoTokenError(e)) throw e;
+          if (e && e.status === 404) isNew = true;
+          else approx = true;
+        }
+        const d = isNew
+          ? { added: f.content ? f.content.split("\n").length : 0, removed: 0 }
+          : ghLineDiff(cur || "", f.content);
+        rows.push(`  ${f.path}  ${isNew ? "NEW " : ""}+${d.added}/−${d.removed}${d.approx || approx ? " (approx)" : ""}`);
+      }
+      for (const p of deletes) {
+        let n = null;
+        try {
+          const got = await ghReadFile(sp.owner, sp.name, p, branch, { log: false });
+          if (got.text != null) n = got.text.split("\n").length;
+        } catch {
+          /* deleting a path we can't read still previews honestly below */
+        }
+        rows.push(`  ${p}  DELETE${n != null ? ` −${n}` : ""}`);
+      }
+      const detail = [
+        `Commit to ${sp.owner}/${sp.name} @ ${branch}`,
+        `Message: ${message}`,
+        "",
+        "Files:",
+        ...rows,
+        "",
+        "Writes to github.com — the commit is created only if you approve. Fast-forward only, never force.",
+      ].join("\n");
+
+      // The gate (mirrors the M3 file-write approval): no approver, no write.
+      if (!ctx.approve) {
+        return "Commits need your approval tap — no approval card is available in this context, so nothing was written.";
+      }
+      const ok = await ctx.approve("Commit to GitHub?", detail).catch(() => false);
+      if (!ok) return "Declined — nothing was committed to GitHub.";
+
+      try {
+        const out = await ghCommitFiles(sp.owner, sp.name, branch, message, files, deletes);
+        return (
+          `Committed ${out.sha.slice(0, 7)} to ${sp.owner}/${sp.name}@${out.branch} — "${message.split("\n")[0].slice(0, 80)}" ` +
+          `(${out.changed} file${out.changed === 1 ? "" : "s"} changed, ${out.deleted} deleted). ${out.htmlUrl}`
+        );
+      } catch (e) {
+        if (isNoTokenError(e)) return GH_NO_TOKEN;
+        return `Commit failed: ${String((e && e.message) || e).slice(0, 200)}`;
+      }
     },
   },
   {

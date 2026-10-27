@@ -2140,6 +2140,14 @@ function renderData() {
       <p class="muted key-tip">Cloudflare only — the middle of your dashboard URL (dash.cloudflare.com/ACCOUNT-ID/ai). Saves as you type.${getSecret("cloudflare_account") ? ` · <button type="button" class="key-clear" data-field="cloudflare_account">CLEAR</button>` : ""}</p>
       <input id="set-cloudflare_account" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" value="" placeholder="${getSecret("cloudflare_account") ? "paste to replace · saved" : "paste account ID — saves as you type"}" data-keep="${getSecret("cloudflare_account") ? "1" : "0"}" data-field="cloudflare_account" />
     </div>
+    <div class="key-row">
+      <div class="key-meta">
+        <span class="key-name">GITHUB TOKEN</span>
+        <span class="key-tag">${getSecret("github") ? "SET" : "NOT SET"}</span>
+      </div>
+      <p class="muted key-tip">For PIP Codes (/code) — a fine-grained personal access token (github.com/settings/tokens) with Contents: read &amp; write on your repos. Lives in the vault only — never in settings, never in a prompt. Saves as you type.${getSecret("github") ? ` · <button type="button" class="key-clear" data-field="github">CLEAR</button>` : ""}</p>
+      <input id="set-github" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" value="" placeholder="${getSecret("github") ? "paste to replace · saved" : "paste token — saves as you type"}" data-keep="${getSecret("github") ? "1" : "0"}" data-field="github" />
+    </div>
 
     <h3>CONSENT LEDGER</h3>
     <p class="muted">Every cloud send, logged on this device only — when, which brain, what slice of memory went along (categories, never content), and why that brain was picked. Metadata only — never message content. Leak-scan is best-effort. Desktop, Qwen and Pip Lite never leave the phone, so they are not entries.</p>
@@ -2208,6 +2216,12 @@ function renderData() {
       await setSecret("cloudflare_account", cfAcctSave.value.trim());
       delete db.settings.cloudflare_account_cleared;
     }
+    // GitHub token — same story: a vault secret, not a provider field.
+    const ghSave = $("#set-github");
+    if (ghSave && ghSave.value.trim()) {
+      await setSecret("github", normalizeApiKey(ghSave.value));
+      delete db.settings.github_cleared;
+    }
     db.settings.keysConfigured = hasSecrets();
     if (PROVIDERS.some((p) => getSecret(p.field)) && privacyOn(db.settings)) {
       setStatus("KEYS SAVED · SECURE: CLOUD ONLY WHEN YOU PICK A CLOUD AGENT");
@@ -2266,6 +2280,20 @@ function renderData() {
       clearSpent("cloudflare");
       persist();
       queueKeyValidate("cloudflare");
+    });
+  }
+
+  // GitHub token input — also not a provider field; bind explicitly like the
+  // account ID above (save as you type, into the vault only).
+  const ghInput = $("#set-github");
+  if (ghInput) {
+    ghInput.addEventListener("input", async () => {
+      const v = normalizeApiKey(ghInput.value);
+      if (!v) return;
+      delete db.settings.github_cleared;
+      await setSecret("github", v);
+      db.settings.keysConfigured = hasSecrets();
+      persist();
     });
   }
 
@@ -3534,6 +3562,38 @@ async function runAgentFlow(goal) {
   setStatus("PIP ON DECK");
 }
 
+/** /code flow (Phase 5 — PIP Codes) — the agent loop in code mode: the code
+ *  system prompt rides along (ctx.codeMode), GitHub tools do the repo work,
+ *  commits stay approval-gated, desktop builds ride the shell tool's rails. */
+async function runCodeFlow(task) {
+  db.chat.push({ role: "user", content: "/code " + task });
+  markChatUser();
+  addLog("user", "/code " + task);
+  persist();
+  setStatus("CODE · working");
+  const { runAgent } = await import("./agent.js");
+  const out = await runAgent(task, {
+    settings: db.settings,
+    db,
+    persist,
+    codeMode: true,
+    onStep: (t) => addLog("pip", t, { toolLine: "CODE" }),
+    approve: agentApprove,
+  });
+  if (out.guidance && !db.settings.agent_guidance_v1) {
+    addLog("pip", out.guidance, { toolLine: "CODE" });
+    db.settings.agent_guidance_v1 = true;
+  }
+  const meta =
+    out.steps && out.steps.length
+      ? `CODE · ${out.steps.length} steps · ${String(out.backend || "").toUpperCase()}`
+      : "CODE";
+  addLog("pip", out.answer, { toolLine: meta });
+  db.chat.push({ role: "pip", content: out.answer });
+  persist();
+  setStatus("PIP ON DECK");
+}
+
 /* ------------------------------------------------------- Super Chat modes ---
  * DISCUSS / FRUGAL are explicit agent picks: the user selected the mode and
  * tapped send, so that tap IS the per-turn consent superchat requires (same
@@ -3747,6 +3807,24 @@ async function sendChat() {
     }
     runAgentFlow(goal).catch((e) => {
       addLog("pip", `Agent run hit a snag: ${String((e && e.message) || e).slice(0, 140)}`);
+    });
+    return;
+  }
+  // /code — PIP Codes: agent loop in code mode (GitHub tools, approval-gated commits).
+  const codeMatch = text.match(/^\/code(?:\s+([\s\S]*))?$/i);
+  if (codeMatch && !hasPhoto) {
+    chatBusy = false;
+    if (sendBtn) sendBtn.disabled = false;
+    const task = (codeMatch[1] || "").trim();
+    if (!task) {
+      addLog(
+        "pip",
+        "Code mode — which repo, and what change? Example: /code joshuagwatts/pip-phone fix the login redirect. I read the repo first, verify on the desktop when it's paired, and nothing commits without your approval tap.",
+      );
+      return;
+    }
+    runCodeFlow(task).catch((e) => {
+      addLog("pip", `Code run hit a snag: ${String((e && e.message) || e).slice(0, 140)}`);
     });
     return;
   }
