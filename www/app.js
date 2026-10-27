@@ -3866,6 +3866,12 @@ async function sendChat() {
     /* optional */
   }
 
+  // Snapshot for the outer catch below: every send-path poster does
+  // addLog + db.chat.push together, so if either grew during this send an
+  // assistant bubble already went up and the catch must not post a second.
+  const chatMark = db.chat.length;
+  const logEl = $("#log");
+  const logMark = logEl ? logEl.childElementCount : 0;
   try {
   if (!hasPhoto) {
   const switchHit = tryAgentSwitch(text);
@@ -4204,6 +4210,23 @@ async function sendChat() {
     addLog("pip", String(e.message || e));
     setStatus("CHAT ERROR");
   }
+  } catch (err) {
+    // No silent failures: anything that escaped the interceptors above
+    // (agent switch, relay, meal/opp commands, super routes) still surfaces
+    // in chat instead of dying as an unhandled rejection. Skipped when a
+    // bubble already went up for this send — the inner paths post their
+    // own errors, and a second line would just repeat them.
+    const posted =
+      db.chat.length > chatMark ||
+      (logEl ? logEl.childElementCount : 0) > logMark;
+    if (!posted) {
+      const firstLine = String((err && err.message) || err).split(/\r?\n/)[0].slice(0, 160);
+      const msg = `PIP ERROR · ${firstLine}`;
+      addLog("pip", msg, { agent: "pip" });
+      db.chat.push({ role: "pip", content: msg, brain: "pip", agent: "pip" });
+      persist();
+    }
+    setStatus("CHAT ERROR");
   } finally {
     chatBusy = false;
     if (sendBtn) sendBtn.disabled = false;

@@ -169,15 +169,14 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.105** — Phase 4: the four pillars land.
+            **Phone Pip v0.1.106** — Phase 5: Pip codes now. Plus a chat safety net.
 
-            - GOALS (TODAY panel): add goals and milestones; Pip tracks on-track / needs-attention / stalled on its own. Sunday evening brings a weekly goal briefing, a stalled goal gets exactly one nudge ever, and your Morning Brief's focus now comes from the tracker.
-            - HEALTH CHECK-IN (TODAY panel): one tap — energy 1–5, plus sleep and movement steppers if you want them. Yesterday's numbers shape this morning's energy plan, honestly.
-            - PROSPERITY PIPELINE (OPP panel): every opportunity moves through found → researching → drafted → submitted → follow-up → won/lost with one-tap stages. Follow-ups due surface in your Morning Brief and as reasoned nudges. Source and hunt date are kept forever. Nothing auto-submits, ever.
-            - CREATIVITY (KIT panel): register works in progress, tap SHIP IT when one lands — it's remembered permanently, counted against your monthly ship cadence, and shows up in the next Morning Brief.
-            - OFFLINE QUEUE: actions that need your desktop or the network now queue with a visible pending badge and fire on reconnect, in order. Nothing is silently dropped.
+            - /code MODE: type /code in chat (e.g. "/code joshuagwatts/my-repo fix the login bug"). Pip reads your repo first, makes the edits, and shows you a commit preview — repo, branch, message, per-file line changes. NOTHING is committed until you approve the card. Fast-forward only, never a force push. With your desktop paired it can run the repo's build/tests first and reports honestly whether they passed.
+            - GITHUB TOKEN goes in DATA — a fine-grained PAT with Contents read/write. It lives in the encrypted vault, syncs from desktop like the other keys, and the leak-scan strips it from anything outbound.
+            - CHAT SAFETY NET: a send that fails now shows a "PIP ERROR · ..." line in the chat instead of failing silently. If chat ever acts busted again, that line tells us exactly why.
+            - v1 limits: commits to existing branches only — no PRs or repo creation yet. Files up to 1 MB.
 
-            No reinstall needed — installs right over v0.1.104.
+            No reinstall needed — installs right over v0.1.105.
           files: |
             Pip.apk
             Pip-Windows.exe
