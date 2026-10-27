@@ -279,7 +279,10 @@ export const TOOLS = [
     },
     run: async ({ query, limit }) => {
       const { searchMem } = await import("./memory-engine.js");
-      const hits = searchMem(query, { limit: Math.min(Number(limit) || 6, 12) });
+      const { filterByScope } = await import("./scopes.js");
+      // Scope contract at the tool assembly point too (job "agent" = the
+      // operator explicitly invoked the agent — full tiers, see scopes.js).
+      const hits = filterByScope(searchMem(query, { limit: Math.min(Number(limit) || 6, 12) }), "agent");
       if (!hits.length) return "No memories match.";
       return hits
         .map((h) => `· [${h.tier}]${h.title ? " " + h.title : ""}\n${String(h.content || "").slice(0, 400)}`)

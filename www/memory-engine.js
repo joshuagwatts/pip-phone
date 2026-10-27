@@ -31,6 +31,8 @@ import { getSecret, setSecret } from "./secrets.js";
 import { load as loadStore, save as saveStore } from "./store.js";
 import { rankEntries } from "./memory-recall.js";
 import { substanceScore } from "./memory.js";
+import { filterByScope, categoriesOf } from "./scopes.js";
+import { noteScope } from "./ledger.js";
 
 export const TIERS = ["working", "daily", "durable", "people"];
 const LS_KEY = "pip.phone.memory.v1";
@@ -488,9 +490,31 @@ export function searchMem(query, { limit = 8, tiers = ["durable", "people", "dai
  * across call sites. Vault secrets can never appear: entries are user
  * content only, and this function never touches the secrets vault.
  */
-export function assembleMemoryContext({ query = "", limit = 8, tiers } = {}) {
+/* Phase 3: the most recent assembly's slice (job + categories + count),
+ * stashed so the consent ledger can record what categories actually went
+ * into a prompt. Categories only — never content. */
+let lastAssembly = { job: "", categories: [], count: 0, at: 0 };
+
+export function peekMemoryAssembly() {
+  return { ...lastAssembly, categories: [...lastAssembly.categories] };
+}
+
+export function assembleMemoryContext({ query = "", limit = 8, tiers, job = "life" } = {}) {
   if (!ready) return "";
-  const hits = query ? searchMem(query, { limit, tiers }) : getTier("durable").slice(0, Math.min(limit, 5));
+  // Scope enforcement (scopes.js): the job's table decides which slices
+  // may enter a prompt at all. Over-fetch, filter, then take the limit —
+  // out-of-scope items are dropped here, at the one assembly point.
+  const raw = query
+    ? searchMem(query, { limit: Math.max(limit * 3, limit), tiers })
+    : getTier("durable");
+  const hits = filterByScope(raw, job).slice(0, query ? limit : Math.min(limit, 5));
+  lastAssembly = {
+    job: String(job || "life"),
+    categories: categoriesOf(hits),
+    count: hits.length,
+    at: Date.now(),
+  };
+  noteScope({ job: lastAssembly.job, categories: lastAssembly.categories });
   if (!hits.length) return "";
   const lines = hits.map((e) => {
     const tag = e.tier === "durable" ? "memory" : e.tier === "people" ? `person: ${e.title || "?"}` : e.tier === "daily" ? dayOf(e.created_at) : "today";

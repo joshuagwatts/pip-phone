@@ -2,6 +2,7 @@ import { orderFor, orderForEfficient, orderForConsultant } from "./command.js";
 import { httpPostJson, httpGet } from "./net.js";
 import { agentSystem } from "./crew.js";
 import { getSecret } from "./secrets.js";
+import { scanOutbound, appendLedger, recentScopeCategories, messagesTokens, estimateTokens } from "./ledger.js";
 
 /** @type {Array<{id:string, label:string, field:string, base:string, life:string, boost:string, fishy?:boolean, headers?:Record<string,string>}>} */
 export const PROVIDERS = [
@@ -426,7 +427,7 @@ export async function completeProvider(
   providerId,
   settings,
   messages,
-  { temperature = 0.7, maxTokens = 1024, lane = "life", _rateRetried = false } = {},
+  { temperature = 0.7, maxTokens = 1024, lane = "life", _rateRetried = false, job = "", why = "", scope = null } = {},
 ) {
   const prov = PROVIDERS.find((p) => p.id === String(providerId || "").toLowerCase());
   if (!prov) throw new Error(`unknown provider: ${providerId}`);
@@ -435,7 +436,11 @@ export async function completeProvider(
   const key = providerKey(settings, prov);
   if (!key && !prov.keyless) throw new Error(`${prov.label} needs a key — paste in DATA`);
   try {
-    const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens);
+    const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, undefined, {
+      job: job || "chat",
+      why: why || "single",
+      scope: scope || recentScopeCategories(job || "chat"),
+    });
     markHealth(prov.id, true);
     noteProviderSuccess(prov.id);
     const u = out.usage || {};
@@ -465,6 +470,9 @@ export async function completeProvider(
           maxTokens,
           lane,
           _rateRetried: true,
+          job,
+          why,
+          scope,
         });
       }
     }
@@ -724,7 +732,7 @@ export async function agentRelayComplete(
         role: "user",
         content: `Joshua's instruction:\n${handoff}\n\nNow speak to ${toLabel}.`,
       },
-    ], temperature, Math.min(maxTokens, 600));
+    ], temperature, Math.min(maxTokens, 600), undefined, { job: "chat", why: "crew relay", scope: [] });
     markHealth(fromId, true);
     return {
       text: out.text,
@@ -755,7 +763,7 @@ export async function agentRelayComplete(
           `Prepare a concise handoff for ${toProv.label}. Include facts, code, lists, or conclusions — no meta commentary.`,
       },
       { role: "user", content: `Hand off to ${toProv.label}:\n\n${handoff}` },
-    ], temperature, maxTokens);
+    ], temperature, maxTokens, undefined, { job: "chat", why: "crew relay", scope: [] });
     markHealth(fromId, true);
     handoff = String(prep.text || handoff).trim();
   }
@@ -768,7 +776,7 @@ export async function agentRelayComplete(
         ? `${fromLabel} sent you this:\n\n${handoff}\n\nContinue the task as yourself.`
         : handoff,
     },
-  ], temperature, maxTokens);
+  ], temperature, maxTokens, undefined, { job: "chat", why: "crew relay", scope: [] });
   markHealth(toId, true);
   return {
     text: out.text,
@@ -1054,12 +1062,41 @@ async function openaiOnce(prov, key, model, messages, temperature, maxTokens, to
   };
 }
 
-async function openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools) {
+async function openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools, meta = null) {
+  // Phase 3 (ledger.js): EVERY cloud send passes the leak-scan first —
+  // vault values and secret-shaped strings are stripped from the outbound
+  // text before any fetch, and the stripped copy is what actually sends.
+  // When the caller passes meta {job, why, scope}, exactly ONE consent-
+  // ledger entry is appended per logical completion (success or failure),
+  // no matter how many model fallbacks were tried. Observational only:
+  // the scan never adds fetches and never changes routing.
+  const scan = scanOutbound(messages);
+  const sendMessages = scan.messages;
+  const logDone = (out, modelFallback = "") => {
+    if (meta) {
+      const u = (out && out.usage) || {};
+      try {
+        appendLedger({
+          provider: prov.id,
+          model: (out && out.model) || modelFallback || "",
+          job: meta.job || "chat",
+          scope: Array.isArray(meta.scope) ? meta.scope : [],
+          why: meta.why || "",
+          tokensIn: Number(u.prompt_tokens) || messagesTokens(sendMessages),
+          tokensOut: Number(u.completion_tokens) || (out ? estimateTokens(out.text) : 0),
+          leakScan: scan.leak,
+        });
+      } catch {
+        /* the ledger never blocks a send */
+      }
+    }
+    return out;
+  };
   const errors = [];
   const models = modelsFor(prov, lane);
   for (const model of models) {
     try {
-      return await openaiOnce(prov, key, model, messages, temperature, maxTokens, tools);
+      return logDone(await openaiOnce(prov, key, model, sendMessages, temperature, maxTokens, tools));
     } catch (e) {
       const msg = String(e.message || e);
       errors.push(msg.slice(0, 120));
@@ -1068,11 +1105,11 @@ async function openaiWithFallback(prov, key, lane, messages, temperature, maxTok
     }
   }
   if (!errors.some(isAuthFail) && !errors.some(isQuotaFail)) {
-    const slim = slimMessagesForCloud(messages);
+    const slim = slimMessagesForCloud(sendMessages);
     for (const model of models.slice(0, 3)) {
       try {
         const out = await openaiOnce(prov, key, model, slim, temperature, maxTokens, tools);
-        return { ...out, slim: true };
+        return logDone({ ...out, slim: true });
       } catch (e) {
         const msg = String(e.message || e);
         errors.push(`slim/${model}: ${msg.slice(0, 100)}`);
@@ -1082,11 +1119,17 @@ async function openaiWithFallback(prov, key, lane, messages, temperature, maxTok
   }
   if (errors.length && errors.every(isQuotaFail)) {
     const free = prov.keyless ? "free tier " : "";
-    throw new Error(
+    const err = new Error(
       `${prov.label} ${free}throttled — rate-limited right now. Wait a bit or pick another agent.`,
     );
+    // A "retry after" failure is about to be retried by completeProvider —
+    // that attempt isn't a completed send; the retry's outcome gets logged.
+    if (!/retry after \d+\s*s/i.test(err.message)) logDone(null, models[0]);
+    throw err;
   }
-  throw new Error(errors.join(" · ") || `${prov.id} failed`);
+  const finalMsg = errors.join(" · ") || `${prov.id} failed`;
+  if (!/retry after \d+\s*s/i.test(finalMsg)) logDone(null, models[0]);
+  throw new Error(finalMsg);
 }
 
 /** CHAT — fastest reliable brains first (orderFor / JOBS.life owns the cascade). */
@@ -1148,7 +1191,11 @@ export async function cloudCompleteTools(settings, messages, tools, lane = "boos
     const key = providerKey(settings, prov);
     if (!key && !prov.keyless) continue;
     try {
-      const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools);
+      const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, tools, {
+        job: "agent",
+        why: "tools cascade",
+        scope: [],
+      });
       markHealth(prov.id, true);
       return out;
     } catch (e) {
@@ -1181,7 +1228,11 @@ export async function chatComplete(settings, messages, temperature = 0.7, maxTok
     const key = providerKey(settings, prov);
     if (!key && !prov.keyless) continue;
     try {
-      const out = await openaiWithFallback(prov, key, laneForJob(job), messages, temperature, maxTokens);
+      const out = await openaiWithFallback(prov, key, laneForJob(job), messages, temperature, maxTokens, undefined, {
+        job,
+        why: pinned ? `pin · ${pin}` : `cascade · ${job}`,
+        scope: recentScopeCategories(job),
+      });
       markHealth(prov.id, true);
       noteProviderSuccess(prov.id);
       return out;
@@ -1422,7 +1473,11 @@ export async function compareComplete(
     const run = async () => {
       try {
         const perAgent = compareUserContent(prov, operator, ask, crossHint, history);
-        const out = await openaiWithFallback(prov, key, "life", perAgent, temperature, maxTokens);
+        const out = await openaiWithFallback(prov, key, "life", perAgent, temperature, maxTokens, undefined, {
+          job: "compare",
+          why: "compare",
+          scope: recentScopeCategories("compare"),
+        });
         markHealth(prov.id, true);
         return {
           provider: out.provider,
@@ -1487,7 +1542,11 @@ export async function cloudComplete(settings, messages, lane = "life", temperatu
     const key = providerKey(settings, prov);
     if (!key && !prov.keyless) continue;
     try {
-      const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens);
+      const out = await openaiWithFallback(prov, key, lane, messages, temperature, maxTokens, undefined, {
+        job: lane === "boost" ? "boost" : lane,
+        why: `cascade · ${lane}`,
+        scope: recentScopeCategories(lane === "boost" ? "boost" : lane),
+      });
       markHealth(prov.id, true);
       return out;
     } catch (e) {

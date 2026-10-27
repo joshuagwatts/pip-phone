@@ -4,6 +4,7 @@ import { chat, draftAnswers, pipStatus, activeBrain, cloudStatus, takePendingThe
 import { runAuto, runDiscuss, runFrugal } from "./superchat.js";
 import { AGENT_META, agentLabel } from "./crew.js";
 import { validateKeyed, providerHealth, hydrateHealth, PROVIDERS, keyTag, keyHint, markHealth, clearHealth, normalizeApiKey, parseAgentRelay, agentRelayComplete, compareProviders, parseCrossAgentIntent, isSpent, clearSpent, mutedList, clearMutes } from "./cloud.js";
+import { ledgerEntries, clearLedger, ledgerExportJson } from "./ledger.js";
 import { desktopConfigured, desktopToken, desktopStatus, connectDesktop, normalizeUrl } from "./desktop.js";
 import { ensureCloudKeys, pullCloudKeys, keyedSummary } from "./keysync.js";
 import { privacyOn } from "./cloud.js";
@@ -1646,6 +1647,7 @@ function renderData() {
   }).join("");
 
   const keyedNow = PROVIDERS.filter((p) => getSecret(p.field)).map((p) => p.label.toUpperCase());
+  const ledgerNow = ledgerEntries();
   const diag = httpDiag();
   const httpLine = `HTTP: ${diag.nativeHttp ? "NATIVE OK" : "NO NATIVE — cloud may fail"} · ${diag.platform}`;
 
@@ -1751,6 +1753,22 @@ function renderData() {
       </div>
       <p class="muted key-tip">Cloudflare only — the middle of your dashboard URL (dash.cloudflare.com/ACCOUNT-ID/ai). Saves as you type.${getSecret("cloudflare_account") ? ` · <button type="button" class="key-clear" data-field="cloudflare_account">CLEAR</button>` : ""}</p>
       <input id="set-cloudflare_account" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" value="" placeholder="${getSecret("cloudflare_account") ? "paste to replace · saved" : "paste account ID — saves as you type"}" data-keep="${getSecret("cloudflare_account") ? "1" : "0"}" data-field="cloudflare_account" />
+    </div>
+
+    <h3>CONSENT LEDGER</h3>
+    <p class="muted">Every cloud send, logged on this device only — when, which brain, what slice of memory went along (categories, never content), and why that brain was picked. Metadata only — never message content. Leak-scan is best-effort. Desktop, Qwen and Pip Lite never leave the phone, so they are not entries.</p>
+    <p class="muted" id="ledger-count">${ledgerNow.length} SEND${ledgerNow.length === 1 ? "" : "S"} LOGGED</p>
+    ${ledgerNow
+      .slice(-15)
+      .reverse()
+      .map(
+        (e) =>
+          `<p class="muted ledger-row">${esc(new Date(e.ts).toLocaleString())} · ${esc(String(e.provider || "").toUpperCase())}${e.model ? ` (${esc(e.model)})` : ""} · ${esc(e.job || "chat")} · ${esc((Array.isArray(e.scope) ? e.scope : []).join(", ") || "no memory slice")} · ~${Number(e.tokensIn) || 0}→${Number(e.tokensOut) || 0} tok · ${esc(e.why || "")}${e.leakScan === "stripped" ? " · ⚠ LEAK-SCAN STRIPPED" : ""}</p>`,
+      )
+      .join("")}
+    <div class="actions">
+      <button type="button" id="ledger-export">EXPORT LEDGER</button>
+      <button type="button" id="ledger-clear">CLEAR LEDGER</button>
     </div>
 
     <h3>LOCK</h3>
@@ -2023,6 +2041,46 @@ function renderData() {
       clearSpent();
       setStatus("ALL BRAINS UNMUTED");
       renderData();
+    };
+  }
+
+  const ledgerExportBtn = $("#ledger-export");
+  if (ledgerExportBtn) {
+    ledgerExportBtn.onclick = () => {
+      try {
+        const blob = new Blob([ledgerExportJson()], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "pip-consent-ledger.json";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        setStatus("LEDGER EXPORTED");
+      } catch (e) {
+        setStatus(String(e.message || e).toUpperCase().slice(0, 80));
+      }
+    };
+  }
+
+  const ledgerClearBtn = $("#ledger-clear");
+  if (ledgerClearBtn) {
+    ledgerClearBtn.onclick = async () => {
+      const pick = await pipOverlay({
+        kicker: "CONSENT LEDGER",
+        title: "Clear the ledger?",
+        body: "This deletes the on-device log of cloud sends. It is metadata only — no message content — and clearing cannot be undone.",
+        buttons: [
+          { id: "keep", label: "KEEP" },
+          { id: "clear", label: "CLEAR", primary: true },
+        ],
+      });
+      if (pick === "clear") {
+        clearLedger();
+        setStatus("LEDGER CLEARED");
+        renderData();
+      }
     };
   }
 

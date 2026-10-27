@@ -561,7 +561,7 @@ export async function chat(settings, history, text, onProgress, kit, db, extras 
       // function — scope hygiene in one place, never scattered at call sites.
       const { assembleMemoryContext } = await import("./memory-engine.js");
       const { chainBrief } = await import("./memory.js");
-      momentLine = [assembleMemoryContext({ query: text, limit: 8 }), chainBrief(db)].filter(Boolean).join("\n");
+      momentLine = [assembleMemoryContext({ query: text, limit: 8, job: pickJob(text) }), chainBrief(db)].filter(Boolean).join("\n");
     } catch {
       /* memory is optional — chat works without it */
     }

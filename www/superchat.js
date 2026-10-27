@@ -98,7 +98,8 @@ async function pace(providerId) {
 /**
  * complete(settings, providerId, messages, opts)
  * → { text, usage:{in,out}|null, cost, provider, model, tokens }
- * opts: { perTurnConsent, temperature, maxTokens, lane, skipSpend }
+ * opts: { perTurnConsent, temperature, maxTokens, lane, skipSpend,
+ *         job, why, scope } — job/why/scope feed the consent ledger.
  */
 export async function complete(settings, providerId, messages, opts = {}) {
   const {
@@ -107,10 +108,13 @@ export async function complete(settings, providerId, messages, opts = {}) {
     maxTokens = 1024,
     lane = "life",
     skipSpend = false,
+    job = "",
+    why = "",
+    scope = null,
   } = opts;
   assertCloudAllowed(settings, perTurnConsent, `complete(${providerId})`);
   await pace(providerId);
-  const out = await completeProvider(providerId, settings, messages, { temperature, maxTokens, lane });
+  const out = await completeProvider(providerId, settings, messages, { temperature, maxTokens, lane, job, why, scope });
   let usage = out.usage;
   if (!usage) {
     usage = {
@@ -151,7 +155,7 @@ export async function runCompare(settings, providerIds, messages, opts = {}) {
     ids.map(async (id) => {
       const prov = PROVIDERS.find((p) => p.id === id);
       try {
-        const r = await run(settings, id, messages, { ...opts, perTurnConsent });
+        const r = await run(settings, id, messages, { ...opts, perTurnConsent, job: "compare", why: "compare" });
         return {
           provider: id,
           label: prov?.label || id,
@@ -266,9 +270,23 @@ export function pickAutoProvider(settings, messages, opts = {}) {
   };
 }
 
+/** classifyTask output → scope-table job name (scopes.js). */
+const JOB_FOR_TASK = {
+  code: "code",
+  creative: "creative",
+  vision: "vision",
+  quick: "quick",
+  reasoning: "reasoning",
+  general: "life",
+};
+
 export async function runAuto(settings, messages, opts = {}) {
   const pick = pickAutoProvider(settings, messages, opts);
-  const res = await complete(settings, pick.provider, messages, opts);
+  const res = await complete(settings, pick.provider, messages, {
+    ...opts,
+    job: JOB_FOR_TASK[pick.task] || "life",
+    why: `auto · ${pick.reason}`,
+  });
   return { ...res, task: pick.task, pickReason: pick.reason };
 }
 
@@ -285,7 +303,11 @@ export async function runFrugal(settings, messages, opts = {}) {
   const inEst = estimateTokens(JSON.stringify(messages || []));
   const outEst = Number(opts.maxTokens) || 1024;
   const estimate = estimateCost(pick.provider, inEst, outEst);
-  const res = await complete(settings, pick.provider, messages, opts);
+  const res = await complete(settings, pick.provider, messages, {
+    ...opts,
+    job: JOB_FOR_TASK[pick.task] || "life",
+    why: `frugal · ${pick.reason}`,
+  });
   return {
     ...res,
     task: pick.task,
@@ -469,7 +491,7 @@ export async function runDiscuss(settings, topic, opts = {}) {
                 `Be direct and opinionated — this is a debate, not an essay. Take a clear stance.`,
             },
           ],
-          { perTurnConsent, temperature, maxTokens },
+          { perTurnConsent, temperature, maxTokens, job: "discuss", why: "discuss · seat" },
         ),
       );
     }
@@ -509,7 +531,7 @@ export async function runDiscuss(settings, topic, opts = {}) {
                 ` Don't repeat your opener; move the discussion forward. Under ${maxTokens} tokens.`,
             },
           ],
-          { perTurnConsent, temperature, maxTokens },
+          { perTurnConsent, temperature, maxTokens, job: "discuss", why: "discuss · seat" },
         ),
       );
     }
@@ -547,7 +569,7 @@ export async function runDiscuss(settings, topic, opts = {}) {
         },
         { role: "user", content: `DEBATE TOPIC: ${cleanTopic}\n\nFULL THREAD:\n\n${fullThread}` },
       ],
-      { perTurnConsent, temperature: 0.5, maxTokens: 500 },
+      { perTurnConsent, temperature: 0.5, maxTokens: 500, job: "discuss", why: "discuss · synthesis" },
     );
     synthesis = {
       provider: synthId,
