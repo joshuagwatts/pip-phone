@@ -5,11 +5,12 @@ import { fullMorningSync } from "./morning.js";
 import { setKeepAlive } from "./proton.js";
 import { maybeDistill } from "./memory-distill.js";
 import { noteTick } from "./briefing.js";
+import { enqueue as enqueueOut } from "./outqueue.js";
 
 let timer = null;
 let watching = false;
 
-export function startBackground(db, { persist, render, setStatus, softRefresh }) {
+export function startBackground(db, { persist, render, setStatus, softRefresh, flushQueue }) {
   stopBackground();
   const tick = async () => {
     if (!db?.settings) return;
@@ -27,13 +28,26 @@ export function startBackground(db, { persist, render, setStatus, softRefresh })
       } catch {
         /* briefing state is best-effort */
       }
+      // Phase 4 offline queue: retry what earlier failures queued BEFORE
+      // this tick's own sync, so order stays honest.
+      if (flushQueue) await flushQueue().catch(() => {});
       if (desktopConfigured(db.settings)) {
-        const out = await fullOppSync(db.settings, db);
-        if (out.pushed || out.pulled) {
-          persist?.();
-          if (softRefresh) softRefresh();
-          else render?.();
-          setStatus?.(`SYNC · ${out.pushed}↑ ${out.pulled}↓`);
+        try {
+          const out = await fullOppSync(db.settings, db);
+          if (out.pushed || out.pulled) {
+            persist?.();
+            if (softRefresh) softRefresh();
+            else render?.();
+            setStatus?.(`SYNC · ${out.pushed}↑ ${out.pulled}↓`);
+          }
+        } catch {
+          // Desktop unreachable: the sync intent queues and fires on the
+          // next reconnect/tick — it is never silently dropped.
+          try {
+            enqueueOut("opp-sync", {}, "opp-sync");
+          } catch {
+            /* queue best-effort */
+          }
         }
         await fetchOppDigest(db.settings, db);
       }

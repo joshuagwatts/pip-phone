@@ -1386,3 +1386,9 @@ body.bio-locked > *:not(#bio-scan):not(#bio-pass) { visibility: hidden; }
 }
 .sugg-row { border-top: 1px dashed var(--line); padding: 0.4rem 0; }
 .sugg-row:first-child { border-top: none; }
+/* Phase 4 offline queue badge (module launcher + DATA button) */
+.q-badge {
+  font-size: 0.62rem; letter-spacing: 0.08em; vertical-align: middle;
+  border: 1px solid var(--line); border-radius: 999px; padding: 0.08rem 0.4rem;
+  color: inherit; white-space: nowrap;
+}

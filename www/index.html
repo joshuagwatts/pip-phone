@@ -20,7 +20,7 @@
     <span class="mark">PIP</span>
     <button type="button" id="privacy-tog" class="privacy-chip on" title="SECURE: phone + desktop first · cloud only when you pick a brain. LEAKY: cloud keys speak as Pip.">SECURE</button>
     <span class="spacer"></span>
-    <button type="button" id="panel-tog" title="Modules" aria-label="Open modules">▦</button>
+    <button type="button" id="panel-tog" title="Modules" aria-label="Open modules">▦ <span id="queue-badge" class="q-badge" hidden></span></button>
   </header>
   <section id="panel" aria-hidden="true">
     <div class="panel-scrim" id="panel-scrim"></div>
@@ -50,7 +50,7 @@
         <button type="button" data-panel="vibe">VIBE</button>
         <button type="button" data-panel="kit">KIT</button>
         <button type="button" data-panel="memory">MEMORY</button>
-        <button type="button" data-panel="data">DATA</button>
+        <button type="button" data-panel="data">DATA <span id="queue-badge-data" class="q-badge" hidden></span></button>
       </div>
     </div>
   </div>

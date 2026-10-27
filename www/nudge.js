@@ -21,6 +21,8 @@ import {
   reasonedCandidates,
   getNudgeContext,
 } from "./briefing.js";
+import { loadGoalsState, stalledNudgeCandidates, markStallNudged, goalQuietDays } from "./goals.js";
+import { followUpCandidates, daysWaiting } from "./pipeline.js";
 
 const KEY = "pip.phone.nudge.v1";
 const PRESENCE_TTL = 90 * 1000;
@@ -131,6 +133,36 @@ function pickLocal(db, hour, lastKind) {
     });
   }
 
+  // Phase 4 Goals: a stalled goal earns exactly ONE nudge per stall —
+  // goals.js owns the once-flag; maybeNudge burns it only on delivery.
+  try {
+    const stalled = stalledNudgeCandidates(loadGoalsState().goals);
+    if (stalled.length) {
+      candidates.push({
+        kind: "goal-stall",
+        goalId: stalled[0].id,
+        line: `GOALS · ${shortTitle(stalled[0].title || "a goal")} has gone quiet — ${goalQuietDays(stalled[0])} days. One small touch restarts it.`,
+        reason: "this goal crossed 30 quiet days — its one stall nudge; Pip stays silent after this",
+      });
+    }
+  } catch {
+    /* goals optional */
+  }
+
+  // Phase 4 Prosperity: follow-ups whose due date passed.
+  try {
+    const due = followUpCandidates(opps);
+    if (due.length) {
+      candidates.push({
+        kind: "followup",
+        line: `OPP · Follow up on ${shortTitle(due[0].title || "a call")} — ${daysWaiting(due[0])}d waiting. One message keeps it alive.`,
+        reason: "this opportunity entered follow-up and its due date passed",
+      });
+    }
+  } catch {
+    /* pipeline optional */
+  }
+
   // Life jazz — water, roses, leap of faith — always in the mix.
   const tick = hour + Math.floor(Date.now() / COOLDOWN);
   candidates.push(LIFE[tick % LIFE.length]);
@@ -206,6 +238,14 @@ export function maybeNudge(db) {
   st.last_nudge_at = now;
   st.last_nudge_kind = hit.kind;
   save(st);
+  // The stall nudge is spent only when it actually goes out.
+  if (hit.kind === "goal-stall" && hit.goalId) {
+    try {
+      markStallNudged(loadGoalsState(), hit.goalId);
+    } catch {
+      /* goals optional */
+    }
+  }
   noteNudgeDelivered(bst, at);
   return hit.reason ? `${hit.line} — why: ${hit.reason}` : hit.line;
 }

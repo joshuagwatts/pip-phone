@@ -77,7 +77,34 @@ import {
   diffWhileOut,
   snapshotWhileOut,
   setNudgeContext,
+  inQuietHours,
 } from "./briefing.js";
+import {
+  loadGoalsState,
+  loadGoals,
+  addGoal as addGoalToTracker,
+  addMilestone as addGoalMilestone,
+  toggleMilestone as toggleGoalMilestone,
+  touchGoal as touchTrackerGoal,
+  goalState as trackerGoalState,
+  goalQuietDays,
+  GOAL_STATE_LABEL,
+  pickFocusGoal,
+  weeklyGoalBriefDue,
+  markWeeklyBriefDelivered,
+  weeklyBriefLines,
+} from "./goals.js";
+import {
+  loadHealth,
+  recordCheckin,
+  todayCheckin,
+  yesterdayCheckin,
+  energyPlanLine,
+  eveningEnergyLine,
+} from "./health.js";
+import { PIPELINE_STAGES, pipelineStageLabel, oppStage, applyStage, isFollowUpDue, daysWaiting, followUpCandidates } from "./pipeline.js";
+import { addWork, shipWork, worksSummary, cadenceLine, recentlyShipped, WORK_KINDS } from "./works.js";
+import { enqueue as enqueueOut, pendingCount as outPendingCount, flushOutQueue, loadQueue as loadOutQueue, clearQueue as clearOutQueue } from "./outqueue.js";
 
 const $ = (s) => document.querySelector(s);
 let db = load();
@@ -427,6 +454,93 @@ function renderVibe() {
   armRadio();
 }
 
+// -------------------------------------------------- Phase 4: out-queue --
+// Producers: (1) desktop opp sync — the background tick and stage changes
+// enqueue an "opp-sync" when the push/pull can't reach the desktop;
+// (2) opp drafts — draftThis enqueues an "opp-draft" when the drafting
+// brains can't be reached, and the flush re-runs the draft for real.
+// Handlers own the network work; outqueue.js owns order + persistence.
+
+function enqueueOppSync() {
+  try {
+    enqueueOut("opp-sync", {}, "opp-sync");
+    paintQueueBadge();
+  } catch {
+    /* queue is best-effort glue; local state is already saved */
+  }
+}
+
+const OUT_HANDLERS = {
+  "opp-sync": async () => {
+    await fullOppSync(db.settings, db);
+    persist();
+  },
+  "opp-draft": async (payload) => {
+    const opp = (db.opps || []).find((o) => o.id === payload.oppId);
+    if (!opp) return; // gone — nothing to draft, counts as handled
+    if (!(opp.questions || []).length) return;
+    await draftOppAnswers(opp);
+    if (tab === "opp") render();
+  },
+};
+
+let queueFlushing = false;
+async function flushPendingQueue() {
+  if (queueFlushing) return { flushed: 0, failed: 0, remaining: outPendingCount() };
+  queueFlushing = true;
+  try {
+    const res = await flushOutQueue(OUT_HANDLERS);
+    if (res.flushed) setStatus(`QUEUE · ${res.flushed} SENT`);
+    return res;
+  } catch {
+    return { flushed: 0, failed: 0, remaining: outPendingCount() };
+  } finally {
+    queueFlushing = false;
+    paintQueueBadge();
+  }
+}
+
+function paintQueueBadge() {
+  let n = 0;
+  try {
+    n = outPendingCount();
+  } catch {
+    /* storage unavailable */
+  }
+  for (const id of ["queue-badge", "queue-badge-data"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.hidden = n === 0;
+    el.textContent = n ? `${n} PENDING` : "";
+  }
+}
+
+/** Pipeline stage change — user taps only, nothing auto-submits, ever.
+ *  Mirrors into app_stage only where the vocabularies truly agree
+ *  (drafted / submitted / rejected), so desktop sync stays coherent. */
+function setPipelineStage(sel, stageId) {
+  applyStage(sel, stageId);
+  if (stageId === "drafted") sel.app_stage = "drafted";
+  if (stageId === "submitted") {
+    sel.app_stage = "submitted";
+    if (!sel.submitted_at) sel.submitted_at = new Date().toISOString().slice(0, 10);
+  }
+  if (stageId === "lost") {
+    sel.app_stage = "rejected";
+    sel.status = "done";
+  }
+  persist();
+  if (desktopConfigured(db.settings)) {
+    fullOppSync(db.settings, db).catch(() => enqueueOppSync());
+  }
+  setStatus(`PIPELINE · ${pipelineStageLabel(stageId).toUpperCase()}`);
+  if (stageId === "lost") {
+    pane = "list";
+    oppId = "";
+  }
+  render();
+}
+
 function renderOpp() {
   const rows = db.opps.filter((o) => o.status !== "done");
   const sel = selected();
@@ -482,6 +596,13 @@ function renderOpp() {
         ${APP_STAGES.filter((s) => s.id !== "new").map((s) => `
           <button type="button" class="opp-stage ${sel.app_stage === s.id ? "on" : ""}" data-stage="${esc(s.id)}">${esc(s.label.toUpperCase())}</button>`).join("")}
       </div>
+      <p class="muted tiny">PIPELINE — found → researching → drafted → submitted → follow-up → won / lost. Your taps only; Pip never submits.</p>
+      <div class="opp-stages">
+        ${PIPELINE_STAGES.map((s) => `
+          <button type="button" class="opp-stage ${oppStage(sel) === s.id ? "on" : ""}" data-pstage="${esc(s.id)}">${esc(s.label.toUpperCase())}</button>`).join("")}
+      </div>
+      ${oppStage(sel) === "follow-up" ? `<p class="muted">${isFollowUpDue(sel) ? `Follow-up due — ${daysWaiting(sel)}d waiting.` : `Follow-up due ${esc(sel.followup_due || "in 7 days")}.`}</p>` : ""}
+      ${sel.url ? `<p class="muted tiny">Source kept: ${esc(sel.url)} · hunted ${sel.created_at ? new Date(sel.created_at).toLocaleDateString() : "—"}</p>` : ""}
       <div class="dock">
         <button type="button" id="opp-back">BACK</button>
         <button type="button" id="opp-read">READ PAGE</button>
@@ -513,6 +634,9 @@ function renderOpp() {
         render();
         setStatus(stageLabel(el.dataset.stage).toUpperCase());
       };
+    });
+    $("#view").querySelectorAll("[data-pstage]").forEach((el) => {
+      el.onclick = () => setPipelineStage(sel, el.dataset.pstage);
     });
     $("#view").querySelectorAll("[data-ans]").forEach((el) => {
       el.oninput = () => {
@@ -586,7 +710,7 @@ function renderOpp() {
       <button type="button" class="opp-card" data-id="${esc(o.id)}">
         <b>${esc(o.title)}</b>
         <span class="opp-fit ${badge.cls}">${badge.text}</span>
-        <span>${esc(stageLabel(o.app_stage || "new"))} · ${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${dist}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · scrape"}${o.url ? " · " + esc(o.url.slice(0, 32)) : ""}</span>
+        <span>${esc(stageLabel(o.app_stage || "new"))} · ${esc(pipelineStageLabel(oppStage(o)))}${isFollowUpDue(o) ? " · FOLLOW-UP DUE" : ""} · ${esc(labelOf(o.kind || classify(o.title, o.url, o.questions).id))}${dist}${o.questions && o.questions.length ? " · " + o.questions.length + " Q" : " · scrape"}${o.url ? " · " + esc(o.url.slice(0, 32)) : ""}</span>
       </button>`;
     }).join("") || `<p class="muted">Nothing on the desk. SEARCH hunts near→far from your city. SCRAPE pulls a URL you already found.</p>`}
     <div class="dock">
@@ -658,6 +782,18 @@ function renderKit() {
         <textarea id="kit-${k}"${short ? ' class="short"' : ""}>${esc(db.kit[k] || "")}</textarea>
       </div>`;
     }).join("")}
+    <h3>WORKS — SHIP LOOP</h3>
+    <p class="muted">${esc(cadenceLine(worksSummary(db.works || [], db.settings.ship_cadence)))} · CADENCE
+      <button type="button" class="tiny" data-cadence="-1">−</button> ${Math.max(0, Math.round(Number(db.settings.ship_cadence) || 0))} <button type="button" class="tiny" data-cadence="1">+</button> / MONTH</p>
+    ${(db.works || []).map((w) => `
+      <div class="row"><span>${esc(w.title)} <span class="muted">${esc(w.kind || "art")}</span></span>
+        <span class="muted">${w.status === "shipped" ? `SHIPPED ${w.shippedAt ? new Date(w.shippedAt).toLocaleDateString() : ""}` : `<button type="button" class="tiny" data-ship="${esc(w.id)}">SHIP IT</button>`}</span></div>
+    `).join("") || `<p class="muted">No works registered. Add the piece in progress — shipping it is one tap, and the ship lands in memory + the next brief.</p>`}
+    <div class="field"><span>NEW WORK</span><input id="work-title" type="text" placeholder="title of the piece" autocomplete="off" /></div>
+    <div class="actions">
+      <select id="work-kind">${WORK_KINDS.map((k) => `<option value="${k}">${k.toUpperCase()}</option>`).join("")}</select>
+      <button type="button" id="work-add">ADD WORK</button>
+    </div>
     ${db.kit.resume ? `<h3>ASSEMBLED RESUME</h3><div class="copy-block"><p>${esc(String(db.kit.resume).slice(0, 1600))}${String(db.kit.resume).length > 1600 ? "…" : ""}</p></div>` : ""}
     <div class="dock">
       <button type="button" class="primary" id="kit-save">SAVE KIT</button>
@@ -671,6 +807,50 @@ function renderKit() {
   $("#kit-ingest").onclick = runIngest;
   const top = $("#kit-ingest-top");
   if (top) top.onclick = runIngest;
+  // Phase 4 Creativity: works registry + ship loop.
+  const workAdd = $("#work-add");
+  if (workAdd) {
+    workAdd.onclick = () => {
+      const title = ($("#work-title")?.value || "").trim();
+      if (!title) {
+        setStatus("NAME THE WORK");
+        return;
+      }
+      if (!Array.isArray(db.works)) db.works = [];
+      addWork(db.works, title, $("#work-kind")?.value || "art");
+      persist();
+      render();
+      setStatus("WORK REGISTERED");
+    };
+  }
+  $("#view").querySelectorAll("[data-ship]").forEach((el) => {
+    el.onclick = async () => {
+      if (!Array.isArray(db.works)) db.works = [];
+      const w = shipWork(db.works, el.dataset.ship);
+      if (!w) return;
+      persist();
+      // "Shipped" is a first-class event: durable memory gets the entry,
+      // and gatherBriefInputs carries it into the next Morning Brief.
+      try {
+        await rememberNow(`Shipped "${w.title}" (${w.kind || "art"}).`, {
+          title: `Shipped — ${w.title}`,
+          tags: ["shipped", "creativity"],
+        });
+      } catch {
+        /* memory write best-effort; the ship itself is saved */
+      }
+      render();
+      setStatus("SHIPPED — LOGGED IN MEMORY");
+    };
+  });
+  $("#view").querySelectorAll("[data-cadence]").forEach((el) => {
+    el.onclick = () => {
+      const next = Math.max(0, Math.min(12, Math.round(Number(db.settings.ship_cadence) || 0) + Number(el.dataset.cadence)));
+      db.settings.ship_cadence = next;
+      persist();
+      render();
+    };
+  });
 }
 
 function grabKitFields() {
@@ -993,7 +1173,28 @@ function gatherBriefInputs(bst) {
   } catch {
     /* memory engine not ready — section omitted */
   }
-  let focus = focusForToday(bst);
+  // Phase 4 Creativity: shipped works are brief material (overnight section).
+  try {
+    const shipped = recentlyShipped(db.works || []);
+    if (shipped.length) {
+      const line = `Shipped: ${shipped.map((w) => w.title).join(" · ")}`;
+      overnight = overnight
+        ? { title: overnight.title, content: [overnight.content, line].filter(Boolean).join(" · ") }
+        : { title: "Creativity", content: line };
+    }
+  } catch {
+    /* works optional */
+  }
+  // Phase 4 Goals: the tracker is the FIRST focus source (most
+  // needs-attention goal), then the seeded focus, then durable goal tags.
+  let focus = "";
+  try {
+    const fg = pickFocusGoal(loadGoals());
+    if (fg) focus = fg.text;
+  } catch {
+    /* tracker optional */
+  }
+  if (!focus) focus = focusForToday(bst);
   if (!focus) {
     try {
       const goal = getMemoryTier("durable").find((e) => (e.tags || []).includes("goal"));
@@ -1010,19 +1211,33 @@ function gatherBriefInputs(bst) {
   }
   let energy = "";
   try {
-    const snap = mealSnapshot(db);
-    const plan = snap.plan || [];
-    if (plan.length) {
-      const filled = plan.filter((r) => String(r.meal_name || r.name || r.title || "").trim()).length;
-      const rem = (snap.remaining && snap.remaining.remaining) || {};
-      const kcal = Number(rem.kcal);
-      energy = `${filled}/${plan.length} meals planned${Number.isFinite(kcal) && kcal > 0 ? ` · ~${Math.round(kcal)} kcal still open` : ""}`;
-    }
+    // Phase 4 Health loop: yesterday's check-in writes the plan line when
+    // one exists — honest template logic over the tapped numbers.
+    energy = energyPlanLine(yesterdayCheckin(loadHealth()));
   } catch {
-    /* meals optional */
+    /* health optional */
+  }
+  if (!energy) {
+    try {
+      const snap = mealSnapshot(db);
+      const plan = snap.plan || [];
+      if (plan.length) {
+        const filled = plan.filter((r) => String(r.meal_name || r.name || r.title || "").trim()).length;
+        const rem = (snap.remaining && snap.remaining.remaining) || {};
+        const kcal = Number(rem.kcal);
+        energy = `${filled}/${plan.length} meals planned${Number.isFinite(kcal) && kcal > 0 ? ` · ~${Math.round(kcal)} kcal still open` : ""}`;
+      }
+    } catch {
+      /* meals optional */
+    }
   }
   const opps = (db.opps || []).filter((o) => o.status !== "done");
-  const tight = opps.find((o) => o.tight || /today|tomorrow|due|closes/i.test(String(o.due_label || "")));
+  // Phase 4 Prosperity: a due follow-up outranks a merely-tight deadline —
+  // it is the brief's recommended-move candidate from the pipeline.
+  const followUps = followUpCandidates(opps);
+  const tight = followUps.length
+    ? followUps[0]
+    : opps.find((o) => o.tight || /today|tomorrow|due|closes/i.test(String(o.due_label || "")));
   let suggestions = 0;
   try {
     suggestions = getSuggestions().length;
@@ -1037,7 +1252,14 @@ function gatherBriefInputs(bst) {
   }
   const move = pickRecommendedMove({
     suggestions,
-    oppTight: tight ? { title: String(tight.title || "a call"), due: tight.due_label || "its deadline is close" } : null,
+    oppTight: tight
+      ? {
+          title: String(tight.title || "a call"),
+          due: isFollowUpDue(tight)
+            ? `follow-up due — ${daysWaiting(tight)}d waiting`
+            : tight.due_label || "its deadline is close",
+        }
+      : null,
     oppOpen: opps.length,
     mealsMissingSlot: briefMealSlotMissing(),
     wakeIncomplete,
@@ -1129,7 +1351,15 @@ function showEveningCard() {
   div.className = "bubble pip";
   div.id = "evening-card";
   let score = 0;
-  div.innerHTML = `<div class="who-row"><span class="who">EVENING REVIEW</span></div><div class="body"><p>Score the day, capture what mattered, seed tomorrow. Ten seconds.</p><div class="score-row">${[1, 2, 3, 4, 5]
+  // Phase 4 Health loop: today's energy vs the morning call, when tapped.
+  let energyLine = "";
+  try {
+    const hs = loadHealth();
+    energyLine = eveningEnergyLine(todayCheckin(hs), yesterdayCheckin(hs));
+  } catch {
+    /* health optional */
+  }
+  div.innerHTML = `<div class="who-row"><span class="who">EVENING REVIEW</span></div><div class="body"><p>Score the day, capture what mattered, seed tomorrow. Ten seconds.</p>${energyLine ? `<p class="muted">${esc(energyLine)}</p>` : ""}<div class="score-row">${[1, 2, 3, 4, 5]
     .map((n) => `<button type="button" class="score-btn" data-score="${n}">${n}</button>`)
     .join("")}</div><input id="evening-note" type="text" placeholder="what mattered today — one line" autocomplete="off" /><input id="evening-focus" type="text" placeholder="tomorrow's focus — one line" autocomplete="off" /><div class="actions"><button type="button" id="evening-save">SAVE REVIEW</button><button type="button" id="evening-skip">SKIP</button></div></div>`;
   div.querySelectorAll(".score-btn").forEach((b) => {
@@ -1222,6 +1452,18 @@ async function runBriefing({ forceMorning = false } = {}) {
       markEveningOffered(loadBriefState());
       showEveningCard();
     }
+
+    // Phase 4 Goals: the Sunday-evening weekly goal briefing — delivered
+    // like the evening offer (quiet hours suppress it), once per week.
+    try {
+      const gst = loadGoalsState();
+      if (!due.quiet && weeklyGoalBriefDue(gst)) {
+        postBriefMessage("WEEKLY GOALS\n" + weeklyBriefLines(gst.goals).join("\n"));
+        markWeeklyBriefDelivered(gst);
+      }
+    } catch {
+      /* goals optional */
+    }
   } catch {
     /* briefs never break boot or chat */
   } finally {
@@ -1237,6 +1479,147 @@ function paintCalendar() {
     esc,
     persist,
     onChange: paintCalendar,
+  });
+}
+
+// ------------------------------------------------------- Phase 4 pillars --
+// TODAY panel sections: the Health loop check-in (one energy tap, optional
+// sleep/move steppers) and the Goal Tracker (states derived in goals.js).
+
+function healthSectionHtml() {
+  let row = null;
+  try {
+    row = todayCheckin(loadHealth());
+  } catch {
+    /* optional */
+  }
+  const energy = row?.energy;
+  return `
+      <div class="brief-card" id="health-card">
+        <h3>CHECK-IN</h3>
+        <p class="muted">Energy — one tap, ten seconds. Sleep + movement only if you want them on the record.</p>
+        <div class="score-row" id="energy-row">
+          ${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="score-btn ${energy === n ? "on" : ""}" data-energy="${n}">${n}</button>`).join("")}
+        </div>
+        <div class="today-strip">
+          <span class="muted">SLEEP</span>
+          <button type="button" data-step="sleep:-0.5">−</button>
+          <b>${row?.sleep != null ? `${row.sleep}h` : "—"}</b>
+          <button type="button" data-step="sleep:0.5">+</button>
+          <span class="muted">MOVE</span>
+          <button type="button" data-step="move:-5">−</button>
+          <b>${row?.move != null ? `${row.move}m` : "—"}</b>
+          <button type="button" data-step="move:5">+</button>
+        </div>
+      </div>`;
+}
+
+function goalsSectionHtml() {
+  let goals = [];
+  try {
+    goals = loadGoals();
+  } catch {
+    /* optional */
+  }
+  const rows = goals
+    .map((g) => {
+      const st = trackerGoalState(g);
+      const q = goalQuietDays(g);
+      const ms = g.milestones || [];
+      return `
+      <div class="goal-row" data-goal="${esc(g.id)}">
+        <p><b>${esc(g.title)}</b> <span class="muted">${esc(GOAL_STATE_LABEL[st] || st)}${q >= 14 ? ` · ${q}d quiet` : ""} · ${ms.filter((m) => m.done).length}/${ms.length} milestones</span></p>
+        ${ms
+          .map(
+            (m, i) =>
+              `<label class="check"><input type="checkbox" data-ms="${i}" ${m.done ? "checked" : ""} /> ${esc(m.text)}</label>`,
+          )
+          .join("")}
+        <div class="actions">
+          <input type="text" data-ms-new placeholder="add a milestone" />
+          <button type="button" data-ms-add>ADD</button>
+          <button type="button" data-touch>TOUCH</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+  return `
+      <div class="brief-card" id="goals-card">
+        <h3>GOALS</h3>
+        ${rows || `<p class="muted">No goals tracked yet. One honest goal beats ten wishes.</p>`}
+        <div class="field"><span>NEW GOAL</span><input id="goal-new" type="text" placeholder="a goal that matters" autocomplete="off" /></div>
+        <div class="actions"><button type="button" id="goal-add">ADD GOAL</button></div>
+      </div>`;
+}
+
+function bindTodayPillars() {
+  const rerender = () => {
+    if (tab === "today") renderToday();
+  };
+  document.querySelectorAll("#energy-row [data-energy]").forEach((b) => {
+    b.onclick = () => {
+      try {
+        recordCheckin(loadHealth(), { energy: Number(b.dataset.energy) });
+        setStatus("CHECKED IN");
+      } catch {
+        /* best-effort */
+      }
+      rerender();
+    };
+  });
+  document.querySelectorAll("#health-card [data-step]").forEach((b) => {
+    b.onclick = () => {
+      try {
+        const [field, delta] = b.dataset.step.split(":");
+        const hs = loadHealth();
+        const cur = todayCheckin(hs)?.[field];
+        const next = Math.max(0, (cur != null ? Number(cur) : 0) + Number(delta));
+        recordCheckin(hs, { [field]: next });
+      } catch {
+        /* best-effort */
+      }
+      rerender();
+    };
+  });
+  const addBtn = $("#goal-add");
+  if (addBtn) {
+    addBtn.onclick = () => {
+      const title = ($("#goal-new")?.value || "").trim();
+      if (!title) {
+        setStatus("NAME THE GOAL");
+        return;
+      }
+      addGoalToTracker(loadGoalsState(), title);
+      setStatus("GOAL TRACKED");
+      rerender();
+    };
+  }
+  document.querySelectorAll(".goal-row").forEach((rowEl) => {
+    const id = rowEl.dataset.goal;
+    const touchBtn = rowEl.querySelector("[data-touch]");
+    if (touchBtn) {
+      touchBtn.onclick = () => {
+        touchTrackerGoal(loadGoalsState(), id);
+        setStatus("TOUCHED");
+        rerender();
+      };
+    }
+    const msAdd = rowEl.querySelector("[data-ms-add]");
+    if (msAdd) {
+      msAdd.onclick = () => {
+        const input = rowEl.querySelector("[data-ms-new]");
+        const text = (input?.value || "").trim();
+        if (!text) return;
+        addGoalMilestone(loadGoalsState(), id, text);
+        rerender();
+      };
+    }
+    rowEl.querySelectorAll("[data-ms]").forEach((box) => {
+      box.onchange = () => {
+        toggleGoalMilestone(loadGoalsState(), id, Number(box.dataset.ms));
+        rerender();
+      };
+    });
   });
 }
 
@@ -1292,6 +1675,8 @@ function renderToday() {
         </div>
       </div>
       <div id="cal-root"></div>
+      ${healthSectionHtml()}
+      ${goalsSectionHtml()}
       <div class="story-strip" id="story-strip">
         ${moments.length
           ? `<h3>YOUR STORY</h3>${moments.map((m) => `<p class="story-line">${esc(m.content)}</p>`).join("")}`
@@ -1299,6 +1684,7 @@ function renderToday() {
       </div>
     </div>`;
   paintCalendar();
+  bindTodayPillars();
   const go = $("#today-wake");
   if (go) {
     go.onclick = () => {
@@ -1771,6 +2157,14 @@ function renderData() {
       <button type="button" id="ledger-clear">CLEAR LEDGER</button>
     </div>
 
+    <h3>OFFLINE QUEUE</h3>
+    <p class="muted">Outbound work waiting on a connection or the desktop — desktop syncs and opp drafts that couldn't fire. Flushes on reconnect, on the background tick, and on open. Failures stay queued; nothing is silently dropped.</p>
+    ${(() => { const q = loadOutQueue(); return q.length ? q.map((i) => `<p class="muted ledger-row">${esc(new Date(i.queuedAt).toLocaleString())} · ${esc(i.kind)}${i.payload?.title ? ` · ${esc(i.payload.title)}` : ""} · ${i.attempts || 0} attempt${(i.attempts || 0) === 1 ? "" : "s"}</p>`).join("") : `<p class="muted">QUEUE EMPTY</p>`; })()}
+    <div class="actions">
+      <button type="button" id="queue-flush">FLUSH NOW</button>
+      <button type="button" id="queue-clear">CLEAR QUEUE</button>
+    </div>
+
     <h3>LOCK</h3>
     <p class="muted" id="bio-help">Press & hold the phosphor print until the ring fills. Pip-themed lock — no Android popup.</p>
     <label class="check"><input type="checkbox" id="set-bio" ${s.biometric_lock ? "checked" : ""} /> BIOMETRIC LOCK</label>
@@ -2084,6 +2478,25 @@ function renderData() {
     };
   }
 
+  const queueFlushBtn = $("#queue-flush");
+  if (queueFlushBtn) {
+    queueFlushBtn.onclick = async () => {
+      setStatus("FLUSHING QUEUE…");
+      const res = await flushPendingQueue();
+      setStatus(res.remaining ? `QUEUE · ${res.flushed} SENT · ${res.remaining} STILL WAITING` : "QUEUE EMPTY");
+      renderData();
+    };
+  }
+  const queueClearBtn = $("#queue-clear");
+  if (queueClearBtn) {
+    queueClearBtn.onclick = () => {
+      clearOutQueue();
+      paintQueueBadge();
+      setStatus("QUEUE CLEARED");
+      renderData();
+    };
+  }
+
   const keysSyncBtn = $("#keys-sync");
   if (keysSyncBtn) {
     keysSyncBtn.onclick = async () => {
@@ -2181,54 +2594,65 @@ async function rewriteAnswer(index) {
   }
 }
 
-async function draftThis() {
-  const sel = selected();
-  if (!sel) return;
-  if (!(sel.questions || []).length) { setStatus("READ PAGE OR PASTE QUESTIONS"); return; }
+/** The drafting core — shared by DRAFT THIS and the offline queue's
+ *  opp-draft flush handler. Throws on failure; on success the opp holds
+ *  drafted answers, both stage fields say "drafted", and state persists. */
+async function draftOppAnswers(sel) {
   if (needsIngest(db.kit)) {
-    setStatus("READING LINKS…");
-    try {
-      db.kit = await ingestLinks(db.kit, setStatus);
-      persist();
-    } catch (e) {
-      setStatus(String(e.message || e));
-    }
+    db.kit = await ingestLinks(db.kit, setStatus);
+    persist();
   }
   const kind = classify(sel.title, sel.url, sel.questions).id;
   sel.kind = kind;
   const seeded = suggestAnswers(sel.questions, db.kit, sel.title, kind);
   Object.assign(sel, mergeDraft(sel, seeded));
   persist();
-  render();
+  const draftSettings = {
+    ...db.settings,
+    brain_pin: "auto",
+    route_mode: chatAgent() === "auto" ? "auto" : "pip",
+    chat_agent: chatAgent() === "compare" ? "pip" : chatAgent(),
+  };
+  const drafted = await draftAnswers(
+    draftSettings,
+    { title: sel.title, kit: db.kit, questions: sel.questions, kind },
+    (msg) => setStatus(msg),
+  );
+  const merged = drafted.map((row, i) => ({
+    ...row,
+    a: row.a || (seeded[i] && seeded[i].a) || "",
+    a5: row.a5 || (seeded[i] && seeded[i].a5) || "",
+  }));
+  Object.assign(sel, mergeDraft(sel, merged));
+  sel.app_stage = "drafted";
+  applyStage(sel, "drafted"); // Phase 4 pipeline mirrors a finished draft
+  sel.updated_at = Date.now();
+  persist();
+  if (desktopConfigured(db.settings)) fullOppSync(db.settings, db).catch(() => enqueueOppSync());
+  return takeLastTurn();
+}
+
+async function draftThis() {
+  const sel = selected();
+  if (!sel) return;
+  if (!(sel.questions || []).length) { setStatus("READ PAGE OR PASTE QUESTIONS"); return; }
+  if (needsIngest(db.kit)) setStatus("READING LINKS…");
   setStatus("KIT ON THE PAGE · DRAFTING VIA CREW");
   try {
-    const draftSettings = {
-      ...db.settings,
-      brain_pin: "auto",
-      route_mode: chatAgent() === "auto" ? "auto" : "pip",
-      chat_agent: chatAgent() === "compare" ? "pip" : chatAgent(),
-    };
-    const drafted = await draftAnswers(
-      draftSettings,
-      { title: sel.title, kit: db.kit, questions: sel.questions, kind },
-      (msg) => setStatus(msg),
-    );
-    const merged = drafted.map((row, i) => ({
-      ...row,
-      a: row.a || (seeded[i] && seeded[i].a) || "",
-      a5: row.a5 || (seeded[i] && seeded[i].a5) || "",
-    }));
-    Object.assign(sel, mergeDraft(sel, merged));
-    sel.app_stage = "drafted";
-    sel.updated_at = Date.now();
-    persist();
-    if (desktopConfigured(db.settings)) fullOppSync(db.settings, db).catch(() => {});
+    const turn = await draftOppAnswers(sel);
     render();
-    const turn = takeLastTurn();
     const who = turn.provider ? String(turn.provider).toUpperCase() : "BRAIN";
     setStatus(turn.leaked ? `DRAFT · ${who} · LEAKED · PASTE IT` : `DRAFT · ${who} · PASTE IT`);
   } catch (e) {
-    setStatus(String(e.message || e));
+    // No brain reachable (offline, keys spent): the draft intent QUEUES
+    // and fires on reconnect — what the user asked for is never dropped.
+    try {
+      enqueueOut("opp-draft", { oppId: sel.id, title: sel.title }, `draft:${sel.id}`);
+      paintQueueBadge();
+    } catch {
+      /* queue is best-effort glue */
+    }
+    setStatus("DRAFT QUEUED — FIRES WHEN A BRAIN IS REACHABLE");
   }
 }
 
@@ -3771,9 +4195,19 @@ async function boot() {
         );
       }
       try {
-        startBackground(db, { persist, setStatus, softRefresh });
+        startBackground(db, { persist, setStatus, softRefresh, flushQueue: () => flushPendingQueue() });
       } catch {
         /* background sync optional */
+      }
+      // Phase 4 offline queue: flush on app open + on reconnect.
+      try {
+        paintQueueBadge();
+        flushPendingQueue().catch(() => {});
+        window.addEventListener("online", () => {
+          flushPendingQueue().catch(() => {});
+        });
+      } catch {
+        /* queue optional */
       }
       // Phase 1: run a missed nightly distillation once at boot (the 5-min
       // keepalive tick in background.js also calls maybeDistill).

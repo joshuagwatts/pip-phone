@@ -60,6 +60,11 @@ export function newOpp({ title, url, note, questions, kind }) {
     status: "open",
     kind: hit,
     app_stage: qs.length ? "scraped" : "new",
+    // Phase 4 Prosperity pipeline (www/pipeline.js) — a real stage field,
+    // separate from app_stage's scrape/draft vocabulary.
+    stage: "found",
+    stage_at: Date.now(),
+    followup_due: "",
     questions: qs,
     answers: qs.map((q) => ({ q: q.prompt || q.q || "", a: "", a5: "" })),
     created_at: Date.now(),

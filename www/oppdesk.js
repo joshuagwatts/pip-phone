@@ -4,6 +4,7 @@ import { httpLanGet, httpLanPostJson } from "./net.js";
 import { privacyOn } from "./cloud.js";
 import { classify, labelOf } from "./kind.js";
 import { hunt as localHunt, scrapeUrl, newOpp, suggestAnswers } from "./opp.js";
+import { oppStage } from "./pipeline.js";
 import {
   parseHuntIntent,
   huntPlaceRings,
@@ -182,6 +183,9 @@ function mapDesktopOpp(row) {
     brief: row.brief,
     deadline: row.deadline,
     due_label: row.due_label,
+    // Phase 4 pipeline fields ride along only when the desktop sends them,
+    // so a sync merge can never clobber the phone's pipeline state.
+    ...(row.stage ? { stage: row.stage, stage_at: row.stage_at || 0, followup_due: row.followup_due || "" } : {}),
     created_at: Date.parse(row.updated_at || row.created_at || "") || Date.now(),
     updated_at: row.updated_at || "",
     _remote: true,
@@ -202,6 +206,9 @@ export function phoneOppPayload(db) {
         note: o.note,
         status: o.status,
         kind: o.kind,
+        stage: oppStage(o),
+        stage_at: o.stage_at || 0,
+        followup_due: o.followup_due || "",
         app_stage: o.app_stage || (o.questions?.length ? "scraped" : "new"),
         fit_score: o.fitScore || fit.score,
         questions: o.questions || [],

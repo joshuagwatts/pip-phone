@@ -53,6 +53,7 @@ const emptyKit = () => Object.fromEntries(KIT_LABELS.map(([k]) => [k, ""]));
 function blank() {
   return {
     kit: { ...emptyKit(), resume: "", digest: { sources: [], links_key: "" } },
+    works: [], // Phase 4 Creativity Engine — Works registry (www/works.js)
     opps: [],
     chat: [],
     moments: [],
@@ -86,6 +87,7 @@ function blank() {
       keepalive: false,
       briefings_on: true, // Phase 2 Briefing Engine (www/briefing.js)
       nudges_on: true,
+      ship_cadence: 1, // Phase 4 Creativity Engine — works to ship per month
       quiet_start: "22:00",
       quiet_end: "07:00",
       vpn_bypass: "ask", // M1: "ask" | "always" | "never" — Wi‑Fi bind when a VPN is active is never silent
@@ -120,6 +122,7 @@ export function load() {
       kit: { ...base.kit, ...(raw.kit || {}) },
       settings,
       opps: Array.isArray(raw.opps) ? raw.opps : [],
+      works: Array.isArray(raw.works) ? raw.works : [],
       chat: Array.isArray(raw.chat) ? raw.chat : [],
       moments: Array.isArray(raw.moments) ? raw.moments : [],
       events: Array.isArray(raw.events) ? raw.events : [],

@@ -169,14 +169,15 @@ jobs:
           tag_name: ${{ steps.gate.outputs.tag }}
           name: Pip ${{ steps.gate.outputs.tag }}
           body: |
-            **Phone Pip v0.1.104** — Phase 3: Pip can prove what it shared.
+            **Phone Pip v0.1.105** — Phase 4: the four pillars land.
 
-            - CONSENT LEDGER (in DATA): every cloud send is logged — when, which brain, what job, which slices of your data went along, token counts, and why that brain was picked. Metadata only, never message content. Export it as JSON or clear it, any time.
-            - DATA SCOPES: each job now only gets the slice of your memory it needs. A code task gets technical context — never your people notes, daily notes, or bio. Location and health stay out of jobs that don't need them.
-            - LEAK-SCAN: before anything leaves the phone, outbound text is scanned for your actual vault keys and key-shaped strings — anything found is stripped before sending and flagged in the ledger. Best-effort, and the ledger says so.
-            - Local brains (desktop, on-device, Pip Lite) never appear in the ledger — nothing left the phone.
+            - GOALS (TODAY panel): add goals and milestones; Pip tracks on-track / needs-attention / stalled on its own. Sunday evening brings a weekly goal briefing, a stalled goal gets exactly one nudge ever, and your Morning Brief's focus now comes from the tracker.
+            - HEALTH CHECK-IN (TODAY panel): one tap — energy 1–5, plus sleep and movement steppers if you want them. Yesterday's numbers shape this morning's energy plan, honestly.
+            - PROSPERITY PIPELINE (OPP panel): every opportunity moves through found → researching → drafted → submitted → follow-up → won/lost with one-tap stages. Follow-ups due surface in your Morning Brief and as reasoned nudges. Source and hunt date are kept forever. Nothing auto-submits, ever.
+            - CREATIVITY (KIT panel): register works in progress, tap SHIP IT when one lands — it's remembered permanently, counted against your monthly ship cadence, and shows up in the next Morning Brief.
+            - OFFLINE QUEUE: actions that need your desktop or the network now queue with a visible pending badge and fire on reconnect, in order. Nothing is silently dropped.
 
-            No reinstall needed — installs right over v0.1.103.
+            No reinstall needed — installs right over v0.1.104.
           files: |
             Pip.apk
             Pip-Windows.exe
